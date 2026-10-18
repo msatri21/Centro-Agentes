@@ -1,3 +1,5 @@
 node_modules/
 *.log
 .aider*
+web/centro.html
+web/chats/
