@@ -1,0 +1,86 @@
+{
+  "name": "centro-agentes",
+  "version": "0.4.4",
+  "description": "Centro de agentes: reparte tareas entre Ollama, OpenCode y Claude, mide cuál rinde mejor por tipo de tarea y Claude audita todo.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "ollamaModels": {
+      "type": "string",
+      "title": "Modelos de Ollama",
+      "description": "Separados por coma, en orden de preferencia. Los :cloud son gratis en la nube de Ollama con sesión iniciada (ollama signin); deja uno local al final como respaldo",
+      "default": "gpt-oss:120b-cloud,beam:cloud,gemma4:31b-cloud,nemotron-3-super:cloud,gpt-oss:20b-cloud,llama3.2:3b"
+    },
+    "opencodeModels": {
+      "type": "string",
+      "title": "Modelos de OpenCode",
+      "description": "provider/modelo separados por coma, en orden de preferencia (los -free son gratis)",
+      "default": "opencode/glm-5.3-flash-free,opencode/beam-free,opencode/deepseek-v4.1-flash-free,opencode/big-pickle,opencode/mimo-v2.6-flash-free,opencode/longcat-2.5-preview-free,opencode/space-bunny-free"
+    },
+    "hermesModels": {
+      "type": "string",
+      "title": "Modelos de Hermes Agent",
+      "description": "proveedor/modelo separados por coma; ollama-local usa tu Ollama con sesión iniciada (gratis, sin clave)",
+      "default": "ollama-local/gpt-oss:120b-cloud,ollama-local/beam:cloud,ollama-local/gemma4:31b-cloud,ollama-local/gpt-oss:20b-cloud"
+    },
+    "aiderModels": {
+      "type": "string",
+      "title": "Modelos de Aider",
+      "description": "Modelos de LiteLLM separados por coma; ollama_chat/... usa tu Ollama con sesión iniciada (gratis, sin clave)",
+      "default": "ollama_chat/gpt-oss:120b-cloud,ollama_chat/beam:cloud,ollama_chat/gemma4:31b-cloud"
+    },
+    "presupuestoClaudeTokens": {
+      "type": "number",
+      "title": "Presupuesto de Claude headless por chat (tokens)",
+      "description": "Al llegar a este total de tokens, el centro deja de usar Claude headless en ese chat. 0 = sin tope",
+      "default": 400000
+    },
+    "ntfyTema": {
+      "type": "string",
+      "title": "Avisos al móvil (tema de ntfy.sh)",
+      "description": "Opcional. Suscríbete a este tema en la app ntfy y recibirás un aviso al terminar cada plan. Usa un nombre largo y difícil de adivinar (8-64 letras, números, - o _): quien lo sepa puede leer los avisos. Vacío = sin avisos",
+      "default": ""
+    },
+    "claudeModels": {
+      "type": "string",
+      "title": "Modelos de Claude",
+      "description": "Alias de modelo separados por coma, p. ej. haiku,sonnet,opus",
+      "default": "haiku,sonnet,opus"
+    },
+    "timeoutMin": {
+      "type": "number",
+      "title": "Tiempo máximo por tarea (min)",
+      "description": "Máximo 10",
+      "default": 8
+    },
+    "proxy": {
+      "type": "string",
+      "title": "Proxy de red",
+      "description": "Vacío = el de HTTPS_PROXY o el de Windows. Ej.: http://proxy.empresa.com:8080 o http://usuario:clave@proxy:8080",
+      "default": ""
+    },
+    "certificadoCA": {
+      "type": "string",
+      "title": "Certificado de la empresa (.pem)",
+      "description": "Ruta al certificado raíz si la red inspecciona HTTPS (errores de 'self-signed certificate')",
+      "default": ""
+    },
+    "modoJefe": {
+      "type": "boolean",
+      "title": "Claude como jefe en todas las sesiones",
+      "description": "Claude reparte el trabajo real entre los agentes y lo verifica; las preguntas cortas las responde él",
+      "default": true
+    },
+    "abrirAlIniciar": {
+      "type": "boolean",
+      "title": "Abrir el centro al iniciar",
+      "description": "Abre el panel en cada sesión y la página web una vez al día",
+      "default": true
+    },
+    "esperaInicialSeg": {
+      "type": "number",
+      "title": "Espera sin respuesta antes de cambiar de IA (s)",
+      "description": "Si un agente no escribe nada en este tiempo se corta y se prueba otro (15-600)",
+      "default": 90
+    }
+  }
+}

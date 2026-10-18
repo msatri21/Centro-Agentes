@@ -1,0 +1,1 @@
+iso-kit.ts copiado sin cambios de https://github.com/wheresryan22/anatomy (kit/iso-kit.ts, commit e9488296a44211c42701ff71705b7901470ec78f). Licencia MIT en LICENSE.

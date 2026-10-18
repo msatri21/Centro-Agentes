@@ -1,0 +1,11 @@
+{
+  "name": "centro-mst",
+  "owner": { "name": "MST" },
+  "plugins": [
+    {
+      "name": "centro-agentes",
+      "source": "./",
+      "description": "Centro de agentes MST: Claude hace de jefe y reparte el trabajo en paralelo entre OpenCode, Ollama y Claude, con modelos gratis en la nube, verificación y panel web en vivo."
+    }
+  ]
+}
