@@ -519,3 +519,22 @@ test('cerrar_subtarea marca hecha la subtarea del jefe y desbloquea las siguient
   expect(r.progreso).toEqual({ hechas: 1, total: 2, faltan: [2], lanzar_ya: [2] })
   expect(out(await $.tool.call({ tool: 'mcp__centro-agentes__cerrar_subtarea', input: { subtarea: 9 } })).error).toContain('No existe')
 })
+
+test('/mst con tarea responde al momento y manda la tarea al jefe sin quedarse esperando', async ($, on) => {
+  base(on)
+  on('session.usage', async () => ({ value: { context: { percent: 0, tokens: 0, window: 200000 } } }))
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.read', async () => ({ value: 'clave' }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
+  procesos(on)
+  // Como en la app: el envío no se resuelve hasta que el comando termina.
+  on('prompt.submit', async () => new Promise(() => {}))
+  const r = await Promise.race([
+    $.command.run({ command: 'mst', args: 'crea hola.py' }),
+    new Promise(res => setTimeout(() => res('bloqueado'), 3000)),
+  ])
+  expect(r).not.toBe('bloqueado')
+  expect((r as any).text).toContain('tarea enviada al jefe')
+  // Deja terminar lo que /mst lanza en segundo plano (web, servidor) antes de cerrar el test.
+  await new Promise(res => setTimeout(res, 500))
+})

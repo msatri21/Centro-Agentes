@@ -683,9 +683,9 @@ async function relanzar($: EngineInterface, n: number) {
   if (!encargo || !contexto) return
   $.ui.toast(`Relanzando la subtarea ${n} desde la web`)
   const r = await delegarUno($, contexto.modelos, encargo, contexto.timeoutMs)
-  await $.prompt.submit({
+  void $.prompt.submit({
     text: `[Centro de agentes MST] Relancé desde la web la subtarea ${n}. Verifica este resultado como de costumbre y registra su puntaje con registrar_auditoria:\n\n${JSON.stringify(r, null, 1)}`,
-  })
+  }).catch(() => undefined)
 }
 
 // Aviso al terminar: mensaje en la app, sonido de Windows y (en la web) notificación del navegador.
@@ -742,12 +742,13 @@ async function abrirNavegador($: EngineInterface) {
 // Mantiene la página al día cada 2 s mientras la vista web está encendida, y atiende los botones.
 function encenderWeb($: EngineInterface) {
   if (web) return
-  void lanzarServidor($)
-  void escribirWeb($)
+  void lanzarServidor($).catch(() => undefined)
+  void escribirWeb($).catch(() => undefined)
+  // Un fallo de una vuelta (archivo bloqueado, sesión cerrándose) no debe tumbar las siguientes.
   web = $.clock.every(2000, async () => {
-    await lanzarServidor($)
-    await atenderAcciones($)
-    await escribirWeb($)
+    await lanzarServidor($).catch(() => undefined)
+    await atenderAcciones($).catch(() => undefined)
+    await escribirWeb($).catch(() => undefined)
   })
 }
 
@@ -849,7 +850,8 @@ async function intentar(
     argv = [await aiderExe($), ...archivos, '--model', c.modelo, '--message', input.tarea,'--yes-always', '--no-git', '--no-pretty', '--no-stream', '--no-check-update', '--no-show-model-warnings', '--no-analytics', '--input-history-file', 'NUL', '--chat-history-file', 'NUL']
   } else {
     // La tarea va por stdin: como argumento, el shim .cmd de Windows la corta en el primer salto de línea.
-    argv = ['claude', '-p', '--output-format', 'stream-json', '--verbose', '--model', c.modelo]
+    // acceptEdits: sin él, claude -p no puede escribir archivos y el encargo se pierde (tests y comandos los corre el centro con "verificar").
+    argv = ['claude', '-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--model', c.modelo]
     stdin = input.tarea
   }
 
@@ -1192,7 +1194,7 @@ export const register: Register = (on, options) => {
         await escribirWeb($)
         void lanzarServidor($)
         // Se da tiempo a que el servidor empiece a escuchar.
-        $.clock.after(1500, () => void abrirNavegador($))
+        $.clock.after(1500, () => void abrirNavegador($).catch(() => undefined))
       }
     }
     // Tras una recarga del mod, o si se abrió al iniciar, la vista web sigue encendida.
@@ -1343,7 +1345,8 @@ ${protocolo(modelos)}`
     $.clock.after(1500, () => void abrirNavegador($))
     if (!e.args.trim()) return { text: `${TITULO} abierto: panel y web (${await urlWeb($)}). Escribe /mst <tarea> para ponerlo a trabajar.` }
     await update($, plan, () => null)
-    await $.prompt.submit({ text: `${protocolo(modelos)}\n\nTAREA:\n${e.args}` })
+    // Sin await: el envío espera a que la sesión quede libre, y eso solo pasa cuando este comando ha respondido.
+    void $.prompt.submit({ text: `${protocolo(modelos)}\n\nTAREA:\n${e.args}` }).catch(() => undefined)
     return { text: `${TITULO} abierto y tarea enviada al jefe.` }
   })
 
@@ -1351,7 +1354,8 @@ ${protocolo(modelos)}`
     if (!e.args.trim()) return { text: 'Uso: /centro <tarea>' }
     await update($, plan, () => null)
     void $.ui.open({ id: PANE, title: TITULO })
-    await $.prompt.submit({ text: `${protocolo(modelos)}\n\nTAREA:\n${e.args}` })
+    // Sin await: el envío espera a que la sesión quede libre, y eso solo pasa cuando este comando ha respondido.
+    void $.prompt.submit({ text: `${protocolo(modelos)}\n\nTAREA:\n${e.args}` }).catch(() => undefined)
     return { text: 'Tarea enviada al director.' }
   })
 
@@ -1359,7 +1363,8 @@ ${protocolo(modelos)}`
     if (!e.args.trim()) return { text: 'Uso: /centro-bench <tarea>' }
     await update($, plan, () => null)
     void $.ui.open({ id: PANE, title: TITULO })
-    await $.prompt.submit({ text: `${bench(modelos)}\n\nTAREA:\n${e.args}` })
+    // Sin await: el envío espera a que la sesión quede libre, y eso solo pasa cuando este comando ha respondido.
+    void $.prompt.submit({ text: `${bench(modelos)}\n\nTAREA:\n${e.args}` }).catch(() => undefined)
     return { text: 'Comparación iniciada.' }
   })
 
