@@ -21,7 +21,7 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 | Agente | Instalación | Notas |
 |---|---|---|
 | Ollama | [ollama.com](https://ollama.com) y `ollama signin` | Los modelos `:cloud` del plan Free son gratis |
-| OpenCode | `npm i -g opencode-ai` | Modelos `opencode/*-free` |
+| OpenCode | `npm i -g opencode-ai` y el proveedor `ollama` en `~/.config/opencode/opencode.jsonc` (ver abajo) | Usa tu Ollama, sin clave |
 | Hermes Agent | en `~/.hermes` (proveedor `ollama-local` en su `config.yaml`) | Usa tu Ollama, sin clave |
 | Aider | `uv tool install aider-chat` en `~/.aider` | Usa tu Ollama, sin clave |
 | Claude headless | ya viene con Claude Code | Solo si los gratis rinden claramente peor |
@@ -58,4 +58,25 @@ claude plugin test .
 
 ```bash
 claude plugin validate .
+```
+
+## OpenCode con Ollama (gratis, sin clave)
+
+En `~/.config/opencode/opencode.jsonc`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama",
+      "options": { "baseURL": "http://127.0.0.1:11434/v1" },
+      "models": {
+        "gpt-oss:120b-cloud": {}, "beam:cloud": {}, "gemma4:31b-cloud": {},
+        "nemotron-3-super:cloud": {}, "gpt-oss:20b-cloud": {}
+      }
+    }
+  }
+}
 ```

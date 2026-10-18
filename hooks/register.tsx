@@ -54,7 +54,7 @@ const lista = (s: string | undefined, def: string[]) => {
 const protocolo = (m: Modelos) => `Actúa como JEFE del centro de agentes. Tú no haces el trabajo: planificas, repartes, verificas y entregas. Gasta lo mínimo de Claude: el trabajo lo hacen los agentes gratis.
 
 Agentes (el centro elige solo el mejor modelo de cada uno según su historial; un agente sin probar se explora):
-- opencode: agente de código que edita archivos en su directorio. Modelos gratis en la nube: ${ver(m.opencode)}.
+- opencode: agente de código que edita archivos en su directorio. Usa los modelos gratis de la nube de Ollama: ${ver(m.opencode)}.
 - ollama: modelos de texto, en la nube de Ollama (gratis) y uno local de respaldo: ${ver(m.ollama)}.
 - hermes: Hermes Agent (Nous Research), agente generalista con sus propias herramientas (terminal, archivos, web); usa los modelos gratis de la nube de Ollama: ${ver(m.hermes)}.
 - aider: Aider, agente de código por parejas que edita archivos en su directorio; usa los modelos gratis de la nube de Ollama: ${ver(m.aider)}.
@@ -209,7 +209,8 @@ const HOST_DE: Record<Trabajador, string> = {
   // Hermes usa los modelos de la nube de Ollama: llega a internet por el mismo sitio.
   hermes: 'https://ollama.com',
   aider: 'https://ollama.com',
-  opencode: 'https://opencode.ai',
+  // OpenCode usa la nube de Ollama a través de tu Ollama local.
+  opencode: 'https://ollama.com',
   claude: 'https://api.anthropic.com',
 }
 const SALUD_MS = 3 * 60_000
@@ -1138,8 +1139,8 @@ export const register: Register = (on, options) => {
   const modelos: Modelos = {
     // Los :cloud que entran en el plan Free de Ollama (probados con sesión iniciada); llama3.2:3b es local y queda de respaldo.
     ollama: lista(opt.ollamaModels, ['gpt-oss:120b-cloud', 'beam:cloud', 'gemma4:31b-cloud', 'nemotron-3-super:cloud', 'gpt-oss:20b-cloud', 'llama3.2:3b']),
-    // El modelo por defecto de OpenCode de este equipo (gemini) no tiene cuota: usa uno gratuito.
-    opencode: lista(opt.opencodeModels, ['opencode/glm-5.3-flash-free', 'opencode/beam-free', 'opencode/deepseek-v4.1-flash-free', 'opencode/big-pickle', 'opencode/mimo-v2.6-flash-free', 'opencode/longcat-2.5-preview-free', 'opencode/space-bunny-free']),
+    // OpenCode sobre tu Ollama (proveedor "ollama" en ~/.config/opencode/opencode.jsonc): gratis, sin clave que caduque.
+    opencode: lista(opt.opencodeModels, ['ollama/gpt-oss:120b-cloud', 'ollama/beam:cloud', 'ollama/gemma4:31b-cloud', 'ollama/nemotron-3-super:cloud', 'ollama/gpt-oss:20b-cloud']),
     // proveedor/modelo de Hermes; ollama-local está en ~/.hermes/config.yaml y apunta a tu Ollama (gratis, sin clave).
     hermes: lista(opt.hermesModels, ['ollama-local/gpt-oss:120b-cloud', 'ollama-local/beam:cloud', 'ollama-local/gemma4:31b-cloud', 'ollama-local/gpt-oss:20b-cloud']),
     // Aider llama a Ollama con el prefijo ollama_chat/ (el de chat, que respeta el formato de edición).
