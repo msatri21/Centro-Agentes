@@ -1148,7 +1148,7 @@ export const register: Register = (on, options) => {
   }
   const timeoutMs = Math.min(10, Math.max(1, Number(opt.timeoutMin ?? 8))) * 60_000
   contexto = { modelos, timeoutMs }
-  presupuestoClaude = Math.max(0, Number(opt.presupuestoClaudeTokens ?? 0)) || 0
+  presupuestoClaude = Math.max(0, Number(opt.presupuestoClaudeTokens ?? 400_000)) || 0
   const tema = String(opt.ntfyTema ?? '').trim()
   temaNtfy = temaNtfyValido(tema) ? tema : ''
   esperaInicialMs = Math.min(600, Math.max(15, Number(opt.esperaInicialSeg ?? 90))) * 1000
