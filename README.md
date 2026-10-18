@@ -32,6 +32,14 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 - `/mst-informe` — informe final del chat en Markdown.
 - `/centro-web`, `/centro-panel`, `/centro-bench <tarea>`, `/centro-reset`.
 
+## Cómo trabaja el jefe
+
+- **Dependencias:** `planificar` acepta `{"3": [1, 2]}`; el centro no deja lanzar la 3 hasta que la 1 y la 2 estén hechas y avisa en `lanzar_ya`.
+- **Copias aisladas:** con `aislar: true`, cada agente trabaja en un `git worktree` propio (rama `mst/...`); el resultado trae el comando para juntarlo.
+- **Verificación automática:** con `verificar: "npm test"`, el centro ejecuta ese comando donde trabajó el agente y le pasa el resultado al jefe.
+- **Skill `jefe-de-agentes`:** el mismo protocolo como skill, para entornos donde el modo jefe automático no se activa.
+- Todos los encargos piden respuesta en español.
+
 ## Ajustes
 
 En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, proxy y certificado de empresa, presupuesto de tokens de Claude por chat, y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.

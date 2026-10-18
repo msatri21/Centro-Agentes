@@ -1,4 +1,22 @@
-import type { Plan, Trabajo } from '../types'
+import type { Plan, Subtarea, Trabajo } from '../types'
+
+// Dependencias del plan: {"3": [1, 2]} (o ese JSON como texto). Ignora números fuera del plan y las que se esperan a sí mismas.
+export function leerDependencias(dep: unknown, total: number): Map<number, number[]> {
+  const obj = typeof dep === 'string' ? JSON.parse(dep || '{}') : (dep ?? {})
+  const valido = (n: number) => Number.isInteger(n) && n >= 1 && n <= total
+  const m = new Map<number, number[]>()
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const n = Number(k)
+    const espera = (Array.isArray(v) ? v : [v]).map(Number).filter(x => valido(x) && x !== n)
+    if (valido(n) && espera.length) m.set(n, [...new Set(espera)])
+  }
+  return m
+}
+// Lo que aún bloquea a una subtarea: las que espera y no están hechas.
+export const bloqueos = (subs: Subtarea[], n: number) =>
+  (subs.find(s => s.n === n)?.espera ?? []).filter(e => subs.find(s => s.n === e)?.estado !== 'hecha')
+// Subtareas pendientes que ya se pueden lanzar.
+export const listas = (subs: Subtarea[]) => subs.filter(s => s.estado === 'pendiente' && !bloqueos(subs, s.n).length)
 
 // Puntajes guardados: categoría → "trabajador:modelo" → suma de notas, nº de trabajos y tiempo total.
 export type Puntajes = Record<string, Record<string, { n: number; suma: number; msTotal: number }>>

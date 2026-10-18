@@ -334,7 +334,7 @@ test('planificar crea subtareas y la auditoría las marca hechas o pendientes y 
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: out(d1).id, puntaje: 8 } })
   const r = out(await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: out(d2).id, puntaje: 3 } }))
 
-  expect(r.progreso).toEqual({ hechas: 1, total: 2, faltan: [2] })
+  expect(r.progreso).toEqual({ hechas: 1, total: 2, faltan: [2], lanzar_ya: [2] })
   expect(r.siguiente.trabajador).toBe('opencode')
 })
 
@@ -405,7 +405,7 @@ test('aider: lee la respuesta sin ruido y sus tokens, y el centro lo lanza sin g
   expect(d.exito).toBe(true)
   expect(d.trabajador).toBe('aider:ollama_chat/gpt-oss:120b-cloud')
   expect(argvs[0]).toContain('--no-git')
-  expect(argvs[0].slice(1, 5)).toEqual(['--model', 'ollama_chat/gpt-oss:120b-cloud', '--message', 'crea hola.txt'])
+  expect(argvs[0].slice(1, 5)).toEqual(['--model', 'ollama_chat/gpt-oss:120b-cloud', '--message', 'crea hola.txt\n\nResponde siempre en español.'])
 })
 
 test('rendimiento por modelo, informe en Markdown, tema de ntfy y estado de agentes', async () => {
@@ -435,4 +435,46 @@ test('la página enseña el estado de los agentes, la Fig 3 y el enlace a todos 
   expect(html).toContain('href="/todos?t=k"')
   expect(html).toContain('class="agente no"')
   expect(html).toContain('<section class="ancho"><svg id="fig3"></svg></section>')
+})
+
+import { leerDependencias, listas } from './extras'
+
+test('dependencias: planificar las guarda, delegar no lanza una bloqueada y la auditoría dice cuáles ya se pueden lanzar', async ($, on) => {
+  expect([...leerDependencias('{"3": [1, 2, 3, 9]}', 3)]).toEqual([[3, [1, 2]]])
+  base(on)
+  procesos(on)
+  const p = out(await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'o', subtareas: ['a', 'b', 'c'], dependencias: { 3: [1, 2] } } }))
+  expect(p.lanzar_ya).toEqual([1, 2])
+  const bloqueada = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'x', tarea: 't', subtarea: 3 } }))
+  expect(bloqueada.error).toContain('espera a 1, 2')
+  const d1 = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'x', tarea: 't', subtarea: 1 } }))
+  const d2 = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'x', tarea: 't', subtarea: 2 } }))
+  expect(out(await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d1.id, puntaje: 8 } })).progreso.lanzar_ya).toEqual([])
+  expect(out(await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d2.id, puntaje: 8 } })).progreso.lanzar_ya).toEqual([3])
+  expect(listas([{ n: 1, titulo: 'a', estado: 'hecha' }, { n: 2, titulo: 'b', estado: 'pendiente', espera: [1] }]).map(s => s.n)).toEqual([2])
+})
+
+test('aislar crea una copia git para el agente, guarda sus cambios en su rama y verificar ejecuta los tests allí', async ($, on) => {
+  base(on)
+  const cwds: (string | undefined)[] = []
+  on('process.spawn', async function* (_$: any, e: any) {
+    cwds.push(e.cwd)
+    yield { stream: 'stdout', text: 'hecho' }
+    return { value: { code: 0, signal: null } }
+  })
+  const runs: string[][] = []
+  on('process.run', async (_$: any, e: any) => {
+    runs.push(e.argv)
+    const a = e.argv.join(' ')
+    const stdout = a.includes('rev-parse') ? 'C:/repo\n' : a.includes('diff --stat') ? ' a.txt | 1 +' : a.includes('npm test') ? '3 pass' : ''
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false } }
+  })
+  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'opencode', categoria: 'codigo', tarea: 't', subtarea: 1, cwd: 'C:/repo', aislar: true, verificar: 'npm test' } }))
+  expect(runs.some(r => r.includes('worktree') && r.includes('add'))).toBe(true)
+  expect(d.copia.rama).toMatch(/^mst\/s1-/)
+  expect(cwds.at(-1)).toBe(d.copia.carpeta)
+  expect(d.copia.cambios).toContain('a.txt')
+  expect(d.copia.juntar).toContain(`merge ${d.copia.rama}`)
+  expect(d.verificacion).toMatchObject({ comando: 'npm test', ok: true, salida: '3 pass' })
+  expect(d.aviso).toContain('superada')
 })

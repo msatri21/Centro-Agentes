@@ -1,7 +1,7 @@
 {
   "name": "centro-agentes",
-  "version": "0.4.4",
-  "description": "Centro de agentes: reparte tareas entre Ollama, OpenCode y Claude, mide cuál rinde mejor por tipo de tarea y Claude audita todo.",
+  "version": "0.5.0",
+  "description": "Centro de agentes MST: Claude como jefe reparte subtareas entre OpenCode, Ollama, Hermes, Aider y Claude headless, las verifica y lo muestra en vivo.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "ollamaModels": {

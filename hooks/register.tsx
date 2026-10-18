@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, grafica, pagina, tablero, VINO } from './figura'
-import { agregarRendimiento, informeMarkdown, leerAider, temaNtfyValido } from './extras'
+import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 
 // Los tonos del kit de anatomy para la terminal: grises y negros, y el vinotinto como único acento.
@@ -61,8 +61,8 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 - claude: Claude headless (${ver(m.claude)}). Gasta del plan de Claude: el centro solo lo elige si los gratis rinden claramente peor.
 
 Protocolo:
-1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso.
-2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan. Las que dependan de otras, lánzalas cuando termine aquello de lo que dependen.
+1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
+2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras, lánzalas cuando termine aquello de lo que dependen.
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
    Skills: si una subtarea es de un tipo para el que puede haber una skill (diseño, una plataforma, un formato de archivo, un framework, pruebas en navegador...), llama a mcp__centro-agentes__buscar_skills con unas palabras de la tarea y pasa los nombres que encajen en "skills" del encargo; el agente leerá su SKILL.md y la seguirá (las tareas con skills no van a Ollama, que no lee archivos). Usa tú también tus skills para verificar cuando ayuden (p. ej. un navegador para comprobar una web).
 4. VERIFICA cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
@@ -958,13 +958,56 @@ async function instruccionSkills($: EngineInterface, skills: string[]): Promise<
   return `\n\nUsa estas skills: antes de empezar, lee el SKILL.md de cada una y sigue sus instrucciones.\n${lineas.join('\n')}`
 }
 
-type Encargo = { trabajador?: Trabajador | 'auto'; modelo?: string; categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[] }
+type Encargo = {
+  trabajador?: Trabajador | 'auto'; modelo?: string; categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]
+  /** Trabajar en una copia aislada (git worktree) del repo de cwd, en su propia rama */
+  aislar?: boolean
+  /** Comando que comprueba el resultado (p. ej. npm test), ejecutado en la carpeta donde trabajó el agente */
+  verificar?: string
+}
+
+const git = ($: EngineInterface, cwd: string, a: string[]) => $.process.run(['git', '-C', cwd, ...a], { timeoutMs: 60_000 })
+
+// Una copia del repo de `cwd` para un agente: worktree en ~/.centro-agentes/copias/<chat>/ con su rama mst/<nombre>.
+// shortcut: parte del último commit; lo que tengas sin commitear en tu carpeta no está en la copia.
+async function crearCopia($: EngineInterface, cwd: string, nombre: string) {
+  const raiz = await git($, cwd, ['rev-parse', '--show-toplevel']).catch(() => undefined)
+  if (!raiz || raiz.exitCode !== 0) return { error: 'cwd no es un repositorio git: el agente trabaja en la carpeta tal cual' }
+  const repo = raiz.stdout.trim()
+  const carpeta = `${await carpetaWeb($)}/copias/${SID}/${nombre}`
+  const rama = `mst/${nombre}`
+  const r = await git($, repo, ['worktree', 'add', '-b', rama, carpeta, 'HEAD'])
+  return r.exitCode === 0 ? { repo, carpeta, rama } : { error: `git worktree falló: ${corto(r.stderr.trim(), 200)}` }
+}
+
+// Guarda en su rama lo que hizo el agente en la copia, para que el jefe lo junte con un merge.
+async function cerrarCopia($: EngineInterface, c: { repo: string; carpeta: string; rama: string }, mensaje: string) {
+  await git($, c.carpeta, ['add', '-A'])
+  const commit = await git($, c.carpeta, ['commit', '-q', '-m', mensaje])
+  const stat = await git($, c.carpeta, ['diff', '--stat', 'HEAD~1', 'HEAD'])
+  return {
+    carpeta: c.carpeta,
+    rama: c.rama,
+    cambios: commit.exitCode === 0 ? stat.stdout.trim().slice(-2000) : 'sin cambios (o no se pudo hacer commit)',
+    juntar: `git -C "${c.repo}" merge ${c.rama} && git -C "${c.repo}" worktree remove "${c.carpeta}"`,
+  }
+}
+
+// Ejecuta el comando de verificación del jefe (tests, build...) donde trabajó el agente.
+async function verificarEn($: EngineInterface, cwd: string | undefined, comando: string) {
+  const r = await $.process.run(['cmd', '/d', '/s', '/c', comando], { cwd, timeoutMs: 5 * 60_000 }).catch(err => ({ exitCode: null, stdout: '', stderr: String(err) }))
+  return { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida: sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500) }
+}
 // Modelos con un trabajo en marcha: un encargo nuevo prefiere otro libre, para repartir el trabajo.
 const ocupados = new Map<string, number>()
 
 // Elige el mejor modelo para el encargo, lo ejecuta y, si falla, cambia solo al siguiente.
 async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number) {
   const categoria = String(input.categoria ?? '').toLowerCase().trim() || 'general'
+  if (input.subtarea !== undefined) {
+    const faltan = bloqueos((await read($, plan))?.subtareas ?? [], input.subtarea)
+    if (faltan.length) return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} espera a ${faltan.join(', ')}: lánzala cuando estén hechas.` }
+  }
   // Se recuerda el encargo de cada subtarea para poder relanzarlo desde la web.
   if (input.subtarea !== undefined) encargos.set(input.subtarea, { ...input })
   const pedido = input.trabajador && input.trabajador !== 'auto' ? input.trabajador : undefined
@@ -973,6 +1016,8 @@ async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, 
   const conSkills = (input.skills ?? []).filter(Boolean)
   let todos = todosLosCandidatos(modelos).filter(c => !conSkills.length || (c.trabajador !== 'ollama' && c.trabajador !== 'aider'))
   if (conSkills.length) input = { ...input, tarea: input.tarea + (await instruccionSkills($, conSkills)) }
+  // Algunos modelos (Hermes sobre todo) contestan en inglés si no se les dice.
+  input = { ...input, tarea: `${input.tarea}\n\nResponde siempre en español.` }
   // Con el presupuesto de Claude gastado en este chat, Claude headless deja de ser candidato.
   if (presupuestoClaude && tokensClaude((await read($, trabajos)) ?? []) >= presupuestoClaude) {
     if (pedido === 'claude') $.ui.toast(`Presupuesto de Claude agotado (${miles(presupuestoClaude)} tokens): el centro sigue con los agentes gratis.`)
@@ -996,6 +1041,10 @@ async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, 
   // Primero el agente pedido; si no puede, se pasa a otro que sí funcione.
   let cola = [...preparar(candidatos), ...(pedido ? preparar(todos.filter(c => c.trabajador !== pedido)) : [])]
   if (modeloPedido) cola = [...cola.filter(c => c.modelo === modeloPedido), ...cola.filter(c => c.modelo !== modeloPedido)]
+
+  // Copia aislada: varios agentes pueden editar el mismo repo a la vez sin pisarse.
+  const copia = input.aislar && input.cwd ? await crearCopia($, input.cwd, `s${input.subtarea ?? 'x'}-${Date.now().toString(36)}`) : undefined
+  if (copia && 'carpeta' in copia) input = { ...input, cwd: copia.carpeta }
 
   // Si un modelo falla (sin sesión, sin cuota, caído), se pasa solo al siguiente de la cola.
   const cambios: string[] = []
@@ -1035,17 +1084,24 @@ async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, 
   }
   if (!r) return { error: 'Todos los modelos posibles fallaron hace poco. Prueba otro trabajador o espera unos minutos.' }
   if (!r.ok) await marcar($, input.subtarea, { estado: 'pendiente' })
+  const quienFue = clave(elegido.trabajador, elegido.modelo)
+  const aislado = copia && 'carpeta' in copia ? await cerrarCopia($, copia, `mst: subtarea ${input.subtarea ?? '-'} (${quienFue})`) : copia
+  const verificacion = r.ok && input.verificar?.trim() ? await verificarEn($, input.cwd, input.verificar.trim()) : undefined
 
   return {
     id: r.id,
     subtarea: input.subtarea,
-    trabajador: clave(elegido.trabajador, elegido.modelo),
+    trabajador: quienFue,
     exito: r.ok,
     segundos: Math.round(r.ms / 1000),
     tokens: { entrada: r.s.tokensIn, salida: r.s.tokensOut },
     ...(cambios.length ? { cambios } : {}),
+    ...(aislado ? { copia: aislado } : {}),
+    ...(verificacion ? { verificacion } : {}),
     salida: r.s.texto.slice(0, 60_000) || '(sin salida)',
-    aviso: 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
+    aviso: verificacion
+      ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
+      : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
   }
 }
 
@@ -1122,6 +1178,7 @@ export const register: Register = (on, options) => {
         properties: {
           objetivo: { type: 'string', description: 'Resultado final en una frase' },
           subtareas: { type: 'array', items: { type: 'string' }, description: 'Títulos cortos, en orden' },
+          dependencias: { type: 'object', description: 'Opcional. Qué subtareas espera cada una, p. ej. {"3": [1, 2]}: la 3 no se puede lanzar hasta que la 1 y la 2 estén hechas' },
         },
         required: ['objetivo', 'subtareas'],
       },
@@ -1140,6 +1197,8 @@ export const register: Register = (on, options) => {
           tarea: { type: 'string', description: 'Instrucción completa y autocontenida para el trabajador' },
           subtarea: { type: 'number', description: 'Número de la subtarea del plan (de planificar) que cubre este trabajo' },
           cwd: { type: 'string', description: 'Directorio de trabajo (opcional)' },
+          aislar: { type: 'boolean', description: 'Si cwd es un repo git: el agente trabaja en su propia copia (git worktree, rama mst/...) y no pisa a los demás. Junta luego con el comando de "copia.juntar"' },
+          verificar: { type: 'string', description: 'Comando que comprueba el resultado (p. ej. npm test); el centro lo ejecuta donde trabajó el agente y te da su salida' },
           skills: { type: 'array', items: { type: 'string' }, description: 'Skills que el agente debe seguir (p. ej. design-md, vercel:nextjs). Usa buscar_skills para encontrarlas.' },
         },
         required: ['categoria', 'tarea'],
@@ -1164,6 +1223,8 @@ export const register: Register = (on, options) => {
                 trabajador: { type: 'string', enum: [...TRABAJADORES, 'auto'] },
                 modelo: { type: 'string' },
                 cwd: { type: 'string', description: 'Directorio existente; distinto por tarea si editan archivos' },
+                aislar: { type: 'boolean', description: 'Si cwd es un repo git: el agente trabaja en su propia copia (git worktree, rama mst/...) y no pisa a los demás. Junta luego con el comando de "copia.juntar"' },
+                verificar: { type: 'string', description: 'Comando que comprueba el resultado (p. ej. npm test); el centro lo ejecuta donde trabajó el agente y te da su salida' },
                 skills: { type: 'array', items: { type: 'string' }, description: 'Skills que el agente debe seguir (p. ej. design-md, vercel:nextjs). Usa buscar_skills para encontrarlas.' },
               },
               required: ['tarea', 'categoria'],
@@ -1293,16 +1354,21 @@ ${protocolo(modelos)}`
 
   on('tool.call', { tool: 'mcp__centro-agentes__planificar' }, async ($, e) => {
     try {
-      const { objetivo, subtareas } = args(e) as { objetivo: string; subtareas: string[] | string }
+      const { objetivo, subtareas, dependencias } = args(e) as { objetivo: string; subtareas: string[] | string; dependencias?: unknown }
       // Algunos clientes mandan el array como texto JSON.
       const titulos: unknown[] = typeof subtareas === 'string' ? JSON.parse(subtareas) : (subtareas ?? [])
+      const dep = leerDependencias(dependencias, titulos.length)
       const nuevo: Plan = {
         objetivo: corto(String(objetivo), 120),
-        subtareas: titulos.map((titulo, i) => ({ n: i + 1, titulo: corto(String(titulo), 80), estado: 'pendiente' })),
+        subtareas: titulos.map((titulo, i) => ({ n: i + 1, titulo: corto(String(titulo), 80), estado: 'pendiente', ...(dep.has(i + 1) ? { espera: dep.get(i + 1) } : {}) })),
       }
       await update($, plan, () => nuevo)
       void $.ui.open({ id: PANE, title: TITULO })
-      return res({ guardado: true, subtareas: nuevo.subtareas.map(s => ({ n: s.n, titulo: s.titulo })) })
+      return res({
+        guardado: true,
+        subtareas: nuevo.subtareas.map(s => ({ n: s.n, titulo: s.titulo, ...(s.espera ? { espera: s.espera } : {}) })),
+        lanzar_ya: listas(nuevo.subtareas).map(s => s.n),
+      })
     } catch (err) {
       return res({ error: `planificar falló: ${String(err)}` })
     }
@@ -1343,7 +1409,11 @@ ${protocolo(modelos)}`
     await avisarSiTermino($)
     if (p < 6) $.ui.toast(`${t.trabajador} sacó ${p}/10 en ${t.categoria}${nota ? `: ${corto(nota, 40)}` : ''}`)
     const subs = (await read($, plan))?.subtareas ?? []
-    const progreso = { hechas: subs.filter(s => s.estado === 'hecha').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'hecha').map(s => s.n) }
+    const progreso = {
+      hechas: subs.filter(s => s.estado === 'hecha').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'hecha').map(s => s.n),
+      // Las pendientes cuyas dependencias ya están hechas: lánzalas ahora.
+      lanzar_ya: listas(subs).map(s => s.n),
+    }
     // Con nota baja, propone el siguiente modelo mejor clasificado para esa categoría (sin repetir el que falló).
     const siguiente = p < 6
       ? ordenar(tabla, t.categoria, todosLosCandidatos(modelos), new Set([...caidosAhora(), t.trabajador]))[0]
