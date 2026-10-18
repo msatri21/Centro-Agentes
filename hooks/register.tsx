@@ -835,7 +835,10 @@ async function intentar(
     stdin = input.tarea
   } else if (c.trabajador === 'aider') {
     // --no-git: no hace commits en tu repo; --yes-always: no se queda esperando confirmaciones.
-    argv = [await aiderExe($), '--model', c.modelo, '--message', input.tarea, '--yes-always', '--no-git', '--no-pretty', '--no-stream', '--no-check-update', '--no-show-model-warnings', '--no-analytics', '--input-history-file', 'NUL', '--chat-history-file', 'NUL']
+    // Aider solo edita los archivos que recibe en la línea de comandos: se le pasan los que nombra la tarea y existen.
+    const nombrados = [...new Set(input.tarea.match(/[\w./\\-]+\.[A-Za-z]\w{0,5}\b/g) ?? [])]
+    const archivos = input.cwd ? (await Promise.all(nombrados.map(async a => ((await $.fs.exists(`${input.cwd}/${a}`).catch(() => false)) ? a : '')))).filter(Boolean) : []
+    argv = [await aiderExe($), ...archivos, '--model', c.modelo, '--message', input.tarea,'--yes-always', '--no-git', '--no-pretty', '--no-stream', '--no-check-update', '--no-show-model-warnings', '--no-analytics', '--input-history-file', 'NUL', '--chat-history-file', 'NUL']
   } else {
     // La tarea va por stdin: como argumento, el shim .cmd de Windows la corta en el primer salto de línea.
     argv = ['claude', '-p', '--output-format', 'stream-json', '--verbose', '--model', c.modelo]
@@ -1015,6 +1018,8 @@ async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, 
   // Una tarea con skills necesita un agente que lea archivos: Ollama solo es un modelo, sin herramientas.
   const conSkills = (input.skills ?? []).filter(Boolean)
   let todos = todosLosCandidatos(modelos).filter(c => !conSkills.length || (c.trabajador !== 'ollama' && c.trabajador !== 'aider'))
+  // Con copia aislada o verificación se esperan cambios en archivos, y Ollama solo devuelve texto.
+  if (input.aislar || input.verificar?.trim()) todos = todos.filter(c => c.trabajador !== 'ollama')
   if (conSkills.length) input = { ...input, tarea: input.tarea + (await instruccionSkills($, conSkills)) }
   // Algunos modelos (Hermes sobre todo) contestan en inglés si no se les dice.
   input = { ...input, tarea: `${input.tarea}\n\nResponde siempre en español.` }
