@@ -462,11 +462,13 @@ test('aislar crea una copia git para el agente, guarda sus cambios en su rama y 
     yield { stream: 'stdout', text: 'hecho' }
     return { value: { code: 0, signal: null } }
   })
+  const escritos: string[] = []
+  on('fs.write', async (_$: any, e: any) => { escritos.push(e.content ?? e.text ?? e.data ?? JSON.stringify(e)); return { value: undefined } })
   const runs: string[][] = []
   on('process.run', async (_$: any, e: any) => {
     runs.push(e.argv)
     const a = e.argv.join(' ')
-    const stdout = a.includes('rev-parse') ? 'C:/repo\n' : a.includes('diff --stat') ? ' a.txt | 1 +' : a.includes('npm test') ? '3 pass' : ''
+    const stdout = a.includes('rev-parse') ? 'C:/repo\n' : a.includes('diff --stat') ? ' a.txt | 1 +' : a.includes('verificar-') ? '3 pass' : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false } }
   })
   const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'opencode', categoria: 'codigo', tarea: 't', subtarea: 1, cwd: 'C:/repo', aislar: true, verificar: 'npm test' } }))
@@ -477,4 +479,43 @@ test('aislar crea una copia git para el agente, guarda sus cambios en su rama y 
   expect(d.copia.juntar).toContain(`merge ${d.copia.rama}`)
   expect(d.verificacion).toMatchObject({ comando: 'npm test', ok: true, salida: '3 pass' })
   expect(d.aviso).toContain('superada')
+  expect(escritos.some(t => t.includes('npm test'))).toBe(true)
+})
+
+test('delegar_varios lanza sola la subtarea que espera a otra del lote cuando esa termina bien, y no si falla', async ($, on) => {
+  base(on)
+  const orden: string[] = []
+  // La tarea de claude va por stdin: el simulador mira e.input, no argv.
+  on('process.spawn', async function* (_$: any, e: any) {
+    const t = String(e.input ?? '')
+    orden.push(t.includes('segunda') ? 'segunda' : 'primera')
+    if (t.includes('rompe')) {
+      yield { stream: 'stderr', text: 'boom' }
+      return { value: { code: 1, signal: null } }
+    }
+    yield { stream: 'stdout', text: 'ok' }
+    return { value: { code: 0, signal: null } }
+  })
+  await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'o', subtareas: ['a', 'b'], dependencias: { 2: [1] } } })
+  const r = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar_varios', input: { tareas: [
+    { subtarea: 2, categoria: 'x', trabajador: 'claude', tarea: 'segunda' },
+    { subtarea: 1, categoria: 'x', trabajador: 'claude', tarea: 'primera' },
+  ] } })).resultados
+  expect(r.map((x: any) => x.exito)).toEqual([true, true])
+  expect(r[0].tras).toEqual([1])
+  expect(orden).toEqual(['primera', 'segunda'])
+
+  const mal = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar_varios', input: { tareas: [
+    { subtarea: 1, categoria: 'y', trabajador: 'claude', tarea: 'rompe' },
+    { subtarea: 2, categoria: 'y', trabajador: 'claude', tarea: 'segunda' },
+  ] } })).resultados
+  expect(mal[1].error).toContain('No se lanzó')
+})
+
+test('cerrar_subtarea marca hecha la subtarea del jefe y desbloquea las siguientes', async ($, on) => {
+  base(on)
+  await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'o', subtareas: ['juntar', 'publicar'], dependencias: { 2: [1] } } })
+  const r = out(await $.tool.call({ tool: 'mcp__centro-agentes__cerrar_subtarea', input: { subtarea: 1, nota: 'ramas juntas' } }))
+  expect(r.progreso).toEqual({ hechas: 1, total: 2, faltan: [2], lanzar_ya: [2] })
+  expect(out(await $.tool.call({ tool: 'mcp__centro-agentes__cerrar_subtarea', input: { subtarea: 9 } })).error).toContain('No existe')
 })

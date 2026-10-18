@@ -62,13 +62,13 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 
 Protocolo:
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
-2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras, lánzalas cuando termine aquello de lo que dependen.
+2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo delegar_varios: arrancan solas cuando terminan bien aquellas de las que dependen.
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
    Skills: si una subtarea es de un tipo para el que puede haber una skill (diseño, una plataforma, un formato de archivo, un framework, pruebas en navegador...), llama a mcp__centro-agentes__buscar_skills con unas palabras de la tarea y pasa los nombres que encajen en "skills" del encargo; el agente leerá su SKILL.md y la seguirá (las tareas con skills no van a Ollama, que no lee archivos). Usa tú también tus skills para verificar cuando ayuden (p. ej. un navegador para comprobar una web).
 4. VERIFICA cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
 5. Registra cada verificación con mcp__centro-agentes__registrar_auditoria (puntaje 1-10 honesto). Con 6 o más la subtarea queda hecha.
 6. Si el puntaje es < 6, rehazla a partir de lo que está mal: vuelve a delegarla (sola o con otras en delegar_varios) diciendo qué falló exactamente, qué hay que corregir y, si sirve, el resultado anterior. registrar_auditoria te sugiere en "siguiente" otro modelo; úsalo. Máximo 2 reintentos por subtarea.
-7. Cuando todo esté hecho, junta las piezas y entrega el resultado final con un informe corto: qué hizo cada agente, su puntaje, qué se rehízo y qué queda pendiente.
+7. Las subtareas que hagas tú (juntar ramas, revisar el conjunto) ciérralas con mcp__centro-agentes__cerrar_subtarea. Cuando todo esté hecho, junta las piezas y entrega el resultado final con un informe corto: qué hizo cada agente, su puntaje, qué se rehízo y qué queda pendiente.
 
 Nunca hagas tú la tarea completa salvo que todos los agentes fallen; en ese caso dilo.`
 
@@ -636,7 +636,14 @@ async function lanzarServidor($: EngineInterface) {
   ultimoIntento = Date.now()
   const dir = await carpetaWeb($)
   await claveWeb($)
-  const argv = ['node', `${$.plugin.root}/web/servidor.js`, String(PUERTO_WEB), `${dir}/clave.txt`, `${dir}/chats`]
+  // Relevo: si el servidor que escucha es de una versión más vieja (o anterior a /version), se cierra y arranca este.
+  const mia = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).then(t => (JSON.parse(t.replace(/^﻿/, '')) as { version?: string }).version ?? '0').catch(() => '0')
+  const suya = await $.process.run(['curl.exe', '-s', '--max-time', '2', `http://127.0.0.1:${PUERTO_WEB}/version`], { timeoutMs: 5000 }).then(r => r.stdout.trim()).catch(() => '')
+  if (suya && esMasNueva(mia, /^[\d.]+$/.test(suya) ? suya : '0'))
+    await $.process
+      .run(['powershell', '-NoProfile', '-Command', `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*servidor.js*${PUERTO_WEB}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`], { timeoutMs: 15_000 })
+      .catch(() => undefined)
+  const argv = ['node', `${$.plugin.root}/web/servidor.js`, String(PUERTO_WEB), `${dir}/clave.txt`, `${dir}/chats`, mia]
   void (async () => {
     try {
       for await (const _ of $.process.spawn({ argv })) {
@@ -983,31 +990,44 @@ async function crearCopia($: EngineInterface, cwd: string, nombre: string) {
   return r.exitCode === 0 ? { repo, carpeta, rama } : { error: `git worktree falló: ${corto(r.stderr.trim(), 200)}` }
 }
 
+async function borrarCopia($: EngineInterface, c: { repo: string; carpeta: string; rama: string }) {
+  await git($, c.repo, ['worktree', 'remove', '--force', c.carpeta]).catch(() => undefined)
+  await git($, c.repo, ['branch', '-D', c.rama]).catch(() => undefined)
+}
+
 // Guarda en su rama lo que hizo el agente en la copia, para que el jefe lo junte con un merge.
 async function cerrarCopia($: EngineInterface, c: { repo: string; carpeta: string; rama: string }, mensaje: string) {
   await git($, c.carpeta, ['add', '-A'])
   const commit = await git($, c.carpeta, ['commit', '-q', '-m', mensaje])
+  // Sin cambios no hay nada que juntar: la copia y su rama se borran para no dejar basura.
+  if (commit.exitCode !== 0) {
+    await borrarCopia($, c)
+    return { rama: c.rama, cambios: 'el agente no cambió ningún archivo; la copia se borró' }
+  }
   const stat = await git($, c.carpeta, ['diff', '--stat', 'HEAD~1', 'HEAD'])
   return {
     carpeta: c.carpeta,
     rama: c.rama,
-    cambios: commit.exitCode === 0 ? stat.stdout.trim().slice(-2000) : 'sin cambios (o no se pudo hacer commit)',
+    cambios: stat.stdout.trim().slice(-2000),
     juntar: `git -C "${c.repo}" merge ${c.rama} && git -C "${c.repo}" worktree remove "${c.carpeta}"`,
   }
 }
 
 // Ejecuta el comando de verificación del jefe (tests, build...) donde trabajó el agente.
 async function verificarEn($: EngineInterface, cwd: string | undefined, comando: string) {
-  const r = await $.process.run(['cmd', '/d', '/s', '/c', comando], { cwd, timeoutMs: 5 * 60_000 }).catch(err => ({ exitCode: null, stdout: '', stderr: String(err) }))
+  // Va en un .cmd: como argumento, las comillas del comando le llegan rotas a cmd. El .cmd se borra solo y conserva el código de salida.
+  const archivo = `${await carpetaChat($)}/verificar-${Date.now().toString(36)}${(seq++).toString(36)}.cmd`
+  await $.fs.write(archivo, `@echo off\r\nchcp 65001 >nul\r\n${comando}\r\nset "codigo=%errorlevel%"\r\n(goto) 2>nul & del "%~f0" & exit /b %codigo%\r\n`)
+  const r = await $.process.run(['cmd', '/d', '/c', archivo.replace(/\//g, '\\')], { cwd, timeoutMs: 5 * 60_000 }).catch(err => ({ exitCode: null, stdout: '', stderr: String(err) }))
   return { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida: sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500) }
 }
 // Modelos con un trabajo en marcha: un encargo nuevo prefiere otro libre, para repartir el trabajo.
 const ocupados = new Map<string, number>()
 
 // Elige el mejor modelo para el encargo, lo ejecuta y, si falla, cambia solo al siguiente.
-async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number) {
+async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, sinBloqueo = false) {
   const categoria = String(input.categoria ?? '').toLowerCase().trim() || 'general'
-  if (input.subtarea !== undefined) {
+  if (input.subtarea !== undefined && !sinBloqueo) {
     const faltan = bloqueos((await read($, plan))?.subtareas ?? [], input.subtarea)
     if (faltan.length) return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} espera a ${faltan.join(', ')}: lánzala cuando estén hechas.` }
   }
@@ -1087,7 +1107,10 @@ async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, 
       for (const m of modelos.ollama.filter(x => x.endsWith('cloud'))) caidos.set(clave('ollama', m), Date.now())
     cambios.push(`${k} falló: ${corto(r.s.texto.replace(/\s+/g, ' '), 120)}`)
   }
-  if (!r) return { error: 'Todos los modelos posibles fallaron hace poco. Prueba otro trabajador o espera unos minutos.' }
+  if (!r) {
+    if (copia && 'carpeta' in copia) await borrarCopia($, copia)
+    return { subtarea: input.subtarea, error: 'Todos los modelos posibles fallaron hace poco. Prueba otro trabajador o espera unos minutos.' }
+  }
   if (!r.ok) await marcar($, input.subtarea, { estado: 'pendiente' })
   const quienFue = clave(elegido.trabajador, elegido.modelo)
   const aislado = copia && 'carpeta' in copia ? await cerrarCopia($, copia, `mst: subtarea ${input.subtarea ?? '-'} (${quienFue})`) : copia
@@ -1260,6 +1283,19 @@ export const register: Register = (on, options) => {
       },
     })
     await $.tool.register({
+      name: 'cerrar_subtarea',
+      description: 'Marca como hecha una subtarea que hiciste tú como jefe (p. ej. juntar ramas o revisar el conjunto), sin trabajo de un agente que auditar.',
+      isDeferred: false,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          subtarea: { type: 'number', description: 'Número de la subtarea del plan' },
+          nota: { type: 'string', description: 'Qué hiciste, en una frase' },
+        },
+        required: ['subtarea'],
+      },
+    })
+    await $.tool.register({
       name: 'ranking',
       description: 'Devuelve el puntaje promedio y tiempo promedio de cada trabajador por categoría.',
       isDeferred: false,
@@ -1389,7 +1425,29 @@ ${protocolo(modelos)}`
     const lista: Encargo[] = typeof tareas === 'string' ? JSON.parse(tareas) : (tareas ?? [])
     if (!lista.length) return res({ error: 'Pasa al menos una tarea en "tareas".' })
     // Todas a la vez: cada una elige el mejor modelo libre, así trabajan agentes distintos en paralelo.
-    const resultados = await Promise.all(lista.map(t => delegarUno($, modelos, t, timeoutMs)))
+    // Una subtarea que espera a otras del mismo lote arranca sola cuando esas terminan bien (y pasan su verificación).
+    const subs = (await read($, plan))?.subtareas ?? []
+    const porN = new Map(lista.filter(t => t.subtarea !== undefined).map(t => [t.subtarea!, t]))
+    const enMarcha = new Map<number, Promise<any>>()
+    const lanzar = (t: Encargo, camino = new Set<number>()): Promise<any> => {
+      const n = t.subtarea
+      if (n === undefined) return delegarUno($, modelos, t, timeoutMs)
+      const ya = enMarcha.get(n)
+      if (ya) return ya
+      const espera = bloqueos(subs, n)
+      // Las que espera fuera del lote (o en un ciclo) no se pueden esperar aquí: delegarUno devuelve el aviso.
+      const enLote = espera.filter(e => porN.has(e) && !camino.has(e))
+      const p = (async () => {
+        if (!espera.length || enLote.length < espera.length) return delegarUno($, modelos, t, timeoutMs)
+        const previas = await Promise.all(enLote.map(e => lanzar(porN.get(e)!, new Set([...camino, n]))))
+        const mal = previas.filter(r => !r.exito || r.verificacion?.ok === false).map(r => r.subtarea)
+        if (mal.length) return { subtarea: n, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${n}.` }
+        return { ...(await delegarUno($, modelos, t, timeoutMs, true)), tras: enLote }
+      })()
+      enMarcha.set(n, p)
+      return p
+    }
+    const resultados = await Promise.all(lista.map(t => lanzar(t)))
     return res({ resultados, aviso: 'Resultados sin verificar. Audita cada uno y llama a registrar_auditoria con su id.' })
   }).catch(async (_$, _e, next) => res({ error: `delegar_varios falló: ${String(next.error)}` }))
 
@@ -1428,6 +1486,17 @@ ${protocolo(modelos)}`
       ...(siguiente ? { siguiente, aviso: `Rinde poco: vuelve a delegar con trabajador "${siguiente.trabajador}" y modelo "${siguiente.modelo}" (o déjalos vacíos y el centro elige).` } : {}),
     })
   }).catch(async (_$, _e, next) => res({ error: `registrar_auditoria falló: ${String(next.error)}` }))
+
+  on('tool.call', { tool: 'mcp__centro-agentes__cerrar_subtarea' }, async ($, e) => {
+    const { subtarea } = args(e) as { subtarea: number; nota?: string }
+    const n = Number(subtarea)
+    const subs0 = (await read($, plan))?.subtareas ?? []
+    if (!subs0.some(s => s.n === n)) return res({ error: `No existe la subtarea ${subtarea} en el plan` })
+    await marcar($, n, { estado: 'hecha', quien: 'jefe' })
+    await avisarSiTermino($)
+    const subs = (await read($, plan))?.subtareas ?? []
+    return res({ hecha: n, progreso: { hechas: subs.filter(s => s.estado === 'hecha').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'hecha').map(s => s.n), lanzar_ya: listas(subs).map(s => s.n) } })
+  }).catch(async (_$, _e, next) => res({ error: `cerrar_subtarea falló: ${String(next.error)}` }))
 
   on('tool.call', { tool: 'mcp__centro-agentes__buscar_skills' }, async ($, e) => {
     const { consulta } = args(e) as { consulta?: string }

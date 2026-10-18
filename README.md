@@ -34,10 +34,12 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 
 ## Cómo trabaja el jefe
 
-- **Dependencias:** `planificar` acepta `{"3": [1, 2]}`; el centro no deja lanzar la 3 hasta que la 1 y la 2 estén hechas y avisa en `lanzar_ya`.
+- **Dependencias:** `planificar` acepta `{"3": [1, 2]}`; si mandas la 3 en el mismo `delegar_varios` que la 1 y la 2, arranca sola cuando esas terminan bien; si no, el centro la bloquea y avisa en `lanzar_ya`.
 - **Copias aisladas:** con `aislar: true`, cada agente trabaja en un `git worktree` propio (rama `mst/...`); el resultado trae el comando para juntarlo.
 - **Verificación automática:** con `verificar: "npm test"`, el centro ejecuta ese comando donde trabajó el agente y le pasa el resultado al jefe.
 - **Skill `jefe-de-agentes`:** el mismo protocolo como skill, para entornos donde el modo jefe automático no se activa.
+- **Subtareas del jefe:** las que hace Claude (juntar ramas, revisar) se cierran con `cerrar_subtarea`.
+- Las copias sin cambios, o de un encargo que falló del todo, se borran solas.
 - Todos los encargos piden respuesta en español.
 
 ## Ajustes

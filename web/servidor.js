@@ -7,7 +7,7 @@ const http = require('node:http')
 const fs = require('node:fs')
 const path = require('node:path')
 
-const [puerto, archivoClave, chats] = process.argv.slice(2)
+const [puerto, archivoClave, chats, version = '0'] = process.argv.slice(2)
 const TIPOS = new Set(['cancelar', 'relanzar'])
 const claveActual = () => {
   try {
@@ -68,6 +68,11 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:
 
 const servidor = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
+  // Sin clave: solo dice su versión, para que una sesión con una versión más nueva lo releve.
+  if (url.pathname === '/version') {
+    res.writeHead(200, { 'content-type': 'text/plain' }).end(version)
+    return
+  }
   const clave = claveActual()
   if (!clave || url.searchParams.get('t') !== clave) {
     res.writeHead(403).end('clave incorrecta')
