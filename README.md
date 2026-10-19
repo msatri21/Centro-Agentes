@@ -2,7 +2,7 @@
 
 Plugin de Claude Code que convierte a Claude en **jefe** de un equipo de agentes con modelos **gratis en la nube**. Claude planifica, reparte las subtareas en paralelo, verifica cada resultado (nota 1-10) y rehace lo que no pasa. Todo se ve en vivo en un panel y en una web local.
 
-Agentes: **OpenCode**, **Ollama**, **Hermes Agent**, **Aider** y, como último recurso (gasta de tu plan), **Claude headless**.
+Agentes: **OpenCode**, **Ollama**, **Hermes Agent**, **Aider**, **Codex** y, como último recurso (gasta de tu plan), **Claude headless**.
 
 ## Instalar
 
@@ -24,6 +24,7 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 | OpenCode | `npm i -g opencode-ai` y el proveedor `ollama` en `~/.config/opencode/opencode.jsonc` (ver abajo) | Usa tu Ollama, sin clave |
 | Hermes Agent | en `~/.hermes` (proveedor `ollama-local` en su `config.yaml`) | Usa tu Ollama, sin clave |
 | Aider | `uv tool install aider-chat` en `~/.aider` | Usa tu Ollama, sin clave |
+| Codex | `npm i -g @openai/codex` y `codex login` con tu cuenta de ChatGPT | Cupo gratis limitado de tu cuenta; si no hay sesión o se acaba, usa tu Ollama |
 | Claude headless | ya viene con Claude Code | Solo si los gratis rinden claramente peor |
 
 ## Comandos

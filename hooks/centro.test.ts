@@ -425,8 +425,8 @@ test('rendimiento por modelo, informe en Markdown, tema de ntfy y estado de agen
   expect(md).toContain('Se rehicieron 1 trabajo(s)')
   expect(temaNtfyValido('mst-avisos-x7q2')).toBe(true)
   expect(temaNtfyValido('a b/../x')).toBe(false)
-  const estado = estadoAgentes({ ollama: ['m'], opencode: ['m'], hermes: ['m'], aider: ['m', 'n'], claude: ['haiku'] }, Date.now(), 0)
-  expect(estado.map(e => e.nombre)).toEqual(['ollama', 'opencode', 'hermes', 'aider', 'claude'])
+  const estado = estadoAgentes({ ollama: ['m'], opencode: ['m'], hermes: ['m'], aider: ['m', 'n'], codex: ['chatgpt'], claude: ['haiku'] }, Date.now(), 0)
+  expect(estado.map(e => e.nombre)).toEqual(['ollama', 'opencode', 'hermes', 'aider', 'codex', 'claude'])
   expect(estado.find(e => e.nombre === 'aider')).toEqual({ nombre: 'aider', ok: true, nota: '2/2 modelos' })
 })
 
@@ -537,4 +537,33 @@ test('/mst con tarea responde al momento y manda la tarea al jefe sin quedarse e
   expect((r as any).text).toContain('tarea enviada al jefe')
   // Deja terminar lo que /mst lanza en segundo plano (web, servidor) antes de cerrar el test.
   await new Promise(res => setTimeout(res, 500))
+})
+
+import { leerCodex } from './register'
+
+test('codex: lee su respuesta y tokens, y se lanza con su cuenta o con Ollama, con la tarea por stdin', async ($, on) => {
+  const salida = [
+    '{"type":"thread.started","thread_id":"x"}',
+    '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata not found"}}',
+    '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"ls"}}',
+    '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Añadí saluda()"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":1500,"output_tokens":80}}',
+  ].join('\n')
+  expect(leerCodex(salida)).toEqual({ texto: 'Añadí saluda()', tokensIn: 2000, tokensOut: 80 })
+  expect(leerCodex('{"type":"error","message":"Not logged in"}').texto).toBe('[error] Not logged in')
+  base(on)
+  const vistos: { argv: string[]; input?: string }[] = []
+  on('process.spawn', async function* (_$: any, e: any) {
+    vistos.push({ argv: e.argv, input: e.input })
+    yield { stream: 'stdout', text: salida }
+    return { value: { code: 0, signal: null } }
+  })
+  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'codex', categoria: 'codigo', tarea: 'crea hola.py' } }))
+  expect(d.exito).toBe(true)
+  expect(d.trabajador).toBe('codex:chatgpt')
+  expect(vistos[0].argv).toEqual(['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check'])
+  expect(vistos[0].input).toContain('crea hola.py')
+  const o = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'codex', modelo: 'ollama/gpt-oss:120b-cloud', categoria: 'codigo', tarea: 'x' } }))
+  expect(o.trabajador).toBe('codex:ollama/gpt-oss:120b-cloud')
+  expect(vistos[1].argv.slice(-5)).toEqual(['--oss', '--local-provider', 'ollama', '-m', 'gpt-oss:120b-cloud'])
 })

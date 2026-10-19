@@ -5,9 +5,9 @@ import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, grafica, pagina, tablero, VINO } from './figura'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
-import { clave, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
+import { clave, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
-export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
+export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
 // Los tonos del kit de anatomy para la terminal: grises y negros, y el vinotinto como único acento.
@@ -18,7 +18,7 @@ const TITULO = 'Centro de agentes MST'
 const STORE_KEY = 'puntajes'
 const WEB_KEY = 'web'
 const ABIERTA_KEY = 'web-abierta-el'
-const TRABAJADORES: readonly Trabajador[] = ['ollama', 'opencode', 'hermes', 'aider', 'claude']
+const TRABAJADORES: readonly Trabajador[] = ['ollama', 'opencode', 'hermes', 'aider', 'codex', 'claude']
 
 let seq = 0
 const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, [] as Trabajo[])
@@ -29,6 +29,7 @@ type Opciones = {
   ollamaModels?: string
   hermesModels?: string
   aiderModels?: string
+  codexModels?: string
   presupuestoClaudeTokens?: number
   ntfyTema?: string
   opencodeModels?: string
@@ -57,6 +58,7 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 - ollama: modelos de texto, en la nube de Ollama (gratis) y uno local de respaldo: ${ver(m.ollama)}.
 - hermes: Hermes Agent (Nous Research), agente generalista con sus propias herramientas (terminal, archivos, web); usa los modelos gratis de la nube de Ollama: ${ver(m.hermes)}.
 - aider: Aider, agente de código por parejas que edita archivos en su directorio; usa los modelos gratis de la nube de Ollama: ${ver(m.aider)}.
+- codex: Codex (OpenAI), agente de código que edita archivos y ejecuta comandos en su carpeta; usa tu cuenta de ChatGPT (cupo gratis limitado) o, de respaldo, los modelos gratis de Ollama: ${ver(m.codex)}.
 - claude: Claude headless (${ver(m.claude)}). Gasta del plan de Claude: el centro solo lo elige si los gratis rinden claramente peor.
 
 Protocolo:
@@ -120,6 +122,8 @@ const HOST_DE: Record<Trabajador, string> = {
   // Hermes usa los modelos de la nube de Ollama: llega a internet por el mismo sitio.
   hermes: 'https://ollama.com',
   aider: 'https://ollama.com',
+  // Con la cuenta de ChatGPT sale a chatgpt.com; sus modelos de Ollama van por tu Ollama local.
+  codex: 'https://chatgpt.com',
   // OpenCode usa la nube de Ollama a través de tu Ollama local.
   opencode: 'https://ollama.com',
   claude: 'https://api.anthropic.com',
@@ -666,7 +670,7 @@ const caidosAhora = () => new Set([...caidos].filter(([, t]) => Date.now() - t <
 
 // Orden por defecto entre trabajadores: primero los gratis en la nube, Claude al final.
 const todosLosCandidatos = (m: Modelos): Candidato[] =>
-  (['opencode', 'ollama', 'hermes', 'aider', 'claude'] as const).flatMap(t => m[t].map(modelo => ({ trabajador: t, modelo })))
+  (['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude'] as const).flatMap(t => m[t].map(modelo => ({ trabajador: t, modelo })))
 
 
 // Ejecuta la tarea con un trabajador y modelo, y deja su fila en el historial.
@@ -711,6 +715,12 @@ async function intentar(
     const nombrados = [...new Set(input.tarea.match(/[\w./\\-]+\.[A-Za-z]\w{0,5}\b/g) ?? [])]
     const archivos = input.cwd ? (await Promise.all(nombrados.map(async a => ((await $.fs.exists(`${input.cwd}/${a}`).catch(() => false)) ? a : '')))).filter(Boolean) : []
     argv = [await aiderExe($), ...archivos, '--model', c.modelo, '--message', input.tarea,'--yes-always', '--no-git', '--no-pretty', '--no-stream', '--no-check-update', '--no-show-model-warnings', '--no-analytics', '--input-history-file', 'NUL', '--chat-history-file', 'NUL']
+  } else if (c.trabajador === 'codex') {
+    // --json: un evento por línea. danger-full-access: en Windows su sandbox le impide escribir y ejecutar;
+    // trabaja en su carpeta (o en su copia aislada), como los demás agentes. La tarea va por stdin.
+    const local = c.modelo.startsWith('ollama/') ? ['--oss', '--local-provider', 'ollama', '-m', c.modelo.slice('ollama/'.length)] : c.modelo && c.modelo !== 'chatgpt' ? ['-m', c.modelo] : []
+    argv = ['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check', ...local]
+    stdin = input.tarea
   } else {
     // La tarea va por stdin: como argumento, el shim .cmd de Windows la corta en el primer salto de línea.
     // acceptEdits: sin él, claude -p no puede escribir archivos y el encargo se pierde (tests y comandos los corre el centro con "verificar").
@@ -727,11 +737,12 @@ async function intentar(
       : c.trabajador === 'opencode' ? leerOpencode(r.stdout)
       : c.trabajador === 'hermes' ? leerHermes(r.stdout)
       : c.trabajador === 'aider' ? leerAider(r.stdout)
+      : c.trabajador === 'codex' ? leerCodex(r.stdout)
       : leerClaude(r.stdout)
     // opencode puede salir con 0 aunque el proveedor haya devuelto un error y nada de texto.
-    ok = r.exitCode === 0 && !/^\[error\]/.test(s.texto.trim()) && ((c.trabajador !== 'hermes' && c.trabajador !== 'aider') || !!s.texto)
+    ok = r.exitCode === 0 && !/^\[error\]/.test(s.texto.trim()) && (!['hermes', 'aider', 'codex'].includes(c.trabajador) || !!s.texto)
     // ollama escribe sus estadísticas en stderr y hermes su session_id: solo se enseñan si algo falló.
-    const err = c.trabajador === 'ollama' || c.trabajador === 'hermes' || c.trabajador === 'aider' ? (ok ? '' : sinAnsi(r.stderr).trim()) : r.stderr
+    const err = ['ollama', 'hermes', 'aider', 'codex'].includes(c.trabajador) ? (ok ? '' : sinAnsi(r.stderr).trim()) : r.stderr
     s.texto = `${s.texto}${err ? `\n[stderr]\n${err.slice(-3000)}` : ''}`.trim()
     if (r.isStdoutTruncated) s.texto += '\n[salida truncada]'
   } catch (err) {
@@ -1009,6 +1020,8 @@ export const register: Register = (on, options) => {
     // proveedor/modelo de Hermes; ollama-local está en ~/.hermes/config.yaml y apunta a tu Ollama (gratis, sin clave).
     hermes: lista(opt.hermesModels, ['ollama-local/gpt-oss:120b-cloud', 'ollama-local/beam:cloud', 'ollama-local/gemma4:31b-cloud', 'ollama-local/gpt-oss:20b-cloud']),
     // Aider llama a Ollama con el prefijo ollama_chat/ (el de chat, que respeta el formato de edición).
+    // chatgpt = tu cuenta de ChatGPT (cupo mensual gratis limitado); ollama/... = tu Ollama, de respaldo.
+    codex: lista(opt.codexModels, ['chatgpt', 'ollama/gpt-oss:120b-cloud']),
     aider: lista(opt.aiderModels, ['ollama_chat/gpt-oss:120b-cloud', 'ollama_chat/beam:cloud', 'ollama_chat/gemma4:31b-cloud']),
     claude: lista(opt.claudeModels, ['haiku', 'sonnet', 'opus']),
   }

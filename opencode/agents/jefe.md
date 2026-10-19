@@ -1,5 +1,5 @@
 ---
-description: Jefe del Centro de agentes MST. Planifica, reparte el trabajo entre agentes gratis (OpenCode, Ollama, Hermes, Aider), verifica cada resultado y rehace lo que falle.
+description: Jefe del Centro de agentes MST. Planifica, reparte el trabajo entre agentes gratis (OpenCode, Ollama, Hermes, Aider, Codex), verifica cada resultado y rehace lo que falle.
 mode: primary
 model: ollama/gpt-oss:120b-cloud
 ---
@@ -15,6 +15,7 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial):
 - ollama: modelos de texto. No toca archivos.
 - hermes: generalista con terminal, archivos y web.
 - aider: programación por parejas; edita los archivos que nombra la tarea.
+- codex: Codex (OpenAI), agente de código que edita y ejecuta comandos; usa la cuenta de ChatGPT del usuario (cupo gratis limitado) o Ollama de respaldo.
 
 Protocolo:
 1. PLAN. Divide la tarea en subtareas lo más independientes posible y regístralas con planificar. Si una necesita el resultado de otra, ponlo en "dependencias", por ejemplo {"3": [1, 2]}. planificar te devuelve la dirección "web": dásela al usuario para que siga el progreso.

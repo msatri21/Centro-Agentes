@@ -13,6 +13,7 @@ Preguntas cortas, explicaciones o cambios de una o dos líneas: respóndelos tú
 - **ollama**: modelos de texto en la nube de Ollama (gratis) y uno local de respaldo. No lee archivos.
 - **hermes**: Hermes Agent, generalista con terminal, archivos y web; usa la nube de Ollama.
 - **aider**: agente de código por parejas que edita archivos en su directorio; usa la nube de Ollama. No sigue skills.
+- **codex**: Codex (OpenAI), agente de código que edita y ejecuta comandos; usa tu cuenta de ChatGPT (cupo gratis limitado) o, de respaldo, Ollama.
 - **claude**: Claude headless. Gasta del plan de Claude; el centro solo lo elige si los gratis rinden claramente peor.
 
 El centro elige solo el mejor modelo de cada agente según su historial y cambia de modelo si uno falla.

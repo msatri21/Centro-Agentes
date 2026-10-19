@@ -1,6 +1,6 @@
 {
   "name": "centro-agentes",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Centro de agentes MST: Claude como jefe reparte subtareas entre OpenCode, Ollama, Hermes, Aider y Claude headless, las verifica y lo muestra en vivo.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -27,6 +27,12 @@
       "title": "Modelos de Aider",
       "description": "Modelos de LiteLLM separados por coma; ollama_chat/... usa tu Ollama con sesión iniciada (gratis, sin clave)",
       "default": "ollama_chat/gpt-oss:120b-cloud,ollama_chat/beam:cloud,ollama_chat/gemma4:31b-cloud"
+    },
+    "codexModels": {
+      "type": "string",
+      "title": "Modelos de Codex",
+      "description": "chatgpt = tu cuenta de ChatGPT (inicia sesión con codex login; cupo gratis limitado). ollama/<modelo> = tu Ollama, gratis. Separados por coma, en orden de preferencia",
+      "default": "chatgpt,ollama/gpt-oss:120b-cloud"
     },
     "presupuestoClaudeTokens": {
       "type": "number",

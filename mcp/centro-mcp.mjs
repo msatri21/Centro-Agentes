@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { clave, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from '../hooks/nucleo.ts'
+import { clave, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from '../hooks/nucleo.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8').replace(/^﻿/, '')).version
@@ -30,11 +30,13 @@ const MODELOS = {
   ollama: ['gpt-oss:120b-cloud', 'beam:cloud', 'gemma4:31b-cloud', 'nemotron-3-super:cloud', 'gpt-oss:20b-cloud', 'llama3.2:3b'],
   hermes: ['ollama-local/gpt-oss:120b-cloud', 'ollama-local/beam:cloud', 'ollama-local/gemma4:31b-cloud', 'ollama-local/gpt-oss:20b-cloud'],
   aider: ['ollama_chat/gpt-oss:120b-cloud', 'ollama_chat/beam:cloud', 'ollama_chat/gemma4:31b-cloud'],
+  // chatgpt = tu cuenta de ChatGPT (cupo mensual gratis limitado); ollama/... = tu Ollama, de respaldo.
+  codex: ['chatgpt', 'ollama/gpt-oss:120b-cloud'],
   // Este servidor existe para cuando no queda Claude: Claude headless solo entra si se activa en la config.
   claude: CONFIG.conClaude ? ['haiku', 'sonnet'] : [],
   ...(CONFIG.modelos ?? {}),
 }
-const TRABAJADORES = ['opencode', 'ollama', 'hermes', 'aider', 'claude']
+const TRABAJADORES = ['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude']
 const TIMEOUT_MS = Math.min(10, Math.max(1, Number(CONFIG.timeoutMin ?? 8))) * 60_000
 const SILENCIO_MS = 120_000
 const MAX_CAMBIOS = 2
@@ -85,6 +87,17 @@ function ejecutable(nombre) {
     }
   }
   return nombre
+}
+// Atajos de npm que lanzan un script de Node (como codex): se ejecutan con este mismo Node.
+function comandoNode(nombre) {
+  if (process.platform === 'win32')
+    for (const dir of (process.env.PATH ?? '').split(';')) {
+      const cmd = dir && path.join(dir, nombre + '.cmd')
+      if (!cmd || !fs.existsSync(cmd)) continue
+      const m = fs.readFileSync(cmd, 'utf8').match(/"%dp0%\\([^"]+\.js)"/)
+      if (m) return [process.execPath, path.join(dir, m[1])]
+    }
+  return [nombre]
 }
 
 function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SILENCIO_MS } = {}, alTrozo = () => {}) {
@@ -213,6 +226,12 @@ async function argvDe(c, tarea, cwd) {
     const archivos = cwd ? nombrados.filter(a => fs.existsSync(path.join(cwd, a))) : []
     return { argv: [ejecutable('aider'), ...archivos, '--model', c.modelo, '--message', tarea, '--yes-always', '--no-git', '--no-pretty', '--no-stream', '--no-check-update', '--no-show-model-warnings', '--no-analytics', '--input-history-file', 'NUL', '--chat-history-file', 'NUL'] }
   }
+  if (c.trabajador === 'codex') {
+    // --json: un evento por línea. danger-full-access: en Windows su sandbox le impide escribir y ejecutar;
+    // trabaja en su carpeta (o en su copia aislada), como los demás agentes. La tarea va por stdin.
+    const local = c.modelo.startsWith('ollama/') ? ['--oss', '--local-provider', 'ollama', '-m', c.modelo.slice('ollama/'.length)] : c.modelo && c.modelo !== 'chatgpt' ? ['-m', c.modelo] : []
+    return { argv: [...comandoNode('codex'), 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check', ...local], stdin: tarea }
+  }
   return { argv: [ejecutable('claude'), '-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--model', c.modelo], stdin: tarea }
 }
 
@@ -244,10 +263,11 @@ async function intentar(c, input) {
     : c.trabajador === 'opencode' ? leerOpencode(r.stdout)
     : c.trabajador === 'hermes' ? leerHermes(r.stdout)
     : c.trabajador === 'aider' ? leerAider(r.stdout)
+    : c.trabajador === 'codex' ? leerCodex(r.stdout)
     : leerClaude(r.stdout)
-  const sinTexto = ['hermes', 'aider'].includes(c.trabajador) && !s.texto
+  const sinTexto = ['hermes', 'aider', 'codex'].includes(c.trabajador) && !s.texto
   const ok = r.exitCode === 0 && !r.cortado && !/^\[error\]/.test(s.texto.trim()) && !sinTexto
-  const err = ['ollama', 'hermes', 'aider'].includes(c.trabajador) ? (ok ? '' : sinAnsi(r.stderr).trim()) : r.stderr.trim()
+  const err = ['ollama', 'hermes', 'aider', 'codex'].includes(c.trabajador) ? (ok ? '' : sinAnsi(r.stderr).trim()) : r.stderr.trim()
   if (r.cortado) s.texto += `\n[cortado: ${r.cortado}]`
   if (err) s.texto += `\n[stderr] ${corto(err, 1500)}`
   Object.assign(trabajo, { estado: ok ? 'listo' : 'error', ms: Date.now() - t0, tokensIn: s.tokensIn, tokensOut: s.tokensOut, costo: s.costo, salida: corto(s.texto.trim(), 1500) })

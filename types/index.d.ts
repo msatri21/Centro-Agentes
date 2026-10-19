@@ -1,4 +1,4 @@
-export type Trabajador = 'ollama' | 'opencode' | 'hermes' | 'aider' | 'claude'
+export type Trabajador = 'ollama' | 'opencode' | 'hermes' | 'aider' | 'codex' | 'claude'
 
 export type Trabajo = {
   id: string

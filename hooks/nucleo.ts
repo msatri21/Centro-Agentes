@@ -97,11 +97,44 @@ const ERROR_DE_RED = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|geta
 export const esErrorDeRed = (texto: string) => ERROR_DE_RED.test(texto)
 // Errores de cuenta (clave caducada o no válida): no se arreglan solos, hay que renovar la clave.
 export const esErrorDeCuenta = (texto: string) =>
-  /api key has expired|invalid api key|api key (is )?(invalid|revoked)|unauthorized|\b401\b|authentication failed|not authenticated|please log ?in/i.test(texto)
+  /api key has expired|invalid api key|api key (is )?(invalid|revoked)|unauthorized|\b401\b|authentication failed|not authenticated|not logged in|please log ?in/i.test(texto)
 
 // Lo que se ve en la terminal de cada agente: su texto legible, no el JSON de sus eventos.
+// codex exec --json: un evento por línea. Lo que dice va en item.completed de tipo agent_message,
+// los comandos que ejecuta en command_execution y el uso de tokens en turn.completed.
+export function leerCodex(stdout: string): Salida {
+  const mensajes: string[] = []
+  let tokensIn: number | undefined
+  let tokensOut: number | undefined
+  for (const linea of stdout.split(/\r?\n/)) {
+    if (!linea.trim()) continue
+    try {
+      const ev = JSON.parse(linea)
+      if (ev.type === 'item.completed' && ev.item?.type === 'agent_message') mensajes.push(ev.item.text ?? '')
+      else if (ev.type === 'turn.completed') {
+        tokensIn = (tokensIn ?? 0) + (ev.usage?.input_tokens ?? 0)
+        tokensOut = (tokensOut ?? 0) + (ev.usage?.output_tokens ?? 0) + (ev.usage?.reasoning_output_tokens ?? 0)
+      } else if (ev.type === 'error' || ev.type === 'turn.failed') mensajes.push(`[error] ${ev.message ?? ev.error?.message ?? 'desconocido'}`)
+    } catch {}
+  }
+  return { texto: mensajes.join('\n').trim(), tokensIn, tokensOut }
+}
+
 export function vistaDe(trabajador: Trabajador, stdout: string): string {
   if (trabajador === 'ollama') return sinAnsi(stdout)
+  if (trabajador === 'codex')
+    return stdout
+      .split(/\r?\n/)
+      .map(l => {
+        try {
+          const ev = JSON.parse(l)
+          if (ev.type === 'item.completed' && ev.item?.type === 'agent_message') return ev.item.text
+          if (ev.type === 'item.started' && ev.item?.type === 'command_execution') return `› ${String(ev.item.command).replace(/^"[^"]*powershell\.exe"\s+-Command\s+/i, '')}`
+        } catch {}
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
   if (trabajador === 'opencode') return leerOpencode(stdout).texto
   if (trabajador === 'aider') return sinAnsi(stdout)
   if (trabajador === 'hermes')
