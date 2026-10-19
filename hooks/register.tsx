@@ -5,6 +5,10 @@ import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, grafica, pagina, tablero, VINO } from './figura'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
+import { clave, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
+import type { Candidato, Puntajes, Salida } from './nucleo'
+export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
+export type { Candidato } from './nucleo'
 
 // Los tonos del kit de anatomy para la terminal: grises y negros, y el vinotinto como único acento.
 const GRIS: Record<Tono, string> = { hi: '#d4d4d4', mid: '#8a8a8a', lo: '#5a5a5a', vino: VINO }
@@ -20,8 +24,6 @@ let seq = 0
 const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, [] as Trabajo[])
 const plan = atom({ plugin: 'centro-agentes', key: 'plan' } as const, null as Plan | null)
 
-type Celda = { n: number; suma: number; msTotal: number }
-type Puntajes = Record<string, Record<string, Celda>>
 
 type Opciones = {
   ollamaModels?: string
@@ -41,10 +43,7 @@ type Opciones = {
 
 type Modelos = Record<Trabajador, string[]>
 
-type Salida = { texto: string; tokensIn?: number; tokensOut?: number; ventana?: number; costo?: number }
 
-// Un "trabajador" del ranking es trabajador:modelo (o solo trabajador si usa el modelo por defecto).
-const clave = (t: Trabajador, modelo?: string) => (modelo ? `${t}:${modelo}` : t)
 
 const lista = (s: string | undefined, def: string[]) => {
   const l = (s ?? '').split(',').map(x => x.trim()).filter(Boolean)
@@ -87,88 +86,6 @@ const res = (x: unknown) => ({ result: JSON.stringify(x, null, 1) })
 // El motor pone los argumentos de la herramienta en e; el harness de tests, en e.input.
 const args = (e: object): unknown => (e as { input?: unknown }).input ?? e
 
-const sinAnsi =(s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-
-// claude -p --output-format json: un objeto con result, usage y modelUsage.
-// claude -p --output-format stream-json: un evento por línea; el último, type "result", trae resultado y uso.
-export function leerClaude(stdout: string): Salida {
-  try {
-    const lineas = stdout.split(/\r?\n/).filter(l => l.trim())
-    const ultima = [...lineas].reverse().find(l => l.includes('"type":"result"')) ?? stdout
-    const j = JSON.parse(ultima)
-    const u = j.usage ?? {}
-    const m = Object.values(j.modelUsage ?? {})[0] as { contextWindow?: number } | undefined
-    return {
-      texto: String(j.result ?? ''),
-      tokensIn: (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
-      tokensOut: u.output_tokens ?? 0,
-      ventana: m?.contextWindow,
-      costo: j.total_cost_usd,
-    }
-  } catch {
-    return { texto: stdout }
-  }
-}
-
-// ollama run --verbose: estadísticas al final de stderr.
-export function leerOllama(stdout: string, stderr: string): Salida {
-  const s = sinAnsi(stderr)
-  const num = (re: RegExp) => {
-    const m = s.match(re)
-    return m ? Number(m[1]) : undefined
-  }
-  return { texto: sinAnsi(stdout), tokensIn: num(/prompt eval count:\s*(\d+)/), tokensOut: num(/(?:^|\n)eval count:\s*(\d+)/) }
-}
-
-// opencode run --format json: un evento JSON por línea.
-// hermes chat --format stream-json: eventos "text" mientras escribe y un "result" final con exit_code y tokens.
-export function leerHermes(stdout: string): Salida & { exitCode?: number } {
-  let texto = ''
-  let fin: any
-  for (const linea of stdout.split(/\r?\n/)) {
-    if (!linea.trim()) continue
-    try {
-      const ev = JSON.parse(linea)
-      if (ev.type === 'text') texto += ev.text ?? ''
-      else if (ev.type === 'result') fin = ev
-      else if (ev.type === 'error') texto += `\n[error] ${ev.message ?? ev.error ?? 'desconocido'}`
-    } catch {}
-  }
-  const t = fin?.tokens ?? {}
-  return {
-    texto: String(fin?.text ?? texto).trim(),
-    tokensIn: fin ? (t.input ?? 0) + (t.cache_read ?? 0) + (t.cache_write ?? 0) : undefined,
-    tokensOut: fin ? (t.output ?? 0) : undefined,
-    exitCode: fin?.exit_code,
-  }
-}
-
-export function leerOpencode(stdout: string): Salida {
-  let texto = ''
-  let tokensIn = 0
-  let tokensOut = 0
-  let costo = 0
-  for (const linea of stdout.split(/\r?\n/)) {
-    if (!linea.trim()) continue
-    let ev: any
-    try {
-      ev = JSON.parse(linea)
-    } catch {
-      texto += linea + '\n'
-      continue
-    }
-    if (ev.type === 'text') texto += (ev.part?.text ?? '') + '\n'
-    else if (ev.type === 'error') texto += `[error] ${ev.error?.data?.message ?? ev.error?.name ?? 'desconocido'}\n`
-    else if (ev.type === 'step_finish') {
-      const t = ev.part?.tokens ?? {}
-      tokensIn += (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
-      tokensOut += (t.output ?? 0) + (t.reasoning ?? 0)
-      costo += ev.part?.cost ?? 0
-    }
-  }
-  return { texto: texto.trim(), tokensIn, tokensOut, costo }
-}
-
 // --- Red: proxy de empresa, certificados y salida rápida cuando algo está bloqueado ---
 
 // Lee el proxy de Windows de la salida de `reg query ...\Internet Settings`: "host:puerto" o "http=...;https=...".
@@ -196,12 +113,6 @@ export function entornoDeRed(proxy?: string, ca?: string): Record<string, string
   return e
 }
 
-// Errores que indican que la red o el proxy bloquean, no que el modelo lo hizo mal.
-const ERROR_DE_RED = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|socket hang up|tunneling socket|proxy authentication|\b407\b|self[- ]signed certificate|unable to (get|verify) (local )?issuer|UNABLE_TO_VERIFY|CERT_HAS_EXPIRED|certificate verify failed|network is unreachable|connection (refused|reset|timed out)|dial tcp|i\/o timeout|fetch failed|Connection error|Cannot connect to API|Unable to connect/i
-export const esErrorDeRed = (texto: string) => ERROR_DE_RED.test(texto)
-// Errores de cuenta (clave caducada o no válida): no se arreglan solos, hay que renovar la clave.
-export const esErrorDeCuenta = (texto: string) =>
-  /api key has expired|invalid api key|api key (is )?(invalid|revoked)|unauthorized|\b401\b|authentication failed|not authenticated|please log ?in/i.test(texto)
 
 // Un host por agente para comprobar si se llega a él (cualquier código HTTP vale; 000 o 407 no).
 const HOST_DE: Record<Trabajador, string> = {
@@ -256,7 +167,8 @@ async function correrEnVivo(
   alTrozo: (stdout: string) => void,
   alCortar: (cortar: (por: string) => void) => void = () => {},
 ): Promise<Corrida> {
-  const env = { ...red, ...(await entornoHermes($)), OLLAMA_API_BASE: 'http://127.0.0.1:11434', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+  // PWD: OpenCode toma su carpeta de ahí y no del cwd del proceso.
+  const env = { ...red, ...(await entornoHermes($)), OLLAMA_API_BASE: 'http://127.0.0.1:11434', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(init.cwd ? { PWD: init.cwd } : {}) }
   const flujo = $.process.spawn({ argv, cwd: init.cwd, input: init.stdin, env: Object.keys(env).length ? env : undefined })
   let stdout = ''
   let stderr = ''
@@ -308,36 +220,6 @@ async function ejecutar(
   }
 }
 
-// Lo que se ve en la terminal de cada agente: su texto legible, no el JSON de sus eventos.
-export function vistaDe(trabajador: Trabajador, stdout: string): string {
-  if (trabajador === 'ollama') return sinAnsi(stdout)
-  if (trabajador === 'opencode') return leerOpencode(stdout).texto
-  if (trabajador === 'aider') return sinAnsi(stdout)
-  if (trabajador === 'hermes')
-    return stdout
-      .split(/\r?\n/)
-      .map(l => {
-        try {
-          const ev = JSON.parse(l)
-          return ev.type === 'text' ? ev.text : ev.type === 'tool' || ev.tool || ev.name ? `\n› ${ev.tool ?? ev.name}\n` : ''
-        } catch {
-          return ''
-        }
-      })
-      .join('')
-  const partes: string[] = []
-  for (const linea of stdout.split(/\r?\n/)) {
-    try {
-      const ev = JSON.parse(linea)
-      if (ev.type === 'assistant')
-        for (const b of ev.message?.content ?? []) {
-          if (b.type === 'text') partes.push(b.text)
-          else if (b.type === 'tool_use') partes.push(`› ${b.name}`)
-        }
-    } catch {}
-  }
-  return partes.join('\n')
-}
 
 const marcar = ($: EngineInterface, n: number | undefined, cambio: Partial<Plan['subtareas'][number]>) =>
   n === undefined
@@ -352,9 +234,6 @@ const AHORRO_KEY = 'ahorro'
 const MAX_HIST = 200
 type Ahorro = { usd: number; gastoClaude: number; trabajos: number }
 
-// Lo que habría costado con Claude Sonnet 5.5 ($2 entrada / $10 salida por millón; precios oficiales al 6-oct-2026).
-// shortcut: cuenta toda la entrada a precio normal aunque parte fuera caché (más barata); sobreestima algo el ahorro.
-export const costoComoClaude = (tokIn = 0, tokOut = 0) => (tokIn * 2 + tokOut * 10) / 1_000_000
 
 async function guardarEnHistorial($: EngineInterface, t: Trabajo) {
   const h = ((await $.store.get(HIST_KEY)) ?? []) as Trabajo[]
@@ -752,7 +631,6 @@ function encenderWeb($: EngineInterface) {
   })
 }
 
-export type Candidato = { trabajador: Trabajador; modelo: string }
 type Intento = { id: string; ok: boolean; ms: number; s: Salida; sinRed: boolean }
 // El Ollama local no necesita internet: es el último recurso cuando la red está bloqueada.
 const esLocal = (c: Candidato) => c.trabajador === 'ollama' && !c.modelo.endsWith('cloud')
@@ -790,22 +668,6 @@ const caidosAhora = () => new Set([...caidos].filter(([, t]) => Date.now() - t <
 const todosLosCandidatos = (m: Modelos): Candidato[] =>
   (['opencode', 'ollama', 'hermes', 'aider', 'claude'] as const).flatMap(t => m[t].map(modelo => ({ trabajador: t, modelo })))
 
-// Un modelo sin probar vale PREVIO: gana a uno que rinde mal y pierde contra uno bueno, así el centro explora solo.
-const PREVIO = 6.5
-// Claude headless gasta del plan de Claude: solo gana si rinde claramente mejor que los gratis.
-const RECARGO_CLAUDE = 1.5
-export function ordenar(tabla: Puntajes, categoria: string, candidatos: Candidato[], excluidos: Set<string>): Candidato[] {
-  const fila = tabla[categoria] ?? {}
-  const nota = (c: Candidato) => {
-    const celda = fila[clave(c.trabajador, c.modelo)]
-    return (celda && celda.n > 0 ? celda.suma / celda.n : PREVIO) - (c.trabajador === 'claude' ? RECARGO_CLAUDE : 0)
-  }
-  return candidatos
-    .map((c, i) => ({ c, i, n: nota(c) }))
-    .filter(x => !excluidos.has(clave(x.c.trabajador, x.c.modelo)))
-    .sort((a, b) => b.n - a.n || a.i - b.i)
-    .map(x => x.c)
-}
 
 // Ejecuta la tarea con un trabajador y modelo, y deja su fila en el historial.
 async function intentar(
@@ -835,7 +697,8 @@ async function intentar(
     argv = ['ollama', 'run', '--verbose', '--nowordwrap', '--hidethinking', c.modelo]
     stdin = input.tarea
   } else if (c.trabajador === 'opencode') {
-    argv = ['opencode', 'run', '--format', 'json', ...(c.modelo ? ['-m', c.modelo] : []), input.tarea]
+    // --standalone: con el servicio compartido de OpenCode, la carpeta de una copia aislada queda abierta y no se puede borrar.
+    argv = ['opencode', 'run', '--standalone', '--format', 'json', ...(c.modelo ? ['-m', c.modelo] : []), input.tarea]
   } else if (c.trabajador === 'hermes') {
     // "proveedor/modelo": el proveedor es el de config.yaml (ollama-local = tu Ollama con sesión iniciada, sin clave).
     const corte = c.modelo.indexOf('/')

@@ -52,6 +52,8 @@ En la configuración del plugin: modelos de cada agente, tiempo máximo por tare
 
 ## Desarrollo
 
+Prueba rápida del servidor MCP (sin lanzar agentes): `node mcp/prueba-mcp.mjs`.
+
 ```bash
 claude plugin test .
 ```
@@ -59,6 +61,29 @@ claude plugin test .
 ```bash
 claude plugin validate .
 ```
+
+## OpenCode como jefe (cuando se acaba Claude)
+
+El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mismas herramientas: `planificar`, `delegar`, `delegar_varios`, `registrar_auditoria`, `cerrar_subtarea` y `ranking`, más `juntar_copias`, que junta de una vez las ramas de las copias aisladas del chat. Así OpenCode, con un modelo gratis de Ollama, puede hacer de jefe. Reutiliza el código del plugin (`hooks/nucleo.ts`, `hooks/extras.ts`) y necesita Node 24 o más reciente.
+
+1. En `~/.config/opencode/opencode.jsonc`, añade el servidor:
+
+   ```jsonc
+   "mcp": {
+     "centro-agentes": {
+       "type": "local",
+       "command": ["node", "<ruta>/centro-agentes/mcp/centro-mcp.mjs"],
+       "enabled": true,
+       "timeout": 900000
+     }
+   }
+   ```
+
+   `timeout` es en milisegundos y cubre también la ejecución: repartir y esperar a los agentes tarda minutos.
+2. Copia `opencode/agents/jefe.md` y `opencode/commands/mst.md` de este repo a `~/.config/opencode/agents/` y `~/.config/opencode/commands/`: el agente `jefe` (modo `primary`, modelo `ollama/gpt-oss:120b-cloud`) lleva el protocolo, y `/mst` le pasa la tarea. Pon también `"model": "ollama/gpt-oss:120b-cloud"` en la config para no depender de OpenCode Zen.
+3. Opcional, en `~/.centro-agentes/opencode-jefe.json`: `{ "ntfyTema": "...", "conClaude": false, "timeoutMin": 8 }`.
+
+Uso: `opencode` en la carpeta del proyecto, cambia al agente **jefe** (tecla Tab) y escribe `/mst <tarea>`. La web es la misma (`http://127.0.0.1:47321`) y el chat aparece en **todos los chats** como `OpenCode jefe`. Con OpenCode como jefe, Claude headless no se usa salvo que pongas `"conClaude": true`, y las skills se ignoran.
 
 ## OpenCode con Ollama (gratis, sin clave)
 
