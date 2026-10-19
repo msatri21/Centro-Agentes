@@ -51,6 +51,10 @@ const CARPETA = path.basename(process.cwd())
 let plan = null
 const trabajos = []
 const encargos = new Map()
+// Cómo cortar cada trabajo en marcha (para el botón Cancelar de la web) y lo que pasó mientras el jefe no miraba.
+const cortadores = new Map()
+const CANCELADO = 'cancelado desde la web'
+const avisosWeb = []
 const caidos = new Map()
 const motivo = new Map()
 const ocupados = new Map()
@@ -101,7 +105,7 @@ function comandoNode(nombre) {
   return [nombre]
 }
 
-function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SILENCIO_MS } = {}, alTrozo = () => {}) {
+function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SILENCIO_MS } = {}, alTrozo = () => {}, alCortar = () => {}) {
   return new Promise(resolve => {
     let stdout = ''
     let stderr = ''
@@ -123,6 +127,7 @@ function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SI
       if (process.platform === 'win32') spawn('taskkill', ['/pid', String(p.pid), '/T', '/F'], { windowsHide: true })
       else p.kill('SIGKILL')
     }
+    alCortar(matar)
     const total = setTimeout(() => matar(`tiempo máximo de ${Math.round(timeoutMs / 60_000)} min`), timeoutMs)
     let silencio = setTimeout(() => matar(`${silencioMs / 1000} s sin escribir nada`), silencioMs)
     const vivo = () => {
@@ -258,7 +263,8 @@ async function intentar(c, input) {
     ultimo = Date.now()
     trabajo.salida = vistaDe(c.trabajador, crudo).slice(-1500)
     guardar()
-  })
+  }, cortar => cortadores.set(id, cortar))
+  cortadores.delete(id)
   const s =
     c.trabajador === 'ollama' ? leerOllama(r.stdout, r.stderr)
     : c.trabajador === 'opencode' ? leerOpencode(r.stdout)
@@ -329,6 +335,8 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
       ocupados.set(k, (ocupados.get(k) ?? 1) - 1)
     }
     if (r.ok) break
+    // Cancelado a mano desde la web: no se prueba otro modelo.
+    if (r.s.texto.includes(`[cortado: ${CANCELADO}]`)) break
     if (esErrorDeCuenta(r.s.texto)) {
       for (const m of MODELOS[c.trabajador]) caidos.set(clave(c.trabajador, m), Date.now() + 60 * 60_000 - CAIDO_MS)
       motivo.set(c.trabajador, 'clave caducada')
@@ -469,11 +477,39 @@ function pagina() {
   })
   return paginaCentro({
     clave: claveWeb(), chat: CARPETA, jefe: 'OpenCode', plan, trabajos, agentes: estadoAgente, modelos: MODELOS,
-    rendimiento: agregarRendimiento(puntajes(), 8), ahorro, cancelables: [], relanzables: [], version: VERSION,
+    rendimiento: agregarRendimiento(puntajes(), 8), ahorro, version: VERSION,
+    cancelables: trabajos.filter(t => t.estado === 'corriendo' && cortadores.has(t.id)).map(t => ({ id: t.id, titulo: `${t.trabajador.split(':')[0]} · ${corto(t.tarea, 30)}` })),
+    relanzables: (plan?.subtareas ?? []).filter(x => x.estado !== 'en curso' && encargos.has(x.n)).map(x => ({ n: x.n, titulo: corto(x.titulo, 40) })),
   })
 }
 
 let guardando
+// Órdenes de la web: el servidor las deja en acciones.jsonl del chat. Se ignoran las anteriores al arrancar.
+let leidoHasta = -1
+function atenderAcciones() {
+  let texto = ''
+  try {
+    texto = fs.readFileSync(path.join(DIR, 'acciones.jsonl'), 'utf8')
+  } catch {}
+  if (leidoHasta < 0) { leidoHasta = texto.length; return }
+  const nuevas = texto.slice(leidoHasta)
+  leidoHasta = texto.length
+  for (const linea of nuevas.split('\n')) {
+    if (!linea.trim()) continue
+    let a
+    try { a = JSON.parse(linea) } catch { continue }
+    if (a.tipo === 'cancelar' && typeof a.id === 'string' && cortadores.has(a.id)) {
+      cortadores.get(a.id)(CANCELADO)
+      avisosWeb.push(`Cancelaste desde la web el trabajo ${a.id}.`)
+    }
+    if (a.tipo === 'relanzar' && Number.isInteger(a.n) && encargos.has(a.n)) {
+      avisosWeb.push(`Relanzando la subtarea ${a.n} desde la web: cuando termine, verifica su resultado y puntúalo.`)
+      void delegarUno({ ...encargos.get(a.n) }).then(r => avisosWeb.push(`Resultado del relanzamiento de la subtarea ${a.n} (id ${r.id ?? '-'}, ${r.exito ? 'terminó' : 'falló'}): audítalo con registrar_auditoria.`))
+    }
+  }
+}
+setInterval(atenderAcciones, 1500).unref()
+
 function guardar() {
   // Como mucho una escritura cada medio segundo: los agentes avisan de cada trozo de salida.
   if (guardando) return
@@ -635,7 +671,8 @@ async function atender(m) {
     if (m.method === 'ping') return enviar({ jsonrpc: '2.0', id: m.id, result: {} })
     if (m.method === 'tools/list') return enviar({ jsonrpc: '2.0', id: m.id, result: { tools: ES_TRABAJADOR ? [] : HERRAMIENTAS } })
     if (m.method === 'tools/call') {
-      const r = await llamar(m.params?.name, m.params?.arguments ?? {})
+      let r = await llamar(m.params?.name, m.params?.arguments ?? {})
+      if (avisosWeb.length && r && typeof r === 'object' && !Array.isArray(r)) r = { ...r, avisos_web: avisosWeb.splice(0) }
       return enviar({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: JSON.stringify(r, null, 1) }], isError: !!r?.error } })
     }
     enviar({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: `Método no soportado: ${m.method}` } })

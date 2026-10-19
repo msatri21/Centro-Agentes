@@ -35,6 +35,7 @@ const DERECHA = [
 export function crearGrafo(montaje) {
   const sinMovimiento = matchMedia('(prefers-reduced-motion: reduce)').matches
   montaje.innerHTML = `<div class="lienzo"><svg viewBox="0 0 1400 840" role="img" aria-label="Grafo animado del Centro de agentes MST: el usuario, el jefe, los agentes, verificación, auditoría, juntar e informe"></svg></div>
+<div id="g-lista" class="g-lista"></div>
 <section class="paso" aria-live="polite"><div><p class="rotulo">Paso actual</p><h2><i id="g-num">REPOSO</i><span id="g-titulo"></span></h2></div>
 <div><p id="g-texto"></p><div class="fases" id="g-barra"></div><div class="fases-nombres" id="g-nombres"></div></div></section><div id="g-tip" role="tooltip"></div>`
   const svg = montaje.querySelector('svg')
@@ -188,6 +189,28 @@ export function crearGrafo(montaje) {
     nodos.informe.classList.toggle('activo', fase.indice === 7)
     listo.style.opacity = fase.indice === 7 ? 1 : 0
     movil.classList.toggle('vibra', fase.indice === 7 && !sinMovimiento)
+
+    // En pantallas estrechas el grafo se esconde (CSS) y esta lista cuenta lo mismo: una fila por agente.
+    const lista = montaje.querySelector('#g-lista')
+    lista.replaceChildren(...AGENTES.map(a => {
+      const e = estadoAgente(d, a)
+      const fila = document.createElement('div')
+      fila.className = `g-fila${e.activo ? ' activo' : ''}${e.falla ? ' falla' : ''}${e.apartado ? ' apartado' : ''}`
+      const estado = e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'
+      const cab = document.createElement('div')
+      cab.className = 'g-cab'
+      const nombre = document.createElement('b')
+      nombre.textContent = INFO[a].nombre
+      const st = document.createElement('span')
+      st.textContent = `${estado}${e.nota !== undefined ? ` · ${e.nota}/10` : ''}`
+      cab.append(nombre, st)
+      const sub = document.createElement('small')
+      sub.textContent = e.apartado || corto(e.modelo || (d.modelos?.[a]?.[0] ?? ''), 40)
+      const pre = document.createElement('pre')
+      pre.textContent = e.apartado ? '' : e.lineas.map(l => corto(l, 48)).join('\n')
+      fila.append(cab, sub, pre)
+      return fila
+    }))
 
     // Tarjetas de subtareas junto al jefe.
     const subs = (d.plan?.subtareas ?? []).slice(0, 12)

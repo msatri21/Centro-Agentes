@@ -54,7 +54,8 @@ En la configuración del plugin: modelos de cada agente, tiempo máximo por tare
 
 - **El grafo grande**, en vivo con los datos reales: tú, el jefe, los 6 agentes con la salida real de su terminal, verificar, auditoría, juntar e informe. Las partículas son lo que pasa de verdad (un encargo que sale, un resultado, una nota, un modelo que falla y pasa a otro). Se actualiza cada 2 s sin recargar, así las animaciones no se cortan. Pasa el ratón por un nodo para ver su detalle.
 - **Gráficas del estilo anatomy** debajo: tokens por agente, rendimiento por modelo, línea de tiempo de los trabajos, notas del jefe y ahorro acumulado. Con Claude de jefe, además, la figura isométrica y la tarjeta de detalles.
-- Subtareas, historial, botones de Cancelar y Relanzar, y el aviso al terminar.
+- Subtareas, historial, botones de **Cancelar** y **Relanzar** (también con OpenCode de jefe: el servidor MCP lee las órdenes de la web y se las cuenta al jefe en su siguiente llamada, en `avisos_web`), y el aviso al terminar.
+- En pantallas estrechas (móvil) el grafo se esconde y sale una fila por agente con su estado, modelo y última línea.
 
 Estilo basado en [anatomy](https://github.com/wheresryan22/anatomy) (MIT, ver `hooks/anatomy/LICENSE`).
 
