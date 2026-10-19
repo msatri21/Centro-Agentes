@@ -185,3 +185,82 @@ export function ordenar(tabla: Puntajes, categoria: string, candidatos: Candidat
     .sort((a, b) => b.n - a.n || a.i - b.i)
     .map(x => x.c)
 }
+
+// --- Carpeta compartida: varios agentes en la misma rama sin pisarse ---
+
+// Dos rutas chocan si son la misma o una cuelga de la otra ("src/" choca con "src/a.py"); "*" choca con todo.
+const norma = (p: string) => p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+export function chocan(a: string, b: string): boolean {
+  const x = norma(a)
+  const y = norma(b)
+  return x === '*' || y === '*' || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`)
+}
+
+// Cerrojos por archivo y carpeta de trabajo. Quien pide archivos que otro tiene espera su turno (en orden de llegada);
+// quien toca archivos distintos entra al momento. Sin archivos declarados se toma "*": espera a todos y todos le esperan.
+export class Cerrojos {
+  private tomados = new Map<string, { id: number; archivos: string[] }[]>()
+  private esperando = new Map<string, { id: number; archivos: string[]; listo: () => void }[]>()
+  private siguiente = 0
+
+  private libre(carpeta: string, archivos: string[]) {
+    return !(this.tomados.get(carpeta) ?? []).some(t => t.archivos.some(a => archivos.some(b => chocan(a, b))))
+  }
+
+  // Quién tuvo qué y cuándo (desde que entró hasta que soltó), para saber qué archivos eran de otros durante el trabajo de uno.
+  private historia: { carpeta: string; id: number; archivos: string[]; desde: number; hasta?: number }[] = []
+
+  // Devuelve cómo soltar el cerrojo; el id y el momento de entrada van en la propia función.
+  async tomar(carpeta: string, archivos?: string[]): Promise<(() => void) & { id: number; desde: number }> {
+    const mios = archivos?.length ? archivos : ['*']
+    const id = this.siguiente++
+    // Se respeta el orden: si alguien que llegó antes espera por algo que choca con esto, este también espera.
+    const antes = (this.esperando.get(carpeta) ?? []).some(w => w.archivos.some(a => mios.some(b => chocan(a, b))))
+    if (antes || !this.libre(carpeta, mios)) await new Promise<void>(listo => this.esperando.set(carpeta, [...(this.esperando.get(carpeta) ?? []), { id, archivos: mios, listo }]))
+    else this.tomados.set(carpeta, [...(this.tomados.get(carpeta) ?? []), { id, archivos: mios }])
+    const desde = Date.now()
+    this.historia = this.historia.filter(h => h.hasta === undefined || desde - h.hasta < 3_600_000)
+    this.historia.push({ carpeta, id, archivos: mios, desde })
+    const soltar = () => {
+      const h = this.historia.find(x => x.id === id)
+      if (h) h.hasta = Date.now()
+      this.tomados.set(carpeta, (this.tomados.get(carpeta) ?? []).filter(t => t.id !== id))
+      this.despertar(carpeta)
+    }
+    return Object.assign(soltar, { id, desde })
+  }
+
+  private despertar(carpeta: string) {
+    const cola = this.esperando.get(carpeta) ?? []
+    const resto: typeof cola = []
+    for (const w of cola) {
+      const bloqueadoPorOtroEnCola = resto.some(r => r.archivos.some(a => w.archivos.some(b => chocan(a, b))))
+      if (!bloqueadoPorOtroEnCola && this.libre(carpeta, w.archivos)) {
+        // Se reserva ya, antes de despertar, para que otro que llegue entre medias no se le adelante.
+        this.tomados.set(carpeta, [...(this.tomados.get(carpeta) ?? []), { id: w.id, archivos: w.archivos }])
+        w.listo()
+      } else resto.push(w)
+    }
+    this.esperando.set(carpeta, resto)
+  }
+
+  // Los archivos de los demás que trabajaron en la carpeta a la vez que yo (desde que entré), hayan terminado ya o no.
+  deOtros(carpeta: string, miId: number, desde: number) {
+    return this.historia.filter(h => h.carpeta === carpeta && h.id !== miId && (h.hasta === undefined || h.hasta >= desde)).flatMap(h => h.archivos)
+  }
+}
+
+// Archivos modificados según `git status --porcelain` (nuevos, cambiados o borrados), sin las comillas de git.
+export function archivosCambiados(porcelain: string): string[] {
+  return porcelain
+    .split(/\r?\n/)
+    .map(l => l.slice(3).trim().replace(/^"|"$/g, '').replace(/^.* -> /, ''))
+    .filter(Boolean)
+}
+
+// Lo que cambió un agente fuera de lo que tenía permitido: lo nuevo respecto a antes de empezar, que ni era suyo ni de otro que trabajaba a la vez.
+export function fueraDeAlcance(antes: string[], despues: string[], suyos: string[], deOtros: string[]): string[] {
+  if (suyos.includes('*')) return []
+  const ya = new Set(antes.map(norma))
+  return despues.filter(f => !ya.has(norma(f)) && !suyos.some(s => chocan(s, f)) && !deOtros.some(o => chocan(o, f)))
+}

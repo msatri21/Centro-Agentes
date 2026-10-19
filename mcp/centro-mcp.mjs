@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { clave, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from '../hooks/nucleo.ts'
+import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from '../hooks/nucleo.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8').replace(/^﻿/, '')).version
@@ -282,7 +282,7 @@ const marcar = (n, cambio) => {
 const caidosAhora = () => new Set([...caidos].filter(([, t]) => Date.now() - t < CAIDO_MS).map(([k]) => k))
 const candidatos = () => TRABAJADORES.flatMap(t => (MODELOS[t] ?? []).map(modelo => ({ trabajador: t, modelo })))
 
-async function delegarUno(input, sinBloqueo = false) {
+async function delegarSinCerrojo(input, sinBloqueo = false) {
   const categoria = String(input.categoria ?? '').toLowerCase().trim() || 'general'
   if (input.subtarea !== undefined && !sinBloqueo) {
     const faltan = bloqueos(plan?.subtareas ?? [], input.subtarea)
@@ -360,6 +360,34 @@ async function delegarUno(input, sinBloqueo = false) {
     aviso: verificacion
       ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
       : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
+  }
+}
+
+// Carpeta compartida: sin "aislar", los agentes de una misma carpeta (y rama) esperan su turno solo si chocan en archivos.
+// Con "archivos" declarados, los que tocan cosas distintas trabajan a la vez; sin ellos se toma todo el repo.
+const cerrojos = new Cerrojos()
+async function cambiosGit(cwd) {
+  const r = await git(cwd, ['status', '--porcelain'])
+  return r.exitCode === 0 ? archivosCambiados(r.stdout) : null
+}
+async function delegarUno(input, sinBloqueo = false) {
+  if (!input.cwd || input.aislar) return delegarSinCerrojo(input, sinBloqueo)
+  const cwd = path.resolve(input.cwd)
+  const t0 = Date.now()
+  const liberar = await cerrojos.tomar(process.platform === 'win32' ? cwd.toLowerCase() : cwd, input.archivos)
+  const esperoSeg = Math.round((Date.now() - t0) / 1000)
+  const antes = await cambiosGit(cwd)
+  try {
+    const r = await delegarSinCerrojo({ ...input, cwd }, sinBloqueo)
+    const despues = antes && (await cambiosGit(cwd))
+    const fuera = despues ? fueraDeAlcance(antes, despues, input.archivos?.length ? input.archivos : ['*'], cerrojos.deOtros(process.platform === 'win32' ? cwd.toLowerCase() : cwd, liberar.id, liberar.desde)) : []
+    return {
+      ...r,
+      carpeta_compartida: { archivos: input.archivos?.length ? input.archivos : ['*'], ...(esperoSeg ? { esperoSeg } : {}) },
+      ...(fuera.length ? { fuera_de_alcance: fuera, aviso: `${r.aviso ?? ''} OJO: el agente tocó archivos que no eran suyos: ${fuera.join(', ')}. Revísalos.`.trim() } : {}),
+    }
+  } finally {
+    liberar()
   }
 }
 
@@ -538,6 +566,7 @@ const CAMPOS_ENCARGO = {
   cwd: { type: 'string', description: 'Carpeta de trabajo (existente). Distinta por tarea si varias editan archivos sin aislar' },
   aislar: { type: 'boolean', description: 'Si cwd es un repo git: el agente trabaja en su propia copia (git worktree, rama mst/...). Junta luego con "copia.juntar"' },
   verificar: { type: 'string', description: 'Comando que comprueba el resultado (p. ej. npm test); el centro lo ejecuta donde trabajó el agente' },
+  archivos: { type: 'array', items: { type: 'string' }, description: 'Carpeta compartida (sin aislar): los archivos o carpetas que este agente puede tocar. Los que tocan cosas distintas trabajan a la vez en la misma rama; los que chocan esperan turno. Sin esto se reserva todo el repo y espera a los demás' },
   skills: { type: 'array', items: { type: 'string' }, description: SKILLS_NOTA },
 }
 const HERRAMIENTAS = [

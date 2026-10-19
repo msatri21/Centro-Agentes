@@ -5,7 +5,7 @@ import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, grafica, pagina, tablero, VINO } from './figura'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
-import { clave, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
+import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
@@ -63,7 +63,7 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 
 Protocolo:
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
-2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo delegar_varios: arrancan solas cuando terminan bien aquellas de las que dependen.
+2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo delegar_varios: arrancan solas cuando terminan bien aquellas de las que dependen.
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
    Skills: si una subtarea es de un tipo para el que puede haber una skill (diseño, una plataforma, un formato de archivo, un framework, pruebas en navegador...), llama a mcp__centro-agentes__buscar_skills con unas palabras de la tarea y pasa los nombres que encajen en "skills" del encargo; el agente leerá su SKILL.md y la seguirá (las tareas con skills no van a Ollama, que no lee archivos). Usa tú también tus skills para verificar cuando ayuden (p. ej. un navegador para comprobar una web).
 4. VERIFICA cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
@@ -851,6 +851,8 @@ type Encargo = {
   aislar?: boolean
   /** Comando que comprueba el resultado (p. ej. npm test), ejecutado en la carpeta donde trabajó el agente */
   verificar?: string
+  /** Carpeta compartida (sin aislar): archivos o carpetas que este agente puede tocar; sin esto se reserva todo el repo */
+  archivos?: string[]
 }
 
 const git = ($: EngineInterface, cwd: string, a: string[]) => $.process.run(['git', '-C', cwd, ...a], { timeoutMs: 60_000 })
@@ -902,7 +904,7 @@ async function verificarEn($: EngineInterface, cwd: string | undefined, comando:
 const ocupados = new Map<string, number>()
 
 // Elige el mejor modelo para el encargo, lo ejecuta y, si falla, cambia solo al siguiente.
-async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, sinBloqueo = false) {
+async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, sinBloqueo = false) {
   const categoria = String(input.categoria ?? '').toLowerCase().trim() || 'general'
   if (input.subtarea !== undefined && !sinBloqueo) {
     const faltan = bloqueos((await read($, plan))?.subtareas ?? [], input.subtarea)
@@ -1010,6 +1012,36 @@ async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, 
   }
 }
 
+// Carpeta compartida: sin "aislar", los agentes de una misma carpeta (y rama) esperan su turno solo si chocan en archivos.
+// Con "archivos" declarados, los que tocan cosas distintas trabajan a la vez; sin ellos se toma todo el repo.
+const cerrojos = new Cerrojos()
+const llaveCarpeta = (cwd: string) => cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+async function cambiosGit($: EngineInterface, cwd: string) {
+  const r = await git($, cwd, ['status', '--porcelain']).catch(() => undefined)
+  return r && r.exitCode === 0 ? archivosCambiados(r.stdout) : null
+}
+async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, sinBloqueo = false) {
+  if (!input.cwd || input.aislar) return delegarSinCerrojo($, modelos, input, timeoutMs, sinBloqueo)
+  const llave = llaveCarpeta(input.cwd)
+  const t0 = Date.now()
+  const liberar = await cerrojos.tomar(llave, input.archivos)
+  const esperoSeg = Math.round((Date.now() - t0) / 1000)
+  const antes = await cambiosGit($, input.cwd)
+  try {
+    const r = (await delegarSinCerrojo($, modelos, input, timeoutMs, sinBloqueo)) as Record<string, any>
+    const despues = antes && (await cambiosGit($, input.cwd))
+    const suyos = input.archivos?.length ? input.archivos : ['*']
+    const fuera = despues ? fueraDeAlcance(antes, despues, suyos, cerrojos.deOtros(llave, liberar.id, liberar.desde)) : []
+    return {
+      ...r,
+      carpeta_compartida: { archivos: suyos, ...(esperoSeg ? { esperoSeg } : {}) },
+      ...(fuera.length ? { fuera_de_alcance: fuera, aviso: `${r.aviso ?? ''} OJO: el agente tocó archivos que no eran suyos: ${fuera.join(', ')}. Revísalos.`.trim() } : {}),
+    }
+  } finally {
+    liberar()
+  }
+}
+
 export const register: Register = (on, options) => {
   const opt = (options ?? {}) as Opciones
   const modelos: Modelos = {
@@ -1106,6 +1138,7 @@ export const register: Register = (on, options) => {
           cwd: { type: 'string', description: 'Directorio de trabajo (opcional)' },
           aislar: { type: 'boolean', description: 'Si cwd es un repo git: el agente trabaja en su propia copia (git worktree, rama mst/...) y no pisa a los demás. Junta luego con el comando de "copia.juntar"' },
           verificar: { type: 'string', description: 'Comando que comprueba el resultado (p. ej. npm test); el centro lo ejecuta donde trabajó el agente y te da su salida' },
+          archivos: { type: 'array', items: { type: 'string' }, description: 'Carpeta compartida (sin aislar): los archivos o carpetas que este agente puede tocar. Los que tocan cosas distintas trabajan a la vez en la misma rama; los que chocan esperan turno. Sin esto se reserva todo el repo y espera a los demás' },
           skills: { type: 'array', items: { type: 'string' }, description: 'Skills que el agente debe seguir (p. ej. design-md, vercel:nextjs). Usa buscar_skills para encontrarlas.' },
         },
         required: ['categoria', 'tarea'],
@@ -1132,6 +1165,7 @@ export const register: Register = (on, options) => {
                 cwd: { type: 'string', description: 'Directorio existente; distinto por tarea si editan archivos' },
                 aislar: { type: 'boolean', description: 'Si cwd es un repo git: el agente trabaja en su propia copia (git worktree, rama mst/...) y no pisa a los demás. Junta luego con el comando de "copia.juntar"' },
                 verificar: { type: 'string', description: 'Comando que comprueba el resultado (p. ej. npm test); el centro lo ejecuta donde trabajó el agente y te da su salida' },
+                archivos: { type: 'array', items: { type: 'string' }, description: 'Carpeta compartida (sin aislar): los archivos o carpetas que este agente puede tocar. Los que tocan cosas distintas trabajan a la vez en la misma rama; los que chocan esperan turno. Sin esto se reserva todo el repo y espera a los demás' },
                 skills: { type: 'array', items: { type: 'string' }, description: 'Skills que el agente debe seguir (p. ej. design-md, vercel:nextjs). Usa buscar_skills para encontrarlas.' },
               },
               required: ['tarea', 'categoria'],

@@ -567,3 +567,76 @@ test('codex: lee su respuesta y tokens, y se lanza con su cuenta o con Ollama, c
   expect(o.trabajador).toBe('codex:ollama/gpt-oss:120b-cloud')
   expect(vistos[1].argv.slice(-5)).toEqual(['--oss', '--local-provider', 'ollama', '-m', 'gpt-oss:120b-cloud'])
 })
+
+import { Cerrojos, archivosCambiados, chocan, fueraDeAlcance } from './nucleo'
+
+test('cerrojos: lo que no choca entra a la vez, lo que choca espera su turno y "todo el repo" espera a todos', async () => {
+  expect(chocan('src/', 'src/a.py')).toBe(true)
+  expect(chocan('A.py', 'B.py')).toBe(false)
+  expect(chocan('*', 'x.py')).toBe(true)
+  expect(chocan('src\\a.py', './src/a.py')).toBe(true)
+  const c = new Cerrojos()
+  const orden: string[] = []
+  const a = await c.tomar('/r', ['A.py'])
+  const b = await c.tomar('/r', ['B.py'])
+  orden.push('A y B dentro')
+  const a2 = c.tomar('/r', ['A.py']).then(l => (orden.push('A2'), l))
+  const todo = c.tomar('/r').then(l => (orden.push('todo'), l))
+  const otraCarpeta = await c.tomar('/otra')
+  otraCarpeta()
+  await new Promise(r => setTimeout(r, 20))
+  expect(orden).toEqual(['A y B dentro'])
+  a()
+  ;(await a2)()
+  b()
+  ;(await todo)()
+  expect(orden).toEqual(['A y B dentro', 'A2', 'todo'])
+})
+
+test('lee los archivos cambiados de git y detecta lo que un agente tocó sin ser suyo', async () => {
+  expect(archivosCambiados(' M A.py\n?? nuevo.py\nR  viejo.py -> n.py\n M "con espacio.py"\n')).toEqual(['A.py', 'nuevo.py', 'n.py', 'con espacio.py'])
+  expect(fueraDeAlcance(['x.py'], ['x.py', 'A.py', 'z.py', 'o.py'], ['A.py'], ['o.py'])).toEqual(['z.py'])
+  expect(fueraDeAlcance([], ['z.py'], ['*'], [])).toEqual([])
+})
+
+test('dos agentes en la misma carpeta: sin archivos se turnan; con archivos distintos trabajan a la vez', async ($, on) => {
+  base(on)
+  let activos = 0
+  let maximo = 0
+  on('process.spawn', async function* (_$: any) {
+    activos++
+    maximo = Math.max(maximo, activos)
+    await new Promise(r => setTimeout(r, 120))
+    activos--
+    yield { stream: 'stdout', text: 'ok' }
+    return { value: { code: 0, signal: null } }
+  })
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
+  const lanzar = (archivos?: string[][]) =>
+    $.tool.call({
+      tool: 'mcp__centro-agentes__delegar_varios',
+      input: { tareas: [0, 1].map(i => ({ categoria: 'x', trabajador: 'claude', tarea: `t${i}`, cwd: 'C:/proyecto', ...(archivos ? { archivos: archivos[i] } : {}) })) },
+    })
+  const turno = out(await lanzar())
+  expect(maximo).toBe(1)
+  expect(turno.resultados.some((r: any) => r.carpeta_compartida?.esperoSeg !== undefined || r.carpeta_compartida)).toBe(true)
+  maximo = 0
+  await lanzar([['A.py'], ['B.py']])
+  expect(maximo).toBe(2)
+  maximo = 0
+  await lanzar([['A.py'], ['A.py']])
+  expect(maximo).toBe(1)
+})
+
+test('cerrojos: los archivos de otro agente cuentan como suyos aunque ya haya terminado cuando miro (sin falsos avisos)', async () => {
+  const c = new Cerrojos()
+  const a = await c.tomar('/r', ['A.py'])
+  const b = await c.tomar('/r', ['B.py'])
+  a()
+  expect(c.deOtros('/r', b.id, b.desde)).toEqual(['A.py'])
+  const tarde = await c.tomar('/r', ['C.py'])
+  b()
+  tarde()
+  expect(c.deOtros('/r', b.id, b.desde)).toEqual(['A.py', 'C.py'])
+  expect(c.deOtros('/otra', b.id, b.desde)).toEqual([])
+})
