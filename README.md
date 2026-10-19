@@ -62,6 +62,8 @@ Estilo basado en [anatomy](https://github.com/wheresryan22/anatomy) (MIT, ver `h
 
 Prueba rápida del servidor MCP (sin lanzar agentes): `node mcp/prueba-mcp.mjs`.
 
+Simulación en bucle (sin agentes ni gasto) para ver cómo se comporta el grafo: `node mcp/demo-bucle.mjs`, y abre el chat `demo-bucle` en la web.
+
 ```bash
 claude plugin test .
 ```
