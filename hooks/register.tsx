@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Plan, Trabajador, Trabajo } from '../types'
-import { colaDeLineas, figura, grafica, pagina, tablero, VINO } from './figura'
+import { colaDeLineas, figura, tablero, VINO } from './figura'
+import { paginaCentro } from './vista'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
@@ -610,13 +611,33 @@ async function escribirWeb($: EngineInterface) {
     listo: subs.length > 0 && subs.every(s => s.estado === 'hecha') ? (await read($, plan))!.objetivo : undefined,
   }
   const chat = etiquetaChat(carpetaProyecto, nombreChat)
-  await $.fs.write(await rutaWeb($), pagina(a.figuraSvg, a.tableroSvg, `${chat} · ${a.lectura}`, 2, {
-    ...controles, chat, kpis: a.kpis,
-    agentes: contexto ? estadoAgentes(contexto.modelos, Date.now(), tokensClaude(lista)) : undefined,
-    rendimiento: grafica(agregarRendimiento(((await $.store.get(STORE_KEY)) ?? {}) as Puntajes)),
+  // Lado a lado, cada figura recibe un ancho proporcional a su relación de aspecto: así las dos miden lo mismo de alto.
+  const alto = (svg: string) => Number(svg.match(/viewBox="0 0 [\d.]+ ([\d.]+)"/)?.[1] ?? 380)
+  const ahorro = lista.filter(t => !t.trabajador.startsWith('claude:')).reduce((s, t) => s + costoComoClaude(t.tokensIn, t.tokensOut), 0)
+  const tablaPuntajes = ((await $.store.get(STORE_KEY)) ?? {}) as Puntajes
+  await $.fs.write(await rutaWeb($), paginaCentro({
+    clave: controles.clave,
+    chat,
+    jefe: 'Claude',
+    plan: (await read($, plan)) ?? null,
+    trabajos: lista,
+    agentes: contexto ? estadoAgentes(contexto.modelos, Date.now(), tokensClaude(lista)) : [],
+    modelos: contexto?.modelos ?? {},
+    rendimiento: agregarRendimiento(tablaPuntajes),
+    ahorro,
+    cancelables: controles.cancelables,
+    relanzables: controles.relanzables,
+    version: await versionDelPlugin($),
+    extra: a.figuraSvg + a.tableroSvg,
+    columnasExtra: `${(640 / alto(a.figuraSvg)).toFixed(3)}fr ${(640 / alto(a.tableroSvg)).toFixed(3)}fr`,
   }))
 }
-
+const versionCache = new Map<string, string>()
+async function versionDelPlugin($: EngineInterface) {
+  const dir = $.plugin.root
+  if (!versionCache.has(dir)) versionCache.set(dir, await $.fs.read(`${dir}/.claude-plugin/plugin.json`).then(t => (JSON.parse(t.replace(/^\uFEFF/, '')) as { version?: string }).version ?? '?').catch(() => '?'))
+  return versionCache.get(dir)!
+}
 // Abre la página en el navegador predeterminado: servida por el servidor local (con botones). explorer no da un código útil.
 async function abrirNavegador($: EngineInterface) {
   await $.process.run(['explorer', await urlWeb($)]).catch(() => undefined)

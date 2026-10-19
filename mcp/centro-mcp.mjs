@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from '../hooks/nucleo.ts'
+import { paginaCentro } from '../hooks/vista.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8').replace(/^﻿/, '')).version
@@ -459,83 +460,17 @@ async function asegurarWeb() {
   }, 1200)
 }
 
-const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+// La misma página que el plugin de Claude Code (grafo vivo, gráficas, tablas): hooks/vista.ts.
 function pagina() {
-  const subs = plan?.subtareas ?? []
-  const hechas = subs.filter(s => s.estado === 'hecha').length
-  const pct = subs.length ? Math.round((hechas / subs.length) * 100) : 0
-  const tokIn = trabajos.reduce((a, t) => a + (t.tokensIn ?? 0), 0)
-  const tokOut = trabajos.reduce((a, t) => a + (t.tokensOut ?? 0), 0)
   const ahorro = trabajos.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut), 0)
-  const corriendo = trabajos.filter(t => t.estado === 'corriendo')
-  const ahora = Date.now()
-  const seg = ms => (ms >= 60_000 ? `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s` : `${Math.round(ms / 1000)} s`)
-  const kpis = [
-    ['Progreso', subs.length ? `${pct}%` : '—', subs.length ? `${hechas} de ${subs.length} subtareas` : 'sin plan'],
-    ['Trabajando', String(corriendo.length), corriendo.length ? corto(corriendo.map(t => t.trabajador.split(':')[0]).join(', '), 40) : 'nadie ahora'],
-    ['Tokens', miles(tokIn + tokOut), `${miles(tokIn)} leídos · ${miles(tokOut)} escritos`],
-    ['Ahorro', `$${ahorro.toFixed(2)}`, 'frente a Claude Sonnet'],
-  ]
   const estadoAgente = TRABAJADORES.filter(t => MODELOS[t]?.length).map(t => {
     const fuera = MODELOS[t].every(m => caidosAhora().has(clave(t, m)))
-    return `<span class="agente${fuera ? ' no' : ''}"><b>${fuera ? '○' : '●'}</b> ${esc(t)}<small>${fuera ? esc(motivo.get(t) ?? 'apartado un rato') : `${MODELOS[t].length} modelos`}</small></span>`
+    return { nombre: t, ok: !fuera, nota: fuera ? (motivo.get(t) ?? 'apartado un rato') : `${MODELOS[t].length} modelos` }
   })
-  const filasPlan = subs
-    .map(s => `<tr class="${s.estado === 'hecha' ? 'hecha' : s.estado === 'en curso' ? 'curso' : ''}"><td>${s.n}</td><td>${esc(s.titulo)}${s.espera?.length ? ` <small>espera ${s.espera.join(', ')}</small>` : ''}</td><td>${esc(s.estado)}</td><td>${esc(s.quien ?? '')}</td><td>${s.puntaje !== undefined ? `${s.puntaje}/10` : ''}</td></tr>`)
-    .join('')
-  const terminales = corriendo
-    .map(t => `<div class="terminal"><div class="cab">${esc(t.trabajador)} · ${seg(ahora - t.inicio)} · ${esc(corto(t.tarea, 60))}</div><pre>${esc((t.salida || 'pensando…').split('\n').slice(-12).join('\n'))}</pre></div>`)
-    .join('')
-  const historial = [...trabajos]
-    .reverse()
-    .filter(t => t.estado !== 'corriendo')
-    .slice(0, 14)
-    .map(t => `<tr class="${t.estado === 'error' ? 'mal' : ''}"><td>${t.estado === 'error' ? '✗' : '✓'}</td><td>${esc(t.trabajador)}</td><td>${t.subtarea ?? ''}</td><td>${seg(t.ms ?? 0)}</td><td>${t.tokensIn !== undefined ? `${miles(t.tokensIn)}→${miles(t.tokensOut ?? 0)}` : ''}</td><td>${t.puntaje !== undefined ? `${t.puntaje}/10` : ''}</td></tr>`)
-    .join('')
-  const listo = subs.length && hechas === subs.length ? `<div class="listo">✓ Todo listo: ${esc(plan.objetivo)}</div>` : ''
-  const graf = agregarRendimiento(puntajes(), 8)
-    .map(f => `<div class="barra"><span>${esc(corto(f.quien, 34))}</span><i style="width:${f.media * 10}%"></i><b>${f.media.toFixed(1)}</b><small>${f.n} trab</small></div>`)
-    .join('')
-  const titulo = `${CARPETA} · OpenCode jefe · ${plan ? corto(plan.objetivo, 40) : 'sin plan'}`
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta http-equiv="refresh" content="2"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(titulo)}</title><style>
-:root{--vino:#9e2a3a}
-html,body{margin:0;background:#0a0a0a;color:#a3a3a3;font:15px/1.5 'Segoe UI',system-ui,sans-serif}
-header,section{max-width:1500px;margin:0 auto;padding:0 20px;box-sizing:border-box}
-header{padding-top:40px}
-.rotulo{font:13px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacing:.06em;text-transform:uppercase;margin:0 0 12px}
-.rotulo a{color:#d4d4d4}.rotulo a:hover{color:var(--vino)}
-h1{font:700 clamp(36px,5.5vw,76px)/.95 'Segoe UI',system-ui,sans-serif;letter-spacing:-.03em;color:#f5f5f5;margin:0}h1 b{color:var(--vino)}
-.obj{color:#d4d4d4;font-size:18px;margin:14px 0 0}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:28px}
-.kpi{border-top:1px solid #2a2a2a;border-right:1px solid #1c1c1c;padding:16px 20px 18px}.kpi:last-child{border-right:0}
-.kpi i{display:block;font:normal 12px ui-monospace,Consolas,monospace;color:var(--vino);margin-bottom:8px}
-.kpi strong{display:block;font:700 clamp(28px,3.2vw,42px)/1 'Segoe UI',system-ui,sans-serif;color:#f5f5f5;margin:4px 0}
-.kpi small{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a}
-.agentes{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
-.agente{border:1px solid #2a2a2a;padding:7px 12px;font:13px ui-monospace,Consolas,monospace;color:#d4d4d4}.agente small{color:#8a8a8a;margin-left:8px}
-.agente.no{border-color:var(--vino)}.agente.no b{color:var(--vino)}
-.listo{margin-top:16px;padding:10px 16px;border:1px solid var(--vino);color:#f5f5f5}
-h2{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacing:.1em;text-transform:uppercase;margin:30px 0 10px;border-bottom:1px solid #1c1c1c;padding-bottom:8px}
-table{width:100%;border-collapse:collapse;font:14px ui-monospace,Consolas,monospace}
-td{padding:7px 10px;border-bottom:1px solid #161616;color:#a3a3a3;vertical-align:top}td small{color:#5a5a5a}
-tr.hecha td{color:#d4d4d4}tr.curso td{color:#f5f5f5}tr.curso td:first-child{border-left:2px solid var(--vino)}tr.mal td{color:#c4485a}
-.terminales{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:12px}
-.terminal{border:1px solid var(--vino);background:#0d0d0d}.cab{font:12px ui-monospace,Consolas,monospace;color:#d4d4d4;padding:8px 10px;border-bottom:1px solid #2a2a2a}
-pre{margin:0;padding:10px;font:12px/1.45 ui-monospace,Consolas,monospace;color:#a3a3a3;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:hidden}
-.barra{display:grid;grid-template-columns:260px 1fr 50px 70px;gap:10px;align-items:center;font:13px ui-monospace,Consolas,monospace;margin:6px 0}
-.barra i{display:block;height:12px;background:#5a5a5a}.barra:first-child i{background:var(--vino)}.barra b{color:#f5f5f5}.barra small{color:#5a5a5a}
-.vacio{color:#5a5a5a;font:13px ui-monospace,Consolas,monospace}
-footer{max-width:1500px;margin:40px auto;padding:0 20px;color:#5a5a5a;font:12px ui-monospace,Consolas,monospace}
-@media (max-width:700px){.barra{grid-template-columns:1fr 60px}.barra i,.barra small{display:none}}
-</style></head><body>
-<header><p class="rotulo">/mst · jefe: OpenCode · ${esc(CARPETA)} · <a href="/todos?t=${encodeURIComponent(claveWeb())}">todos los chats</a></p><h1>Centro de agentes <b>MST</b></h1>${plan ? `<p class="obj">${esc(plan.objetivo)}</p>` : ''}</header>
-<section><div class="kpis">${kpis.map(([e, v, n], i) => `<div class="kpi"><i>0${i + 1}</i>${esc(e)}<strong>${esc(v)}</strong><small>${esc(n)}</small></div>`).join('')}</div>
-<div class="agentes">${estadoAgente.join('')}</div>${listo}
-<h2>Subtareas</h2>${filasPlan ? `<table>${filasPlan}</table>` : '<p class="vacio">El jefe aún no ha hecho el plan.</p>'}
-<h2>Trabajando ahora</h2>${terminales ? `<div class="terminales">${terminales}</div>` : '<p class="vacio">Nadie trabajando en este momento.</p>'}
-<h2>Historial</h2>${historial ? `<table>${historial}</table>` : '<p class="vacio">Sin trabajos terminados.</p>'}
-<h2>Rendimiento por modelo</h2>${graf || '<p class="vacio">Aún no hay trabajos puntuados.</p>'}
-</section><footer>Centro de agentes MST ${esc(VERSION)} · servidor MCP para OpenCode · se actualiza cada 2 s</footer></body></html>`
+  return paginaCentro({
+    clave: claveWeb(), chat: CARPETA, jefe: 'OpenCode', plan, trabajos, agentes: estadoAgente, modelos: MODELOS,
+    rendimiento: agregarRendimiento(puntajes(), 8), ahorro, cancelables: [], relanzables: [], version: VERSION,
+  })
 }
 
 let guardando

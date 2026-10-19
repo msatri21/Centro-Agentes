@@ -640,3 +640,62 @@ test('cerrojos: los archivos de otro agente cuentan como suyos aunque ya haya te
   expect(c.deOtros('/r', b.id, b.desde)).toEqual(['A.py', 'C.py'])
   expect(c.deOtros('/otra', b.id, b.desde)).toEqual([])
 })
+
+import { estadoAgente, eventosEntre, faseDe } from '../web/grafo-logica.js'
+import { graficaAhorro, graficaNotas, graficaTiempo, graficaTokens } from './graficas'
+import { paginaCentro } from './vista'
+
+const trab = (id: string, quien: string, sub: number, estado: string, extra: object = {}) => ({ id, trabajador: quien, categoria: 'c', tarea: 'x', estado, inicio: 1000, subtarea: sub, ...extra }) as any
+
+test('la fase del grafo sale del plan y de los trabajos: reposo, plan, reparto, trabajo, fallo, verificar, juntar y listo', () => {
+  const subs = (...e: string[]) => ({ subtareas: e.map((estado, i) => ({ n: i + 1, titulo: 't', estado })) })
+  expect(faseDe({ plan: null, trabajos: [], ahora: 5000 }).indice).toBe(-1)
+  expect(faseDe({ plan: subs('pendiente', 'pendiente'), trabajos: [], ahora: 5000 }).indice).toBe(1)
+  expect(faseDe({ plan: subs('en curso', 'en curso'), trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('b', 'hermes:m', 2, 'corriendo')], ahora: 2000 }).indice).toBe(2)
+  expect(faseDe({ plan: subs('en curso', 'en curso'), trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('b', 'hermes:m', 2, 'corriendo')], ahora: 30_000 }).indice).toBe(3)
+  const fallo = [trab('e', 'ollama:m', 2, 'error', { ms: 2000 }), trab('f', 'hermes:m', 2, 'corriendo', { inicio: 4000 })]
+  expect(faseDe({ plan: subs('en curso', 'en curso'), trabajos: fallo, ahora: 8000 }).indice).toBe(4)
+  expect(faseDe({ plan: subs('en curso'), trabajos: [trab('a', 'opencode:m', 1, 'listo', { ms: 5000 })], ahora: 60_000 }).indice).toBe(5)
+  expect(faseDe({ plan: subs('hecha', 'pendiente'), trabajos: [trab('a', 'opencode:m', 1, 'listo', { ms: 5000, puntaje: 9 })], ahora: 60_000 }).indice).toBe(6)
+  expect(faseDe({ plan: subs('hecha', 'hecha'), trabajos: [], ahora: 60_000 }).indice).toBe(7)
+})
+
+test('los eventos del grafo salen de comparar dos lecturas: encargo, cambio de modelo, resultado, nota y cierre; sin lectura previa, ninguno', () => {
+  const antes: any = { plan: { subtareas: [{ n: 1, titulo: 't', estado: 'en curso' }, { n: 2, titulo: 't', estado: 'pendiente' }] }, trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('e', 'ollama:m', 2, 'corriendo')] }
+  const despues: any = {
+    plan: { subtareas: [{ n: 1, titulo: 't', estado: 'hecha', quien: 'jefe' }, { n: 2, titulo: 't', estado: 'en curso' }] },
+    trabajos: [trab('a', 'opencode:m', 1, 'listo', { ms: 5000, puntaje: 9 }), trab('e', 'ollama:m', 2, 'error', { ms: 1000 }), trab('f', 'hermes:m', 2, 'corriendo', { inicio: 3000 })],
+  }
+  expect(eventosEntre(null, despues)).toEqual([])
+  const tipos = eventosEntre(antes, despues).map(e => `${e.tipo}:${e.agente ?? e.subtarea}`)
+  expect(tipos).toContain('resultado:opencode')
+  expect(tipos).toContain('nota:opencode')
+  expect(tipos).toContain('resultado:ollama')
+  expect(tipos).toContain('encargo:hermes')
+  expect(tipos).toContain('cambio:hermes')
+  expect(tipos).toContain('cierre:1')
+  const e = estadoAgente({ ...despues, ahora: 2000, agentes: [{ nombre: 'codex', ok: false, nota: 'sin sesión' }] }, 'ollama')
+  expect(e).toMatchObject({ activo: false, falla: true })
+  expect(estadoAgente({ ...despues, ahora: 2000, agentes: [{ nombre: 'codex', ok: false, nota: 'sin sesión' }] }, 'codex').apartado).toBe('sin sesión')
+})
+
+test('las gráficas nuevas dibujan con datos y se quedan en blanco con mensaje sin ellos, y la página junta todo sin dejar cerrar el script', () => {
+  const trabajos = [
+    trab('a', 'opencode:m', 1, 'listo', { ms: 9000, puntaje: 9, tokensIn: 2000, tokensOut: 100 }),
+    trab('b', 'ollama:m', 2, 'error', { inicio: 2000, ms: 3000, tokensIn: 50, tokensOut: 0 }),
+    trab('c', 'hermes:m', 2, 'listo', { inicio: 5000, ms: 7000, puntaje: 4, tokensIn: 9000, tokensOut: 400 }),
+  ]
+  for (const svg of [graficaTokens(trabajos), graficaTiempo(trabajos, 20_000), graficaNotas(trabajos), graficaAhorro(trabajos)]) expect(svg).toContain('<svg')
+  expect(graficaNotas(trabajos)).toContain('mínimo para pasar')
+  expect(graficaTokens([])).toContain('aún no hay')
+  const html = paginaCentro({
+    clave: 'k', chat: 'c', jefe: 'OpenCode', plan: { objetivo: '</script><b>x', subtareas: [{ n: 1, titulo: 't', estado: 'hecha' }] }, trabajos, agentes: [], modelos: {}, rendimiento: [], ahorro: 0.1,
+    cancelables: [{ id: 'a', titulo: 'x' }], relanzables: [], version: '1', extra: '<svg id="extra"></svg>', ahora: 20_000,
+  })
+  expect(html).toContain('id="grafo-montaje"')
+  expect(html).toContain('<svg id="extra"></svg>')
+  expect(html).toContain('/grafo.js')
+  expect(html).toContain('Cancelar x')
+  expect(html).not.toContain('</script><b>x')
+  expect(html.match(/<\/script>/g)?.length).toBe(2)
+})

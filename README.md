@@ -50,7 +50,13 @@ En la configuración del plugin: modelos de cada agente, tiempo máximo por tare
 
 ## Web
 
-`http://127.0.0.1:47321` (solo local, con clave). Un centro por chat, más la página **todos los chats**. Estilo basado en [anatomy](https://github.com/wheresryan22/anatomy) (MIT, ver `hooks/anatomy/LICENSE`).
+`http://127.0.0.1:47321` (solo local, con clave). Un centro por chat, más la página **todos los chats**. Es la misma página con Claude o con OpenCode de jefe:
+
+- **El grafo grande**, en vivo con los datos reales: tú, el jefe, los 6 agentes con la salida real de su terminal, verificar, auditoría, juntar e informe. Las partículas son lo que pasa de verdad (un encargo que sale, un resultado, una nota, un modelo que falla y pasa a otro). Se actualiza cada 2 s sin recargar, así las animaciones no se cortan. Pasa el ratón por un nodo para ver su detalle.
+- **Gráficas del estilo anatomy** debajo: tokens por agente, rendimiento por modelo, línea de tiempo de los trabajos, notas del jefe y ahorro acumulado. Con Claude de jefe, además, la figura isométrica y la tarjeta de detalles.
+- Subtareas, historial, botones de Cancelar y Relanzar, y el aviso al terminar.
+
+Estilo basado en [anatomy](https://github.com/wheresryan22/anatomy) (MIT, ver `hooks/anatomy/LICENSE`).
 
 ## Desarrollo
 

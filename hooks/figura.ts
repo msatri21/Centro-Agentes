@@ -1,7 +1,7 @@
 import {
   depthOf, dotsSvg, figureSvg, fitProjection, iso, lineSvg, pathOf, slabOf, solidSvg,
-} from './anatomy/iso-kit'
-import type { Plan as Planta, Point3, Projection } from './anatomy/iso-kit'
+} from './anatomy/iso-kit.ts'
+import type { Plan as Planta, Point3, Projection } from './anatomy/iso-kit.ts'
 
 // La figura del centro, al estilo de anatomy: una mesa de trabajo isométrica.
 // Atrás, una columna por trabajador: su altura son los tokens que lleva; brilla y echa chispas mientras trabaja.
@@ -18,7 +18,7 @@ export type DatosFigura = {
   lectura: string
 }
 
-const W = 640
+export const W = 640
 const H = 380
 const ALTO_MAX = 90
 
@@ -27,13 +27,13 @@ export const VINO = '#9e2a3a'
 // Lleva los acentos del kit (rojo, verde, azul, chispas) al vinotinto.
 const ACENTO = `<style>.iso{--anatomy-red:${VINO};--anatomy-green:${VINO};--anatomy-blue:${VINO}}.iso-solid.vino>.iso-edge{stroke:${VINO}}.iso-dots[data-tone="hi"] circle[data-pulse]{fill:${VINO}}.iso-face-text[data-tone="vino"]{fill:${VINO}}.vino-fill{fill:${VINO}}</style>`
 
-const corto = (t: string, n: number) => (t.length > n ? t.slice(0, n - 1) + '…' : t)
+export const corto = (t: string, n: number) => (t.length > n ? t.slice(0, n - 1) + '…' : t)
 
-const texto = (x: number, y: number, t: string, clase = 'iso-face-text', tono = 'mid', tam = 9, ancla = 'middle') =>
+export const texto = (x: number, y: number, t: string, clase = 'iso-face-text', tono = 'mid', tam = 9, ancla = 'middle') =>
   `<text class="${clase}" data-tone="${tono}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="${tam}" text-anchor="${ancla}">${t
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</text>`
 
-const marco = (h: number, fig: string, titulo: string, pie: string, lectura: string) => [
+export const marco = (h: number, fig: string, titulo: string, pie: string, lectura: string) => [
   ACENTO,
   `<rect x="1" y="1" width="${W - 2}" height="${h - 2}" fill="var(--anatomy-card)" stroke="var(--anatomy-mid)" stroke-width="1"/>`,
   texto(16, 22, fig, 'iso-face-text', 'hi', 10, 'start'),
@@ -148,7 +148,7 @@ export type Controles = {
   rendimiento?: string
 }
 
-const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
 // La página web del centro: las dos tarjetas lado a lado (o una encima de otra si la ventana es estrecha).
 // Se recarga sola cada `segundos`. Con `controles` lleva los botones (solo funcionan servida por el servidor local)
