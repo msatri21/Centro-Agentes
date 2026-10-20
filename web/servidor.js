@@ -74,11 +74,12 @@ const servidor = http.createServer((req, res) => {
     return
   }
   // El código del grafo es estático (sin datos del chat): se sirve sin clave para que la página lo cargue como módulo.
-  const estatico = req.method === 'GET' && url.pathname.match(/^\/(grafo|grafo-logica)\.js$/)
+  const estatico = req.method === 'GET' && url.pathname.match(/^\/(grafo|grafo-logica|tablero)\.(js|css|html)$/)
   if (estatico) {
-    fs.readFile(path.join(__dirname, `${estatico[1]}.js`), (err, js) => {
+    const tipos = { js: 'text/javascript', css: 'text/css', html: 'text/html' }
+    fs.readFile(path.join(__dirname, `${estatico[1]}.${estatico[2]}`), (err, js) => {
       if (err) res.writeHead(404).end()
-      else res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' }).end(js)
+      else res.writeHead(200, { 'content-type': `${tipos[estatico[2]]}; charset=utf-8`, 'cache-control': 'no-store' }).end(js)
     })
     return
   }

@@ -1,0 +1,100 @@
+:root{--vino:#9e2a3a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#0a0a0a;color:#a3a3a3;font:15px/1.5 'Segoe UI',system-ui,sans-serif}
+.rotulo{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacing:.08em;text-transform:uppercase}
+/* El grafo grande */
+#grafo-montaje{max-width:1800px;margin:24px auto 0;padding:0 20px}
+.lienzo{border:1px solid #2a2a2a;background:radial-gradient(ellipse at 30% 45%,#141414 0%,#0a0a0a 70%)}
+.lienzo svg{display:block;width:100%;height:auto}
+.arista{fill:none;stroke:#333;stroke-width:1.2;transition:stroke .4s}.arista.viva{stroke:#666}
+.bus{fill:none;stroke:#2f2f2f;stroke-width:1;stroke-dasharray:3 5}
+.cambio{fill:none;stroke:transparent;stroke-width:1.4;stroke-dasharray:5 4}.cambio.viva{stroke:#5c1822}
+.nodo rect,.nodo circle.cuerpo{fill:#121212;stroke:#3e3e3e;stroke-width:1.2;transition:stroke .4s,fill .4s}
+.nodo .nombre{font:600 16px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}
+.nodo .rol{font:12px ui-monospace,Consolas,monospace;fill:#8a8a8a}
+.nodo .modelo{font:11px ui-monospace,Consolas,monospace;fill:#5a5a5a}.nodo .modelo.vino{fill:#c4485a}
+.nodo .etiqueta{font:10.5px ui-monospace,Consolas,monospace;fill:#5a5a5a;letter-spacing:.1em}
+.nodo{cursor:help}.nodo:hover rect,.nodo:hover circle.cuerpo{stroke:#a3a3a3}
+.nodo.activo rect{stroke:var(--vino);fill:#170d0f}
+.nodo.hecho rect{stroke:#6a6a6a}
+.nodo.apartado rect{stroke:#5c1822;stroke-dasharray:5 4}
+.nodo.falla rect{stroke:#c4485a;animation:parpadeo .35s steps(2) infinite}
+.terminal rect{fill:#0c0c0c;stroke:#262626}
+.terminal text{font:12px ui-monospace,Consolas,monospace;fill:#a3a3a3}.terminal text.ok{fill:#d4d4d4}.terminal text.mal{fill:#c4485a}
+.nota{font:700 15px ui-monospace,Consolas,monospace;fill:#f5f5f5;opacity:0;transition:opacity .5s}.nota.vino{fill:#c4485a}
+.aviso-falla{font:13px ui-monospace,Consolas,monospace;fill:#c4485a;opacity:0;transition:opacity .4s}
+.tarjeta rect{fill:#141414;stroke:#444}.tarjeta text{font:600 14px ui-monospace,Consolas,monospace;fill:#d4d4d4}
+.tarjeta.asignada rect{stroke:var(--vino)}.tarjeta.lista rect{fill:#5c1822;stroke:var(--vino)}
+.anillo{fill:none;stroke:var(--vino);stroke-width:1.5;stroke-dasharray:6 9;transform-origin:380px 400px;animation:girar 30s linear infinite}
+.halo{fill:var(--vino);opacity:.12;transform-origin:380px 400px;animation:latido 2.6s ease-in-out infinite}
+.jefe-titulo{font:700 26px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}.jefe-sub{font:12px ui-monospace,Consolas,monospace;fill:#c4485a;letter-spacing:.14em}.jefe-desc{font:11.5px ui-monospace,Consolas,monospace;fill:#8a8a8a}
+.rotulo-svg{font:11px ui-monospace,Consolas,monospace;fill:#5a5a5a;letter-spacing:.12em;text-transform:uppercase}.rotulo-arista{font:12px ui-monospace,Consolas,monospace;fill:#a3a3a3}
+.listo-svg{font:700 44px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5;opacity:0;transition:opacity .6s}.listo-svg tspan{fill:#c4485a}
+.movil{opacity:.35;transition:opacity .4s}.movil.vibra{opacity:1;animation:vibrar .18s linear infinite}
+.movil rect{fill:#111;stroke:#8a8a8a}.movil.vibra rect{stroke:#c4485a}
+@keyframes girar{to{transform:rotate(360deg)}}
+@keyframes latido{0%,100%{transform:scale(1);opacity:.1}50%{transform:scale(1.18);opacity:.22}}
+@keyframes parpadeo{50%{opacity:.35}}
+@keyframes vibrar{0%{transform:translate(0,0)}25%{transform:translate(-2px,1px)}50%{transform:translate(2px,-1px)}75%{transform:translate(-1px,-1px)}}
+.paso{display:grid;grid-template-columns:1fr;gap:18px;margin-top:20px;padding:22px 24px;border:1px solid #2a2a2a;background:#111}
+@media (min-width:900px){.paso{grid-template-columns:340px 1fr}}
+.paso h2{font:700 28px/1.1 'Segoe UI',system-ui,sans-serif;color:#f5f5f5;margin:0}.paso h2 i{font:normal 15px ui-monospace,Consolas,monospace;color:#c4485a;display:block;margin-bottom:6px}
+.paso p{margin:0;color:#d4d4d4;font-size:17px;min-height:52px}.paso .rotulo{margin:0 0 6px}
+.fases,.fases-nombres{display:grid;grid-template-columns:repeat(8,1fr);gap:4px}.fases{margin-top:16px}
+.fases span{height:6px;background:#262626;transition:background .4s}.fases span.pasada{background:#555}.fases span.actual{background:var(--vino)}
+.fases-nombres{margin-top:6px;font:10.5px ui-monospace,Consolas,monospace;color:#5a5a5a;text-transform:uppercase;letter-spacing:.04em}
+@media (max-width:700px){.fases-nombres{display:none}}
+.g-lista{display:none}
+.g-fila{border:1px solid #2a2a2a;background:#111;padding:12px 14px}
+.g-fila.activo{border-color:var(--vino);background:#170d0f}.g-fila.falla{border-color:#c4485a}.g-fila.apartado{border-style:dashed;border-color:#5c1822}
+.g-cab{display:flex;justify-content:space-between;gap:10px;font:14px ui-monospace,Consolas,monospace}.g-cab b{color:#f5f5f5;font:600 16px 'Segoe UI',system-ui,sans-serif}.g-cab span{color:#a3a3a3}
+.g-fila small{display:block;color:#5a5a5a;font:12px ui-monospace,Consolas,monospace;margin-top:2px}
+.g-fila pre{margin:8px 0 0;color:#a3a3a3;font:12px/1.4 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}.g-fila pre:empty{display:none}
+@media (max-width:700px){#grafo-montaje .lienzo{display:none}.g-lista{display:grid;gap:8px;margin-top:0}}
+#g-tip{position:fixed;z-index:10;max-width:320px;padding:12px 14px;background:#141414;border:1px solid var(--vino);color:#d4d4d4;font-size:14px;line-height:1.45;pointer-events:none;opacity:0;transition:opacity .15s}
+#g-tip b{display:block;color:#f5f5f5;font-size:15px;margin-bottom:4px}
+@media (prefers-reduced-motion:reduce){.anillo,.halo,.movil.vibra,.nodo.falla rect{animation:none!important}}
+
+
+/* El lienzo */
+#lienzo{position:fixed;inset:0;overflow:hidden;cursor:grab;background-color:#0a0a0a;background-image:radial-gradient(circle,#262626 1.2px,transparent 1.4px);background-size:28px 28px;touch-action:none}
+#lienzo.arrastrando{cursor:grabbing}
+#mundo{position:absolute;left:0;top:0;transform-origin:0 0}
+#lineas{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+#lineas path{fill:none;stroke:#3a3a3a;stroke-width:2}
+#lineas path.viva{stroke:var(--vino);stroke-dasharray:8 6;animation:fluir .8s linear infinite}
+@keyframes fluir{to{stroke-dashoffset:-14}}
+#grafo-montaje{max-width:none;margin:0;padding:0}
+.tarjeta-t{position:absolute;background:#111;border:1px solid #2f2f2f;box-shadow:0 6px 24px #0008}
+.tarjeta-t .cab{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #222;cursor:move;user-select:none;touch-action:none}
+.tarjeta-t .cab b{color:#f5f5f5;font:600 15px 'Segoe UI',system-ui,sans-serif;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tarjeta-t .cab span{font:12px ui-monospace,Consolas,monospace;color:#a3a3a3}
+.tarjeta-t .cab button{background:none;border:0;color:#8a8a8a;font:16px ui-monospace,Consolas,monospace;cursor:pointer;padding:0 4px}
+.tarjeta-t .cab button:hover{color:#fff}
+.tarjeta-t.activo{border-color:var(--vino)}.tarjeta-t.falla{border-color:#c4485a}.tarjeta-t.apartado{border-style:dashed;border-color:#5c1822}
+.tarjeta-t.hecha{border-color:#555}
+.tarjeta-t .cuerpo{padding:10px 12px}
+.tarjeta-t pre{margin:0;font:12px/1.45 ui-monospace,Consolas,monospace;color:#a3a3a3;white-space:pre-wrap;word-break:break-word;min-height:96px}
+.tarjeta-t small{display:block;color:#5a5a5a;font:12px ui-monospace,Consolas,monospace;margin-bottom:6px}
+.tarjeta-t .estado{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;margin-top:8px}
+.tarjeta-t .nota{font:700 14px ui-monospace,Consolas,monospace;color:#f5f5f5;opacity:1}.tarjeta-t .nota.mal{color:#c4485a}
+.tarjeta-t button.cancelar{margin-top:8px;background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:6px 10px;font:12px ui-monospace,Consolas,monospace;cursor:pointer}
+.tarjeta-t button.cancelar:hover{border-color:var(--vino);color:#fff}
+.tarea{width:300px}.tarea .titulo{color:#f5f5f5;font:600 16px 'Segoe UI',system-ui,sans-serif;margin:0 0 6px}
+.tarea.en-curso{border-color:var(--vino)}.tarea.hecha{background:#1a0e11;border-color:var(--vino)}
+.terminal-t{width:340px}
+.grafo-t{width:1100px}.grafo-t .cuerpo{padding:0}
+.grafo-t .lienzo{border:0}
+/* de lejos solo se ven los títulos y el estado; el detalle aparece al acercarse */
+#mundo.lejos .tarjeta-t .cuerpo{display:none}#mundo.lejos .tarjeta-t .cab b{font-size:22px}#mundo.lejos .tarjeta-t .cab span{font-size:16px}
+#mundo.lejos .grafo-t .cuerpo{display:block}
+/* barra y cabecera */
+#cabecera{position:fixed;left:18px;top:14px;display:flex;align-items:baseline;gap:14px;pointer-events:none;z-index:5}
+#cabecera b{color:#f5f5f5;font:700 22px 'Segoe UI',system-ui,sans-serif}#cabecera i{font-style:normal;color:var(--vino)}
+#cabecera a{pointer-events:auto;color:#8a8a8a;font:12px ui-monospace,Consolas,monospace}#cabecera a:hover{color:var(--vino)}
+#barra{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:94vw;padding:8px;background:#0d0d0dee;border:1px solid #2a2a2a;border-radius:14px;z-index:5}
+#barra button{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;border-radius:999px;padding:8px 14px;font:13px ui-monospace,Consolas,monospace;cursor:pointer}
+#barra button:hover{border-color:var(--vino);color:#fff}
+#barra button.abierto{border-color:var(--vino);color:#fff}
+#barra .sep{width:1px;background:#2a2a2a;margin:0 4px}
+#hud{position:fixed;right:18px;top:14px;font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;z-index:5;pointer-events:none;text-align:right}
