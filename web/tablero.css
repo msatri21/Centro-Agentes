@@ -98,3 +98,38 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0a0a0a;color:#a3a3a3;
 #barra button.abierto{border-color:var(--vino);color:#fff}
 #barra .sep{width:1px;background:#2a2a2a;margin:0 4px}
 #hud{position:fixed;right:18px;top:14px;font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;z-index:5;pointer-events:none;text-align:right}
+
+/* Unir terminales con tareas, y el detalle en vivo */
+#lineas path.jefe{stroke:#4a4a4a}
+#lineas path.dep{stroke:#2f2f2f;stroke-dasharray:3 6}
+#lineas path.manual{stroke:var(--vino);stroke-width:2.5}
+#lineas path.temp{stroke:#c4485a;stroke-dasharray:4 4;stroke-width:2}
+.puerto{position:absolute;left:50%;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:#0a0a0a;border:2px solid #8a8a8a;cursor:crosshair;z-index:2;touch-action:none}
+.puerto:hover{border-color:var(--vino);background:var(--vino)}
+.puerto.arriba{top:-10px}.puerto.abajo{bottom:-10px}
+.enlazadas{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--vino);padding:2px 4px 2px 8px;font:12px ui-monospace,Consolas,monospace;color:#d4d4d4}
+.chip button{background:none;border:0;color:#8a8a8a;cursor:pointer;font:12px ui-monospace,Consolas,monospace;padding:0 3px}.chip button:hover{color:#fff}
+.enviar{display:flex;gap:6px;margin-top:8px}
+.enviar input{flex:1;min-width:0;background:#0b0b0b;border:1px solid #333;color:#f5f5f5;padding:7px 9px;font:12px ui-monospace,Consolas,monospace}
+.enviar input:focus{outline:none;border-color:var(--vino)}.enviar input:disabled{opacity:.5}
+.enviar button{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:6px 10px;font:12px ui-monospace,Consolas,monospace;cursor:pointer}
+.enviar button:hover:not(:disabled){border-color:var(--vino);color:#fff}.enviar button:disabled{opacity:.4;cursor:default}
+#detalle{position:fixed;right:0;top:0;bottom:0;width:min(580px,100vw);background:#0d0d0df5;border-left:1px solid var(--vino);padding:0 20px 24px;overflow:auto;z-index:20;transform:translateX(105%);transition:transform .2s}
+#detalle.visible{transform:none}
+#detalle .cab-detalle{position:sticky;top:0;background:#0d0d0d;display:flex;align-items:center;gap:12px;padding:16px 0 12px;border-bottom:1px solid #222;margin-bottom:12px}
+#detalle .cab-detalle b{flex:1;color:#f5f5f5;font:700 20px 'Segoe UI',system-ui,sans-serif}
+#detalle .cab-detalle span{font:13px ui-monospace,Consolas,monospace;color:#c4485a}
+#detalle .cab-detalle button{background:none;border:1px solid #3e3e3e;color:#d4d4d4;width:32px;height:32px;cursor:pointer;font:16px ui-monospace,Consolas,monospace}
+#detalle .cab-detalle button:hover{border-color:var(--vino);color:#fff}
+#detalle .titulo{color:#f5f5f5;font:600 17px 'Segoe UI',system-ui,sans-serif;margin:6px 0}
+#detalle .estado{font:13px ui-monospace,Consolas,monospace;color:#a3a3a3;margin:4px 0}
+#detalle .vacio{color:#5a5a5a;font:13px ui-monospace,Consolas,monospace}
+#detalle .rotulo{margin:14px 0 6px}
+#detalle .trabajo{border:1px solid #262626;padding:10px 12px;margin:10px 0;background:#111}.trabajo.mal{border-color:#5c1822}
+#detalle .trabajo .linea{font:13px ui-monospace,Consolas,monospace;color:#f5f5f5}
+#detalle pre{margin:0;font:12px/1.45 ui-monospace,Consolas,monospace;color:#a3a3a3;white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto;background:#0a0a0a;padding:8px}
+#detalle pre.salida{color:#d4d4d4;border-left:2px solid var(--vino)}
+.tarjeta-t{user-select:text}.tarjeta-t .cab{user-select:none}
+/* En el tablero el grafo siempre se dibuja: la lista de móvil no se usa */
+@media (max-width:700px){#grafo-montaje .lienzo{display:block!important}.g-lista{display:none!important}}

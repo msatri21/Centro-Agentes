@@ -6,6 +6,8 @@ export type Trabajo = {
   trabajador: string
   categoria: string
   tarea: string
+  /** La instrucción completa que recibió el agente (hasta 1500 caracteres), para el detalle del tablero */
+  instruccion?: string
   estado: 'corriendo' | 'listo' | 'error'
   /** Date.now() al arrancar, para mostrar cuánto lleva */
   inicio: number

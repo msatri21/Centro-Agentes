@@ -441,6 +441,8 @@ let SID = 'local'
 // Para distinguir los chats en la web: la carpeta del proyecto y el nombre del chat
 // (su título si Claude Code lo da; si no, el primer mensaje que escribes en él).
 let carpetaProyecto = ''
+// Ruta completa del proyecto: donde trabajan los agentes cuando el encargo viene de la web.
+let rutaProyecto = ''
 let nombreChat = ''
 export const etiquetaChat = (carpeta: string, nombre: string) => [carpeta, nombre].filter(Boolean).join(' · ') || 'chat'
 // El primer mensaje de un chat como nombre: de /mst <tarea> se toma la tarea, no el protocolo que la acompaña.
@@ -550,7 +552,7 @@ async function atenderAcciones($: EngineInterface) {
   const nuevas = texto.slice(leidoHasta)
   leidoHasta = texto.length
   for (const linea of nuevas.split('\n')) {
-    let a: { tipo: string; id?: string; n?: number }
+    let a: { tipo: string; id?: string; n?: number; agente?: Trabajador; texto?: string }
     try {
       a = JSON.parse(linea)
     } catch {
@@ -558,7 +560,20 @@ async function atenderAcciones($: EngineInterface) {
     }
     if (a.tipo === 'cancelar' && a.id) cortadores.get(a.id)?.(CANCELADO)
     if (a.tipo === 'relanzar' && a.n !== undefined && encargos.has(a.n) && contexto) void relanzar($, a.n)
+    if (a.tipo === 'encargar' && a.agente && a.texto && TRABAJADORES.includes(a.agente) && contexto) void encargarDesdeWeb($, a.agente, a.texto, a.n)
   }
+}
+
+// Una instrucción escrita en el tablero para una terminal concreta, opcionalmente ligada a una subtarea del plan.
+async function encargarDesdeWeb($: EngineInterface, agente: Trabajador, texto: string, n?: number) {
+  if (!contexto) return
+  const sub = n !== undefined ? ((await read($, plan))?.subtareas ?? []).find(s => s.n === n) : undefined
+  const tarea = sub ? `${texto}\n\nContexto: esto es parte de la subtarea ${sub.n} del plan: "${sub.titulo}".` : texto
+  $.ui.toast(`Encargo desde el tablero para ${agente}${sub ? ` (subtarea ${sub.n})` : ''}`)
+  const r = await delegarUno($, contexto.modelos, { trabajador: agente, categoria: 'manual', tarea, subtarea: sub?.n, cwd: rutaProyecto || undefined }, contexto.timeoutMs)
+  void $.prompt.submit({
+    text: `[Centro de agentes MST] El usuario le encargó a ${agente} desde el tablero${sub ? ` la subtarea ${sub.n}` : ''}: "${corto(texto, 200)}". Verifica este resultado y registra su puntaje con registrar_auditoria:\n\n${JSON.stringify(r, null, 1)}`,
+  }).catch(() => undefined)
 }
 
 // Relanza una subtarea con su último encargo y pasa el resultado a Claude para que lo verifique.
@@ -704,7 +719,7 @@ async function intentar(
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined }
+  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
   await marcar($, input.subtarea, { estado: 'en curso', quien })
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
@@ -1089,6 +1104,7 @@ export const register: Register = (on, options) => {
     // Cada chat tiene su centro: su id nombra su carpeta. Se recupera lo guardado y se sigue guardando cada 2 s.
     SID = ((await $.session.id().catch(() => 'local')) || 'local').replace(/[^\w-]/g, '')
     carpetaProyecto = e.cwd.split(/[\\/]/).filter(Boolean).pop() ?? ''
+    rutaProyecto = e.cwd
     await restaurarEstado($).catch(() => undefined)
     $.clock.every(2000, () => guardarEstado($))
     // Proxy: el de los ajustes, si no el que ya trae el entorno, si no el de Windows (el que usa el navegador).

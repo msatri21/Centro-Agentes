@@ -157,7 +157,7 @@ export function paginaCentro(d: DatosPagina): string {
     jefe: d.jefe,
     ahora,
     plan: d.plan,
-    trabajos: d.trabajos.slice(-60).map(t => ({ id: t.id, trabajador: t.trabajador, estado: t.estado, subtarea: t.subtarea, inicio: t.inicio, ms: t.ms, puntaje: t.puntaje, salida: (t.salida ?? '').slice(-400), skills: t.skills, tokensIn: t.tokensIn, tokensOut: t.tokensOut })),
+    trabajos: d.trabajos.slice(-60).map(t => ({ id: t.id, trabajador: t.trabajador, estado: t.estado, subtarea: t.subtarea, inicio: t.inicio, ms: t.ms, puntaje: t.puntaje, instruccion: t.instruccion, tarea: t.tarea, categoria: t.categoria, salida: (t.salida ?? '').slice(t.estado === 'corriendo' ? -1500 : -400), skills: t.skills, tokensIn: t.tokensIn, tokensOut: t.tokensOut })),
     agentes: d.agentes,
     modelos: d.modelos,
     listo,

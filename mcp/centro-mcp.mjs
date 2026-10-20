@@ -245,7 +245,7 @@ async function intentar(c, input) {
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea }
+  const trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea }
   trabajos.push(trabajo)
   marcar(input.subtarea, { estado: 'en curso', quien })
   guardar()
@@ -501,6 +501,12 @@ function atenderAcciones() {
     if (a.tipo === 'cancelar' && typeof a.id === 'string' && cortadores.has(a.id)) {
       cortadores.get(a.id)(CANCELADO)
       avisosWeb.push(`Cancelaste desde la web el trabajo ${a.id}.`)
+    }
+    if (a.tipo === 'encargar' && TRABAJADORES.includes(a.agente) && typeof a.texto === 'string' && a.texto.trim()) {
+      const sub = Number.isInteger(a.n) ? plan?.subtareas.find(x => x.n === a.n) : undefined
+      const tarea = sub ? `${a.texto}\n\nContexto: esto es parte de la subtarea ${sub.n} del plan: "${sub.titulo}".` : a.texto
+      avisosWeb.push(`El usuario le encargó a ${a.agente} desde el tablero${sub ? ` la subtarea ${sub.n}` : ''}: "${corto(a.texto, 200)}". Cuando termine, audítalo con registrar_auditoria.`)
+      void delegarUno({ trabajador: a.agente, categoria: 'manual', tarea, subtarea: sub?.n, cwd: process.cwd() }).then(r => avisosWeb.push(`Resultado del encargo a ${a.agente} (id ${r.id ?? '-'}, ${r.exito ? 'terminó' : 'falló'}): audítalo con registrar_auditoria.`))
     }
     if (a.tipo === 'relanzar' && Number.isInteger(a.n) && encargos.has(a.n)) {
       avisosWeb.push(`Relanzando la subtarea ${a.n} desde la web: cuando termine, verifica su resultado y puntúalo.`)
