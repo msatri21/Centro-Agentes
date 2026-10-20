@@ -1,135 +1,127 @@
-:root{--vino:#9e2a3a}
+/* El tablero: lienzo infinito con piezas sueltas. Colores por variables: el tema (oscuro/claro) y el acento se cambian desde el círculo "Tú". */
+:root{
+  --fondo:#0a0a0a;--panel:#111;--panel2:#0d0d0d;--borde:#2f2f2f;--linea:#3a3a3a;--punto:#262626;
+  --t1:#f5f5f5;--t2:#d4d4d4;--t3:#a3a3a3;--t4:#8a8a8a;--t5:#5a5a5a;
+  --acento:#9e2a3a;--acento-claro:#c4485a;--acento-oscuro:#5c1822;
+}
+:root[data-tema=claro]{
+  --fondo:#f3f1ee;--panel:#ffffff;--panel2:#faf9f7;--borde:#cbc6bf;--linea:#b5afa6;--punto:#d8d4ce;
+  --t1:#161616;--t2:#2a2a2a;--t3:#4a4a4a;--t4:#6a6a6a;--t5:#8e8e8e;
+}
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;overflow:hidden;background:#0a0a0a;color:#a3a3a3;font:15px/1.5 'Segoe UI',system-ui,sans-serif}
-.rotulo{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacing:.08em;text-transform:uppercase}
-/* El grafo grande */
-#grafo-montaje{max-width:1800px;margin:24px auto 0;padding:0 20px}
-.lienzo{border:1px solid #2a2a2a;background:radial-gradient(ellipse at 30% 45%,#141414 0%,#0a0a0a 70%)}
-.lienzo svg{display:block;width:100%;height:auto}
-.arista{fill:none;stroke:#333;stroke-width:1.2;transition:stroke .4s}.arista.viva{stroke:#666}
-.bus{fill:none;stroke:#2f2f2f;stroke-width:1;stroke-dasharray:3 5}
-.cambio{fill:none;stroke:transparent;stroke-width:1.4;stroke-dasharray:5 4}.cambio.viva{stroke:#5c1822}
-.nodo rect,.nodo circle.cuerpo{fill:#121212;stroke:#3e3e3e;stroke-width:1.2;transition:stroke .4s,fill .4s}
-.nodo .nombre{font:600 16px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}
-.nodo .rol{font:12px ui-monospace,Consolas,monospace;fill:#8a8a8a}
-.nodo .modelo{font:11px ui-monospace,Consolas,monospace;fill:#5a5a5a}.nodo .modelo.vino{fill:#c4485a}
-.nodo .etiqueta{font:10.5px ui-monospace,Consolas,monospace;fill:#5a5a5a;letter-spacing:.1em}
-.nodo{cursor:help}.nodo:hover rect,.nodo:hover circle.cuerpo{stroke:#a3a3a3}
-.nodo.activo rect{stroke:var(--vino);fill:#170d0f}
-.nodo.hecho rect{stroke:#6a6a6a}
-.nodo.apartado rect{stroke:#5c1822;stroke-dasharray:5 4}
-.nodo.falla rect{stroke:#c4485a;animation:parpadeo .35s steps(2) infinite}
-.terminal rect{fill:#0c0c0c;stroke:#262626}
-.terminal text{font:12px ui-monospace,Consolas,monospace;fill:#a3a3a3}.terminal text.ok{fill:#d4d4d4}.terminal text.mal{fill:#c4485a}
-.nota{font:700 15px ui-monospace,Consolas,monospace;fill:#f5f5f5;opacity:0;transition:opacity .5s}.nota.vino{fill:#c4485a}
-.aviso-falla{font:13px ui-monospace,Consolas,monospace;fill:#c4485a;opacity:0;transition:opacity .4s}
-.tarjeta rect{fill:#141414;stroke:#444}.tarjeta text{font:600 14px ui-monospace,Consolas,monospace;fill:#d4d4d4}
-.tarjeta.asignada rect{stroke:var(--vino)}.tarjeta.lista rect{fill:#5c1822;stroke:var(--vino)}
-.anillo{fill:none;stroke:var(--vino);stroke-width:1.5;stroke-dasharray:6 9;transform-origin:380px 400px;animation:girar 30s linear infinite}
-.halo{fill:var(--vino);opacity:.12;transform-origin:380px 400px;animation:latido 2.6s ease-in-out infinite}
-.jefe-titulo{font:700 26px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}.jefe-sub{font:12px ui-monospace,Consolas,monospace;fill:#c4485a;letter-spacing:.14em}.jefe-desc{font:11.5px ui-monospace,Consolas,monospace;fill:#8a8a8a}
-.rotulo-svg{font:11px ui-monospace,Consolas,monospace;fill:#5a5a5a;letter-spacing:.12em;text-transform:uppercase}.rotulo-arista{font:12px ui-monospace,Consolas,monospace;fill:#a3a3a3}
-.listo-svg{font:700 44px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5;opacity:0;transition:opacity .6s}.listo-svg tspan{fill:#c4485a}
-.movil{opacity:.35;transition:opacity .4s}.movil.vibra{opacity:1;animation:vibrar .18s linear infinite}
-.movil rect{fill:#111;stroke:#8a8a8a}.movil.vibra rect{stroke:#c4485a}
-@keyframes girar{to{transform:rotate(360deg)}}
-@keyframes latido{0%,100%{transform:scale(1);opacity:.1}50%{transform:scale(1.18);opacity:.22}}
-@keyframes parpadeo{50%{opacity:.35}}
-@keyframes vibrar{0%{transform:translate(0,0)}25%{transform:translate(-2px,1px)}50%{transform:translate(2px,-1px)}75%{transform:translate(-1px,-1px)}}
-.paso{display:grid;grid-template-columns:1fr;gap:18px;margin-top:20px;padding:22px 24px;border:1px solid #2a2a2a;background:#111}
-@media (min-width:900px){.paso{grid-template-columns:340px 1fr}}
-.paso h2{font:700 28px/1.1 'Segoe UI',system-ui,sans-serif;color:#f5f5f5;margin:0}.paso h2 i{font:normal 15px ui-monospace,Consolas,monospace;color:#c4485a;display:block;margin-bottom:6px}
-.paso p{margin:0;color:#d4d4d4;font-size:17px;min-height:52px}.paso .rotulo{margin:0 0 6px}
-.fases,.fases-nombres{display:grid;grid-template-columns:repeat(8,1fr);gap:4px}.fases{margin-top:16px}
-.fases span{height:6px;background:#262626;transition:background .4s}.fases span.pasada{background:#555}.fases span.actual{background:var(--vino)}
-.fases-nombres{margin-top:6px;font:10.5px ui-monospace,Consolas,monospace;color:#5a5a5a;text-transform:uppercase;letter-spacing:.04em}
-@media (max-width:700px){.fases-nombres{display:none}}
-.g-lista{display:none}
-.g-fila{border:1px solid #2a2a2a;background:#111;padding:12px 14px}
-.g-fila.activo{border-color:var(--vino);background:#170d0f}.g-fila.falla{border-color:#c4485a}.g-fila.apartado{border-style:dashed;border-color:#5c1822}
-.g-cab{display:flex;justify-content:space-between;gap:10px;font:14px ui-monospace,Consolas,monospace}.g-cab b{color:#f5f5f5;font:600 16px 'Segoe UI',system-ui,sans-serif}.g-cab span{color:#a3a3a3}
-.g-fila small{display:block;color:#5a5a5a;font:12px ui-monospace,Consolas,monospace;margin-top:2px}
-.g-fila pre{margin:8px 0 0;color:#a3a3a3;font:12px/1.4 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}.g-fila pre:empty{display:none}
-@media (max-width:700px){#grafo-montaje .lienzo{display:none}.g-lista{display:grid;gap:8px;margin-top:0}}
-#g-tip{position:fixed;z-index:10;max-width:320px;padding:12px 14px;background:#141414;border:1px solid var(--vino);color:#d4d4d4;font-size:14px;line-height:1.45;pointer-events:none;opacity:0;transition:opacity .15s}
-#g-tip b{display:block;color:#f5f5f5;font-size:15px;margin-bottom:4px}
-@media (prefers-reduced-motion:reduce){.anillo,.halo,.movil.vibra,.nodo.falla rect{animation:none!important}}
-
+html,body{margin:0;height:100%;overflow:hidden;background:var(--fondo);color:var(--t3);font:15px/1.5 'Segoe UI',system-ui,sans-serif}
+.rotulo{font:12px ui-monospace,Consolas,monospace;color:var(--t4);letter-spacing:.08em;text-transform:uppercase}
+button{font-family:inherit}
 
 /* El lienzo */
-#lienzo{position:fixed;inset:0;overflow:hidden;cursor:grab;background-color:#0a0a0a;background-image:radial-gradient(circle,#262626 1.2px,transparent 1.4px);background-size:28px 28px;touch-action:none}
+#lienzo{position:fixed;inset:0;overflow:hidden;cursor:grab;background-color:var(--fondo);background-image:radial-gradient(circle,var(--punto) 1.2px,transparent 1.4px);background-size:28px 28px;touch-action:none}
 #lienzo.arrastrando{cursor:grabbing}
 #mundo{position:absolute;left:0;top:0;transform-origin:0 0}
 #lineas{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
-#lineas path{fill:none;stroke:#3a3a3a;stroke-width:2}
-#lineas path.viva{stroke:var(--vino);stroke-dasharray:8 6;animation:fluir .8s linear infinite}
+#lineas path{fill:none;stroke:var(--linea);stroke-width:2}
+#lineas path.fija{stroke:var(--acento);stroke-width:3.5}
+#lineas path.jefe{stroke:var(--t5)}
+#lineas path.dep{stroke:var(--borde);stroke-dasharray:3 6}
+#lineas path.bus{stroke:var(--borde);stroke-width:1.2;stroke-dasharray:2 6}
+#lineas path.flujo{stroke:var(--t5)}
+#lineas path.notas{stroke:var(--acento-oscuro);stroke-dasharray:6 6}
+#lineas path.viva{stroke:var(--acento);stroke-dasharray:8 6;animation:fluir .8s linear infinite}
+#lineas path.manual{stroke:var(--acento);stroke-width:2.5}
+#lineas path.temp{stroke:var(--acento-claro);stroke-dasharray:4 4;stroke-width:2}
 @keyframes fluir{to{stroke-dashoffset:-14}}
-#grafo-montaje{max-width:none;margin:0;padding:0}
-.tarjeta-t{position:absolute;background:#111;border:1px solid #2f2f2f;box-shadow:0 6px 24px #0008}
-.tarjeta-t .cab{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #222;cursor:move;user-select:none;touch-action:none}
-.tarjeta-t .cab b{color:#f5f5f5;font:600 15px 'Segoe UI',system-ui,sans-serif;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tarjeta-t .cab span{font:12px ui-monospace,Consolas,monospace;color:#a3a3a3}
-.tarjeta-t .cab button{background:none;border:0;color:#8a8a8a;font:16px ui-monospace,Consolas,monospace;cursor:pointer;padding:0 4px}
-.tarjeta-t .cab button:hover{color:#fff}
-.tarjeta-t.activo{border-color:var(--vino)}.tarjeta-t.falla{border-color:#c4485a}.tarjeta-t.apartado{border-style:dashed;border-color:#5c1822}
-.tarjeta-t.hecha{border-color:#555}
-.tarjeta-t .cuerpo{padding:10px 12px}
-.tarjeta-t pre{margin:0;font:12px/1.45 ui-monospace,Consolas,monospace;color:#a3a3a3;white-space:pre-wrap;word-break:break-word;min-height:96px}
-.tarjeta-t small{display:block;color:#5a5a5a;font:12px ui-monospace,Consolas,monospace;margin-bottom:6px}
-.tarjeta-t .estado{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;margin-top:8px}
-.tarjeta-t .nota{font:700 14px ui-monospace,Consolas,monospace;color:#f5f5f5;opacity:1}.tarjeta-t .nota.mal{color:#c4485a}
-.tarjeta-t button.cancelar{margin-top:8px;background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:6px 10px;font:12px ui-monospace,Consolas,monospace;cursor:pointer}
-.tarjeta-t button.cancelar:hover{border-color:var(--vino);color:#fff}
-.tarea{width:300px}.tarea .titulo{color:#f5f5f5;font:600 16px 'Segoe UI',system-ui,sans-serif;margin:0 0 6px}
-.tarea.en-curso{border-color:var(--vino)}.tarea.hecha{background:#1a0e11;border-color:var(--vino)}
-.terminal-t{width:340px}
-.grafo-t{width:1100px}.grafo-t .cuerpo{padding:0}
-.grafo-t .lienzo{border:0}
-/* de lejos solo se ven los títulos y el estado; el detalle aparece al acercarse */
-#mundo.lejos .tarjeta-t .cuerpo{display:none}#mundo.lejos .tarjeta-t .cab b{font-size:22px}#mundo.lejos .tarjeta-t .cab span{font-size:16px}
-#mundo.lejos .grafo-t .cuerpo{display:block}
-/* barra y cabecera */
-#cabecera{position:fixed;left:18px;top:14px;display:flex;align-items:baseline;gap:14px;pointer-events:none;z-index:5}
-#cabecera b{color:#f5f5f5;font:700 22px 'Segoe UI',system-ui,sans-serif}#cabecera i{font-style:normal;color:var(--vino)}
-#cabecera a{pointer-events:auto;color:#8a8a8a;font:12px ui-monospace,Consolas,monospace}#cabecera a:hover{color:var(--vino)}
-#barra{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:94vw;padding:8px;background:#0d0d0dee;border:1px solid #2a2a2a;border-radius:14px;z-index:5}
-#barra button{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;border-radius:999px;padding:8px 14px;font:13px ui-monospace,Consolas,monospace;cursor:pointer}
-#barra button:hover{border-color:var(--vino);color:#fff}
-#barra button.abierto{border-color:var(--vino);color:#fff}
-#barra .sep{width:1px;background:#2a2a2a;margin:0 4px}
-#hud{position:fixed;right:18px;top:14px;font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;z-index:5;pointer-events:none;text-align:right}
 
-/* Unir terminales con tareas, y el detalle en vivo */
-#lineas path.jefe{stroke:#4a4a4a}
-#lineas path.dep{stroke:#2f2f2f;stroke-dasharray:3 6}
-#lineas path.manual{stroke:var(--vino);stroke-width:2.5}
-#lineas path.temp{stroke:#c4485a;stroke-dasharray:4 4;stroke-width:2}
-.puerto{position:absolute;left:50%;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:#0a0a0a;border:2px solid #8a8a8a;cursor:crosshair;z-index:2;touch-action:none}
-.puerto:hover{border-color:var(--vino);background:var(--vino)}
+/* Piezas */
+.pieza{position:absolute;background:var(--panel);border:1px solid var(--borde);box-shadow:0 6px 24px #0006;color:var(--t3)}
+:root[data-tema=claro] .pieza{box-shadow:0 4px 16px #0002}
+.pieza.activo{border-color:var(--acento)}.pieza.falla{border-color:var(--acento-claro)}.pieza.apartado{border-style:dashed;border-color:var(--acento-oscuro)}.pieza.hecha{border-color:var(--t5)}
+.cab{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--borde);cursor:move;user-select:none;touch-action:none}
+.cab b{color:var(--t1);font:600 15px 'Segoe UI',system-ui,sans-serif;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cab span{font:12px ui-monospace,Consolas,monospace;color:var(--t3)}
+.cuerpo{padding:10px 12px}
+.pieza pre{margin:0;font:12px/1.45 ui-monospace,Consolas,monospace;color:var(--t3);white-space:pre-wrap;word-break:break-word;min-height:96px}
+.pieza small{display:block;color:var(--t5);font:12px ui-monospace,Consolas,monospace;margin-bottom:6px}
+.estado{font:12px ui-monospace,Consolas,monospace;color:var(--t4);margin-top:8px}
+.nota{font:700 14px ui-monospace,Consolas,monospace;color:var(--t1)}.nota.mal{color:var(--acento-claro)}
+button.cancelar{margin-top:8px;background:var(--panel2);color:var(--t2);border:1px solid var(--borde);padding:6px 10px;font:12px ui-monospace,Consolas,monospace;cursor:pointer}
+button.cancelar:hover{border-color:var(--acento);color:var(--t1)}
+.tarea{width:300px}.tarea .titulo{color:var(--t1);font:600 16px 'Segoe UI',system-ui,sans-serif;margin:0 0 6px}
+.tarea.en-curso{border-color:var(--acento)}.tarea.hecha{background:color-mix(in srgb,var(--acento) 16%,var(--panel));border-color:var(--acento)}
+.terminal-t{width:340px}
+.terminal-t.activo{background:color-mix(in srgb,var(--acento) 8%,var(--panel))}
+
+/* Círculos: Tú y el jefe */
+.circulo{border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;cursor:pointer;user-select:none;touch-action:none;background:var(--panel);transition:border-color .3s}
+.circulo .etq{font:11px ui-monospace,Consolas,monospace;letter-spacing:.14em;color:var(--t5);text-transform:uppercase}
+.circulo b{color:var(--t1);font:700 26px 'Segoe UI',system-ui,sans-serif}
+.circulo small{font:11.5px ui-monospace,Consolas,monospace;color:var(--t4);margin:2px 0 0}
+.circulo.yo{width:130px;height:130px;border:2px solid var(--borde)}
+.circulo.jefe{width:210px;height:210px;border:2px solid var(--acento);box-shadow:0 0 0 8px color-mix(in srgb,var(--acento) 10%,transparent),0 6px 24px #0006}
+.circulo.jefe .etq{color:var(--acento-claro)}
+.circulo.jefe.activo{animation:latido 2.6s ease-in-out infinite}
+@keyframes latido{0%,100%{box-shadow:0 0 0 8px color-mix(in srgb,var(--acento) 10%,transparent)}50%{box-shadow:0 0 0 18px color-mix(in srgb,var(--acento) 22%,transparent)}}
+.circulo:hover{border-color:var(--acento-claro)}
+
+/* Piezas pequeñas de la tubería: verificar, auditoría, juntar, informe */
+.pipe{width:200px;padding:10px 14px;cursor:move;user-select:none;touch-action:none}
+.pipe b{display:block;color:var(--t1);font:600 15px 'Segoe UI',system-ui,sans-serif}
+.pipe small{margin:2px 0 0}
+.pipe.activo{background:color-mix(in srgb,var(--acento) 12%,var(--panel))}
+
+/* Paso actual */
+.paso-t{width:560px}
+.paso-t .cuerpo{padding:12px 16px}
+.paso-t h3{margin:2px 0 4px;color:var(--t1);font:700 22px/1.1 'Segoe UI',system-ui,sans-serif}.paso-t h3 i{display:block;font:normal 13px ui-monospace,Consolas,monospace;color:var(--acento-claro);margin-bottom:4px}
+.paso-t p{margin:6px 0 10px;color:var(--t2);font-size:14px}
+.fases{display:grid;grid-template-columns:repeat(8,1fr);gap:4px}.fases span{height:6px;background:var(--punto);transition:background .4s}.fases span.pasada{background:var(--t5)}.fases span.actual{background:var(--acento)}
+
+/* Unir terminales con tareas */
+.puerto{position:absolute;left:50%;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:var(--fondo);border:2px solid var(--t4);cursor:crosshair;z-index:2;touch-action:none}
+.puerto:hover{border-color:var(--acento);background:var(--acento)}
 .puerto.arriba{top:-10px}.puerto.abajo{bottom:-10px}
 .enlazadas{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--vino);padding:2px 4px 2px 8px;font:12px ui-monospace,Consolas,monospace;color:#d4d4d4}
-.chip button{background:none;border:0;color:#8a8a8a;cursor:pointer;font:12px ui-monospace,Consolas,monospace;padding:0 3px}.chip button:hover{color:#fff}
+.chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--acento);padding:2px 4px 2px 8px;font:12px ui-monospace,Consolas,monospace;color:var(--t2)}
+.chip button{background:none;border:0;color:var(--t4);cursor:pointer;font:12px ui-monospace,Consolas,monospace;padding:0 3px}.chip button:hover{color:var(--t1)}
 .enviar{display:flex;gap:6px;margin-top:8px}
-.enviar input{flex:1;min-width:0;background:#0b0b0b;border:1px solid #333;color:#f5f5f5;padding:7px 9px;font:12px ui-monospace,Consolas,monospace}
-.enviar input:focus{outline:none;border-color:var(--vino)}.enviar input:disabled{opacity:.5}
-.enviar button{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:6px 10px;font:12px ui-monospace,Consolas,monospace;cursor:pointer}
-.enviar button:hover:not(:disabled){border-color:var(--vino);color:#fff}.enviar button:disabled{opacity:.4;cursor:default}
-#detalle{position:fixed;right:0;top:0;bottom:0;width:min(580px,100vw);background:#0d0d0df5;border-left:1px solid var(--vino);padding:0 20px 24px;overflow:auto;z-index:20;transform:translateX(105%);transition:transform .2s}
+.enviar input,.enviar textarea,#detalle input[type=text],#detalle textarea{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--borde);color:var(--t1);padding:7px 9px;font:12px ui-monospace,Consolas,monospace}
+.enviar input:focus,#detalle input:focus,#detalle textarea:focus{outline:none;border-color:var(--acento)}.enviar input:disabled{opacity:.5}
+.enviar button,#detalle .accion{background:var(--panel2);color:var(--t2);border:1px solid var(--borde);padding:6px 12px;font:12px ui-monospace,Consolas,monospace;cursor:pointer}
+.enviar button:hover:not(:disabled),#detalle .accion:hover{border-color:var(--acento);color:var(--t1)}.enviar button:disabled{opacity:.4;cursor:default}
+
+/* Panel lateral: detalle de terminal/tarea, ajustes de Tú, conversación con el jefe */
+#detalle{position:fixed;right:0;top:0;bottom:0;width:min(580px,100vw);background:var(--panel2);border-left:1px solid var(--acento);padding:0 20px 24px;overflow:auto;z-index:20;transform:translateX(105%);transition:transform .2s}
 #detalle.visible{transform:none}
-#detalle .cab-detalle{position:sticky;top:0;background:#0d0d0d;display:flex;align-items:center;gap:12px;padding:16px 0 12px;border-bottom:1px solid #222;margin-bottom:12px}
-#detalle .cab-detalle b{flex:1;color:#f5f5f5;font:700 20px 'Segoe UI',system-ui,sans-serif}
-#detalle .cab-detalle span{font:13px ui-monospace,Consolas,monospace;color:#c4485a}
-#detalle .cab-detalle button{background:none;border:1px solid #3e3e3e;color:#d4d4d4;width:32px;height:32px;cursor:pointer;font:16px ui-monospace,Consolas,monospace}
-#detalle .cab-detalle button:hover{border-color:var(--vino);color:#fff}
-#detalle .titulo{color:#f5f5f5;font:600 17px 'Segoe UI',system-ui,sans-serif;margin:6px 0}
-#detalle .estado{font:13px ui-monospace,Consolas,monospace;color:#a3a3a3;margin:4px 0}
-#detalle .vacio{color:#5a5a5a;font:13px ui-monospace,Consolas,monospace}
-#detalle .rotulo{margin:14px 0 6px}
-#detalle .trabajo{border:1px solid #262626;padding:10px 12px;margin:10px 0;background:#111}.trabajo.mal{border-color:#5c1822}
-#detalle .trabajo .linea{font:13px ui-monospace,Consolas,monospace;color:#f5f5f5}
-#detalle pre{margin:0;font:12px/1.45 ui-monospace,Consolas,monospace;color:#a3a3a3;white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto;background:#0a0a0a;padding:8px}
-#detalle pre.salida{color:#d4d4d4;border-left:2px solid var(--vino)}
-.tarjeta-t{user-select:text}.tarjeta-t .cab{user-select:none}
-/* En el tablero el grafo siempre se dibuja: la lista de móvil no se usa */
-@media (max-width:700px){#grafo-montaje .lienzo{display:block!important}.g-lista{display:none!important}}
+#detalle .cab-detalle{position:sticky;top:0;background:var(--panel2);display:flex;align-items:center;gap:12px;padding:16px 0 12px;border-bottom:1px solid var(--borde);margin-bottom:12px;z-index:1}
+#detalle .cab-detalle b{flex:1;color:var(--t1);font:700 20px 'Segoe UI',system-ui,sans-serif}
+#detalle .cab-detalle span{font:13px ui-monospace,Consolas,monospace;color:var(--acento-claro)}
+#detalle .cab-detalle button{background:none;border:1px solid var(--borde);color:var(--t2);width:32px;height:32px;cursor:pointer;font:16px ui-monospace,Consolas,monospace}
+#detalle .cab-detalle button:hover{border-color:var(--acento);color:var(--t1)}
+#detalle .titulo{color:var(--t1);font:600 17px 'Segoe UI',system-ui,sans-serif;margin:6px 0}
+#detalle .estado{font:13px ui-monospace,Consolas,monospace;color:var(--t3);margin:4px 0}
+#detalle .vacio{color:var(--t5);font:13px ui-monospace,Consolas,monospace}
+#detalle .rotulo{margin:16px 0 6px}
+#detalle .trabajo{border:1px solid var(--borde);padding:10px 12px;margin:10px 0;background:var(--panel)}#detalle .trabajo.mal{border-color:var(--acento-oscuro)}
+#detalle .trabajo .linea{font:13px ui-monospace,Consolas,monospace;color:var(--t1)}
+#detalle pre{margin:0;font:12px/1.45 ui-monospace,Consolas,monospace;color:var(--t3);white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto;background:var(--fondo);padding:8px}
+#detalle pre.salida{color:var(--t2);border-left:2px solid var(--acento)}
+#detalle .fila{display:flex;gap:8px;align-items:center;margin:6px 0}
+#detalle label{font:13px ui-monospace,Consolas,monospace;color:var(--t3);min-width:96px}
+#detalle textarea{width:100%;min-height:90px;resize:vertical}
+.opciones{display:flex;gap:8px;flex-wrap:wrap}
+.opciones button{background:var(--panel2);color:var(--t2);border:1px solid var(--borde);padding:7px 14px;font:13px ui-monospace,Consolas,monospace;cursor:pointer}
+.opciones button.elegido{border-color:var(--acento);color:var(--t1);background:color-mix(in srgb,var(--acento) 14%,var(--panel2))}
+.muestra{width:34px!important;height:34px;border-radius:50%;padding:0!important;border:2px solid var(--borde)!important}.muestra.elegido{border-color:var(--t1)!important;box-shadow:0 0 0 2px var(--fondo),0 0 0 4px var(--t1)}
+#detalle .mensaje{border-left:2px solid var(--acento);padding:6px 10px;margin:8px 0;background:var(--panel);font:13px ui-monospace,Consolas,monospace;color:var(--t2);white-space:pre-wrap}
+#detalle .mensaje small{display:block;color:var(--t5);font-size:11px}
+
+/* Barra y cabecera */
+#cabecera{position:fixed;left:18px;top:14px;display:flex;align-items:baseline;gap:14px;pointer-events:none;z-index:5}
+#cabecera b{color:var(--t1);font:700 22px 'Segoe UI',system-ui,sans-serif}#cabecera i{font-style:normal;color:var(--acento)}
+#cabecera a{pointer-events:auto;color:var(--t4);font:12px ui-monospace,Consolas,monospace}#cabecera a:hover{color:var(--acento)}
+#barra{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:94vw;padding:8px;background:color-mix(in srgb,var(--panel2) 92%,transparent);border:1px solid var(--borde);border-radius:14px;z-index:5}
+#barra button{background:var(--panel);color:var(--t2);border:1px solid var(--borde);border-radius:999px;padding:8px 14px;font:13px ui-monospace,Consolas,monospace;cursor:pointer}
+#barra button:hover{border-color:var(--acento);color:var(--t1)}
+#barra button.abierto{border-color:var(--acento);color:var(--t1)}
+#barra .sep{width:1px;background:var(--borde);margin:0 4px}
+#hud{position:fixed;right:18px;top:14px;font:12px ui-monospace,Consolas,monospace;color:var(--t4);z-index:5;pointer-events:none;text-align:right}
+/* de lejos solo se ven los títulos y el estado */
+#mundo.lejos .pieza .cuerpo{display:none}#mundo.lejos .cab b{font-size:22px}#mundo.lejos .cab span{font-size:16px}

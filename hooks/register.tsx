@@ -561,6 +561,8 @@ async function atenderAcciones($: EngineInterface) {
     if (a.tipo === 'cancelar' && a.id) cortadores.get(a.id)?.(CANCELADO)
     if (a.tipo === 'relanzar' && a.n !== undefined && encargos.has(a.n) && contexto) void relanzar($, a.n)
     if (a.tipo === 'encargar' && a.agente && a.texto && TRABAJADORES.includes(a.agente) && contexto) void encargarDesdeWeb($, a.agente, a.texto, a.n)
+    // Un mensaje para el jefe: entra en esta sesión de Claude como un mensaje más (espera a que la sesión esté libre).
+    if (a.tipo === 'jefe' && a.texto) void $.prompt.submit({ text: `[Mensaje del usuario desde el tablero] ${a.texto}` }).catch(() => undefined)
   }
 }
 

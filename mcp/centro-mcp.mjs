@@ -502,6 +502,7 @@ function atenderAcciones() {
       cortadores.get(a.id)(CANCELADO)
       avisosWeb.push(`Cancelaste desde la web el trabajo ${a.id}.`)
     }
+    if (a.tipo === 'jefe' && typeof a.texto === 'string' && a.texto.trim()) avisosWeb.push(`El usuario te escribe desde el tablero: "${a.texto}". Respóndele en el chat y, si pide algo, hazlo.`)
     if (a.tipo === 'encargar' && TRABAJADORES.includes(a.agente) && typeof a.texto === 'string' && a.texto.trim()) {
       const sub = Number.isInteger(a.n) ? plan?.subtareas.find(x => x.n === a.n) : undefined
       const tarea = sub ? `${a.texto}\n\nContexto: esto es parte de la subtarea ${sub.n} del plan: "${sub.titulo}".` : a.texto

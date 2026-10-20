@@ -8,7 +8,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const [puerto, archivoClave, chats, version = '0'] = process.argv.slice(2)
-const TIPOS = new Set(['cancelar', 'relanzar', 'encargar'])
+const TIPOS = new Set(['cancelar', 'relanzar', 'encargar', 'jefe'])
 const AGENTES = new Set(['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude'])
 const claveActual = () => {
   try {
@@ -121,7 +121,8 @@ const servidor = http.createServer((req, res) => {
         res.writeHead(400).end('json inválido')
         return
       }
-      const encargoMalo = a.tipo === 'encargar' && !(AGENTES.has(a.agente) && typeof a.texto === 'string' && a.texto.trim().length > 0 && a.texto.length <= 2000)
+      const textoBueno = typeof a.texto === 'string' && a.texto.trim().length > 0 && a.texto.length <= 2000
+      const encargoMalo = (a.tipo === 'encargar' && !(AGENTES.has(a.agente) && textoBueno)) || (a.tipo === 'jefe' && !textoBueno)
       if (!TIPOS.has(a.tipo) || encargoMalo || (a.id !== undefined && typeof a.id !== 'string') || (a.n !== undefined && !Number.isInteger(a.n))) {
         res.writeHead(400).end('acción inválida')
         return

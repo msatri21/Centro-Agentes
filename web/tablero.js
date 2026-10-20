@@ -1,10 +1,10 @@
-// El tablero: un lienzo infinito donde el grafo principal, las tareas del plan y las terminales de cada agente son tarjetas
-// que se arrastran, con líneas que las unen. Las tareas cuelgan del jefe; las terminales cuelgan de las tareas.
-// Doble clic en una terminal o una tarea abre su detalle en vivo. Arrastrando el punto de una terminal hasta una tarea
-// se unen, y entonces puedes escribirle a esa terminal qué quieres que haga de esa tarea.
+// El tablero: un lienzo infinito con piezas sueltas que se arrastran. En el centro, el círculo "Tú", siempre unido al círculo
+// "Claude" (el jefe); de Claude salen las tareas y de las tareas las terminales de los agentes.
+// Un clic en Tú abre tus ajustes (cuenta, tiempo de sesión, tema y acento); doble clic en el jefe te deja escribirle a la sesión.
+// Doble clic en una terminal o una tarea abre su detalle en vivo. Arrastrando el punto de una terminal hasta una tarea se unen,
+// y entonces puedes escribirle a esa terminal qué quieres que haga de esa tarea.
 // Los datos son los mismos del chat (se leen de la página normal cada 2 s).
-import { crearGrafo } from './grafo.js'
-import { AGENTES, agenteDe, estadoAgente } from './grafo-logica.js'
+import { AGENTES, FASES, agenteDe, estadoAgente, eventosEntre, faseDe } from './grafo-logica.js'
 
 const NOMBRES = { opencode: 'OpenCode', ollama: 'Ollama', hermes: 'Hermes', aider: 'Aider', codex: 'Codex', claude: 'Claude headless' }
 const lienzo = document.getElementById('lienzo')
@@ -14,7 +14,10 @@ const barra = document.getElementById('barra')
 const hud = document.getElementById('hud')
 const NS = 'http://www.w3.org/2000/svg'
 const chat = new URLSearchParams(location.search).get('s') ?? 'sin-chat'
-const CLAVE_GUARDADO = `tablero2:${chat}`
+const CLAVE_GUARDADO = `tablero3:${chat}`
+const CLAVE_AJUSTES = 'tablero-ajustes'
+const abiertoEn = Date.now()
+const el = (tag, clase, texto) => { const e = document.createElement(tag); if (clase) e.className = clase; if (texto !== undefined) e.textContent = texto; return e }
 
 // ---------- datos de ejemplo: un plan a medias con todos los estados, para probar el tablero sin trabajo real ----------
 function ejemplo(ahora) {
@@ -41,21 +44,38 @@ function ejemplo(ahora) {
       t('c', 'aider:ollama_chat/gemma4:31b-cloud', 3, 'corriendo', 14, undefined, { instruccion: 'Escribe tests en test_calc.py para suma, resta, multiplica y divide.', salida: '› test_calc.py\nApplied edit to test_calc.py\nTokens: 1.2k sent' }),
       t('d', 'opencode:ollama/gpt-oss:120b-cloud', 4, 'corriendo', 6, undefined, { instruccion: 'Añade raiz(x) con ValueError si x < 0.', salida: '› rehaciendo raiz()\n› python test_calc.py' }),
     ],
-    agentes: ['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude'].map(n => ({ nombre: n, ok: n !== 'codex', nota: n === 'codex' ? 'sin sesión · usa Ollama' : 'disponible' })),
+    agentes: AGENTES.map(n => ({ nombre: n, ok: n !== 'codex', nota: n === 'codex' ? 'sin sesión · usa Ollama' : 'disponible' })),
     modelos: { opencode: ['ollama/gpt-oss:120b-cloud'], ollama: ['gpt-oss:120b-cloud'], hermes: ['ollama-local/gpt-oss:120b-cloud'], aider: ['ollama_chat/gemma4:31b-cloud'], codex: ['chatgpt'], claude: ['haiku'] },
   }
 }
 
-// ---------- estado guardado (posiciones, terminales abiertas, enlaces hechos a mano, vista) ----------
-let guardado = { vista: { x: 40, y: 70, k: 0.5 }, pos: {}, terminales: [], enlaces: [] }
-try {
-  guardado = { ...guardado, ...JSON.parse(localStorage.getItem(CLAVE_GUARDADO) ?? '{}') }
-} catch {}
+// ---------- ajustes (tema y acento valen para todos los chats) y estado guardado de este chat ----------
+const ACENTOS = {
+  vinotinto: ['#9e2a3a', '#c4485a', '#5c1822', 'Vinotinto'],
+  azul: ['#1f4e8c', '#4b86d6', '#14305a', 'Azul oscuro'],
+  verde: ['#2f7d4f', '#4fb176', '#1d4a2f', 'Verde'],
+  amarillo: ['#c9a227', '#e6c55a', '#6b5612', 'Amarillo'],
+}
+const ajustes = { tema: 'oscuro', acento: 'vinotinto', nombre: '', cuenta: '' }
+try { Object.assign(ajustes, JSON.parse(localStorage.getItem(CLAVE_AJUSTES) ?? '{}')) } catch {}
+function aplicarAjustes() {
+  document.documentElement.dataset.tema = ajustes.tema === 'claro' ? 'claro' : 'oscuro'
+  const [a, b, c] = ACENTOS[ajustes.acento] ?? ACENTOS.vinotinto
+  const r = document.documentElement.style
+  r.setProperty('--acento', a)
+  r.setProperty('--acento-claro', b)
+  r.setProperty('--acento-oscuro', c)
+}
+const guardarAjustes = () => { try { localStorage.setItem(CLAVE_AJUSTES, JSON.stringify(ajustes)) } catch {} }
+aplicarAjustes()
+
+let guardado = { vista: null, pos: {}, terminales: [], enlaces: [], mensajes: [] }
+try { guardado = { ...guardado, ...JSON.parse(localStorage.getItem(CLAVE_GUARDADO) ?? '{}') } } catch {}
 const guardar = () => { try { localStorage.setItem(CLAVE_GUARDADO, JSON.stringify(guardado)) } catch {} }
-const el = (tag, clase, texto) => { const e = document.createElement(tag); if (clase) e.className = clase; if (texto !== undefined) e.textContent = texto; return e }
 
 // ---------- vista: mover el lienzo y hacer zoom ----------
-const vista = guardado.vista
+const vista = guardado.vista ?? { x: 0, y: 0, k: 0.5 }
+let modoEjemplo = false
 const aMundo = (cx, cy) => [(cx - vista.x) / vista.k, (cy - vista.y) / vista.k]
 function aplicarVista() {
   mundo.style.transform = `translate(${vista.x}px, ${vista.y}px) scale(${vista.k})`
@@ -63,6 +83,17 @@ function aplicarVista() {
   lienzo.style.backgroundPosition = `${vista.x}px ${vista.y}px`
   mundo.classList.toggle('lejos', vista.k < 0.4)
   hud.textContent = `${modoEjemplo ? 'DATOS DE EJEMPLO · ' : ''}zoom ${Math.round(vista.k * 100)}%`
+}
+function centrar() {
+  // Encuadra todas las piezas en la pantalla (deja sitio arriba para la cabecera y abajo para la barra).
+  const ps = [...piezas.values()]
+  const x0 = Math.min(...ps.map(p => p.x)), y0 = Math.min(...ps.map(p => p.y))
+  const x1 = Math.max(...ps.map(p => p.x + p.el.offsetWidth)), y1 = Math.max(...ps.map(p => p.y + p.el.offsetHeight))
+  vista.k = Math.min(1, Math.max(0.15, Math.min((innerWidth - 80) / (x1 - x0), (innerHeight - 200) / (y1 - y0))))
+  vista.x = (innerWidth - (x1 - x0) * vista.k) / 2 - x0 * vista.k
+  vista.y = 70 + (innerHeight - 200 - (y1 - y0) * vista.k) / 2 - y0 * vista.k
+  aplicarVista()
+  guardar()
 }
 lienzo.addEventListener('wheel', ev => {
   ev.preventDefault()
@@ -84,90 +115,148 @@ lienzo.addEventListener('pointerdown', ev => {
   lienzo.addEventListener('pointerup', soltar)
 })
 
-// ---------- tarjetas ----------
-const tarjetas = new Map() // id → { el, x, y, tipo, ... }
+// ---------- piezas sueltas ----------
+const piezas = new Map() // id → { el, x, y, tipo, ... }
 let cima = 10
-function crearTarjeta(id, tipo, titulo, inicial, clases = '') {
-  const e = el('div', `tarjeta-t ${clases}`)
-  const cab = el('div', 'cab')
-  const t = el('b', '', titulo)
-  const estado = el('span')
-  cab.append(t, estado)
-  const cuerpo = el('div', 'cuerpo')
-  e.append(cab, cuerpo)
+function crearPieza(id, tipo, clase, inicial) {
+  const e = el('div', `pieza ${clase}`)
   mundo.appendChild(e)
   const p = guardado.pos[id] ?? inicial
-  const tar = { id, tipo, el: e, cab, cuerpo, estado, titulo: t, x: p[0], y: p[1] }
+  const tar = { id, tipo, el: e, x: p[0], y: p[1] }
   e.style.left = `${tar.x}px`
   e.style.top = `${tar.y}px`
-  cab.addEventListener('pointerdown', ev => {
-    if (ev.target.closest('button')) return
-    ev.preventDefault()
-    cab.setPointerCapture(ev.pointerId)
-    const o = { x: ev.clientX, y: ev.clientY, tx: tar.x, ty: tar.y }
-    e.style.zIndex = String(++cima)
-    const mover = m => {
-      tar.x = o.tx + (m.clientX - o.x) / vista.k
-      tar.y = o.ty + (m.clientY - o.y) / vista.k
-      e.style.left = `${tar.x}px`
-      e.style.top = `${tar.y}px`
-      trazar()
-    }
-    const soltar = () => { cab.removeEventListener('pointermove', mover); cab.removeEventListener('pointerup', soltar); guardado.pos[id] = [Math.round(tar.x), Math.round(tar.y)]; guardar() }
-    cab.addEventListener('pointermove', mover)
-    cab.addEventListener('pointerup', soltar)
-  })
-  // Doble clic: el detalle en vivo de la terminal o de la tarea.
-  e.addEventListener('dblclick', ev => {
-    if (ev.target.closest('input,button,.puerto')) return
-    if (tipo === 'terminal') abrirDetalle({ tipo, clave: tar.agente })
-    if (tipo === 'tarea') abrirDetalle({ tipo, clave: tar.n })
-  })
-  // El punto para unir terminales con tareas.
-  if (tipo === 'terminal' || tipo === 'tarea') {
-    const puerto = el('div', `puerto ${tipo === 'tarea' ? 'abajo' : 'arriba'}`)
-    puerto.title = tipo === 'tarea' ? 'Arrastra hasta una terminal para unirlas' : 'Arrastra hasta una tarea para unirlas'
-    puerto.addEventListener('pointerdown', ev => empezarEnlace(ev, tar))
-    e.appendChild(puerto)
-  }
-  tarjetas.set(id, tar)
+  piezas.set(id, tar)
   return tar
 }
-const quitar = id => { tarjetas.get(id)?.el.remove(); tarjetas.delete(id) }
-
-// ---------- líneas entre tarjetas ----------
-let conexiones = [] // { de, a, vertical?, viva?, clase? }
-// El jefe vive dentro del grafo (un SVG): su posición se lee del dibujo, así las líneas lo siguen aunque muevas la tarjeta.
-function anclaJefe() {
-  const anillo = tarjetas.get('grafo')?.cuerpo.querySelector('.anillo')
-  if (!anillo) return null
-  const r = anillo.getBoundingClientRect()
-  const m = mundo.getBoundingClientRect()
-  return { x: (r.left - m.left) / vista.k, y: (r.top - m.top) / vista.k, el: { offsetWidth: r.width / vista.k, offsetHeight: r.height / vista.k } }
+const quitar = id => { piezas.get(id)?.el.remove(); piezas.delete(id) }
+// Arrastrar por el asa; si no se movió, cuenta como clic.
+function arrastrable(tar, asa, alClic) {
+  asa.addEventListener('pointerdown', ev => {
+    if (ev.target.closest('button,input,textarea,.puerto')) return
+    ev.preventDefault()
+    asa.setPointerCapture(ev.pointerId)
+    const o = { x: ev.clientX, y: ev.clientY, tx: tar.x, ty: tar.y }
+    let movio = false
+    tar.el.style.zIndex = String(++cima)
+    const mover = m => {
+      if (Math.hypot(m.clientX - o.x, m.clientY - o.y) > 4) movio = true
+      tar.x = o.tx + (m.clientX - o.x) / vista.k
+      tar.y = o.ty + (m.clientY - o.y) / vista.k
+      tar.el.style.left = `${tar.x}px`
+      tar.el.style.top = `${tar.y}px`
+      trazar()
+    }
+    const soltar = () => {
+      asa.removeEventListener('pointermove', mover)
+      asa.removeEventListener('pointerup', soltar)
+      if (movio) { guardado.pos[tar.id] = [Math.round(tar.x), Math.round(tar.y)]; guardar() } else alClic?.()
+    }
+    asa.addEventListener('pointermove', mover)
+    asa.addEventListener('pointerup', soltar)
+  })
 }
-function borde(tar, lado) {
-  const w = tar.el.offsetWidth
-  const h = tar.el.offsetHeight
-  return lado === 'der' ? [tar.x + w, tar.y + h / 2] : lado === 'izq' ? [tar.x, tar.y + h / 2] : lado === 'abajo' ? [tar.x + w / 2, tar.y + h] : [tar.x + w / 2, tar.y]
+// Una pieza con cabecera (título + estado) y cuerpo: las tareas, las terminales y el paso actual.
+function conCabecera(tar, titulo) {
+  tar.cab = el('div', 'cab')
+  tar.titulo = el('b', '', titulo)
+  tar.estado = el('span')
+  tar.cab.append(tar.titulo, tar.estado)
+  tar.cuerpo = el('div', 'cuerpo')
+  tar.el.append(tar.cab, tar.cuerpo)
+  arrastrable(tar, tar.cab)
+  return tar
+}
+function conPuerto(tar, lado) {
+  const puerto = el('div', `puerto ${lado}`)
+  puerto.title = lado === 'abajo' ? 'Arrastra hasta una terminal para unirlas' : 'Arrastra hasta una tarea para unirlas'
+  puerto.addEventListener('pointerdown', ev => empezarEnlace(ev, tar))
+  tar.el.appendChild(puerto)
+}
+
+// ---------- líneas y partículas ----------
+const gLineas = document.createElementNS(NS, 'g')
+const gParticulas = document.createElementNS(NS, 'g')
+lineas.append(gLineas, gParticulas)
+let conexiones = [] // { de, a, vertical?, subir?, viva?, clase? }
+function geometria(c) {
+  const A = piezas.get(c.de)
+  const B = piezas.get(c.a)
+  if (!A || !B) return null
+  const w = t => t.el.offsetWidth
+  const h = t => t.el.offsetHeight
+  let x1, y1, x2, y2, dx = 0, dy = 0
+  if (c.vertical || c.subir) {
+    const abajo = !c.subir
+    x1 = A.x + w(A) / 2; y1 = A.y + (abajo ? h(A) : 0)
+    x2 = B.x + w(B) / 2; y2 = B.y + (abajo ? 0 : h(B))
+    dy = Math.max(40, Math.abs(y2 - y1) / 2) * (abajo ? 1 : -1)
+  } else {
+    const der = B.x >= A.x + w(A) - 20
+    x1 = A.x + (der ? w(A) : 0); y1 = A.y + h(A) / 2
+    x2 = B.x + (der ? 0 : w(B)); y2 = B.y + h(B) / 2
+    dx = Math.max(60, Math.abs(x2 - x1) / 2) * (der ? 1 : -1)
+  }
+  return `M${x1} ${y1} C ${x1 + dx} ${y1 + dy}, ${x2 - dx} ${y2 - dy}, ${x2} ${y2}`
 }
 function trazar() {
-  lineas.replaceChildren()
+  gLineas.replaceChildren()
   for (const c of conexiones) {
-    const A = c.de === 'jefe' ? anclaJefe() : tarjetas.get(c.de)
-    const B = tarjetas.get(c.a)
-    if (!A || !B) continue
-    const aDerecha = B.x >= A.x + A.el.offsetWidth - 20
-    const [x1, y1] = borde(A, c.vertical ? 'abajo' : aDerecha ? 'der' : 'izq')
-    const [x2, y2] = borde(B, c.vertical ? 'arriba' : aDerecha ? 'izq' : 'der')
-    const dx = c.vertical ? 0 : Math.max(60, Math.abs(x2 - x1) / 2) * (aDerecha ? 1 : -1)
-    const dy = c.vertical ? Math.max(40, Math.abs(y2 - y1) / 2) : 0
+    const d = geometria(c)
+    if (!d) continue
     const p = document.createElementNS(NS, 'path')
-    p.setAttribute('d', `M${x1} ${y1} C ${x1 + dx} ${y1 + dy}, ${x2 - dx} ${y2 - dy}, ${x2} ${y2}`)
+    p.setAttribute('d', d)
     p.setAttribute('class', `${c.clase ?? ''}${c.viva ? ' viva' : ''}`.trim())
-    lineas.appendChild(p)
+    gLineas.appendChild(p)
   }
 }
-setInterval(trazar, 400) // el grafo se mueve solo (animaciones): las líneas del jefe se reajustan
+// Partículas: lo que pasa de verdad (un encargo que sale, un resultado, una nota) viaja por las líneas.
+const particulas = []
+function particula(c, color, dur = 1.3, r = 5) {
+  const d = geometria(c)
+  if (!d) return
+  const medida = document.createElementNS(NS, 'path')
+  medida.setAttribute('d', d)
+  medida.style.fill = 'none'
+  medida.style.stroke = 'none'
+  gParticulas.appendChild(medida)
+  const brillo = document.createElementNS(NS, 'circle')
+  const punto = document.createElementNS(NS, 'circle')
+  brillo.setAttribute('r', String(r * 2.6)); brillo.style.fill = color; brillo.style.opacity = '0.2'
+  punto.setAttribute('r', String(r)); punto.style.fill = color
+  gParticulas.append(brillo, punto)
+  particulas.push({ medida, largo: medida.getTotalLength(), t0: performance.now(), dur: dur * 1000, punto, brillo })
+}
+function animar(ahora) {
+  for (let i = particulas.length - 1; i >= 0; i--) {
+    const p = particulas[i]
+    const t = (ahora - p.t0) / p.dur
+    if (t >= 1) { p.medida.remove(); p.punto.remove(); p.brillo.remove(); particulas.splice(i, 1); continue }
+    const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
+    const pt = p.medida.getPointAtLength(e * p.largo)
+    for (const c of [p.punto, p.brillo]) { c.setAttribute('cx', pt.x); c.setAttribute('cy', pt.y) }
+  }
+  requestAnimationFrame(animar)
+}
+requestAnimationFrame(animar)
+const despues = (s, fn) => setTimeout(fn, s * 1000)
+const GRIS = 'var(--t2)'
+const ACENTO = 'var(--acento-claro)'
+function particulasDe(eventos) {
+  for (const ev of eventos) {
+    if (ev.tipo === 'plan') [0, 0.3, 0.6].forEach(r => despues(r, () => particula({ de: 'yo', a: 'jefe' }, GRIS, 1.1)))
+    if (ev.tipo === 'encargo' && ev.subtarea !== undefined) {
+      particula({ de: 'jefe', a: `tarea-${ev.subtarea}` }, GRIS, 1.1)
+      despues(1.1, () => particula({ de: `tarea-${ev.subtarea}`, a: `term-${ev.agente}` }, GRIS, 1.1))
+    }
+    if (ev.tipo === 'cambio') particula({ de: `term-${ev.de}`, a: `term-${ev.agente}` }, ACENTO, 1.4, 6)
+    if (ev.tipo === 'resultado') {
+      particula({ de: `term-${ev.agente}`, a: 'pipe-verificar' }, ev.ok ? GRIS : ACENTO, 1.3)
+      if (ev.ok) despues(1.3, () => particula({ de: 'pipe-verificar', a: 'pipe-auditoria' }, GRIS, 0.9))
+    }
+    if (ev.tipo === 'nota') particula({ de: 'pipe-auditoria', a: 'jefe', subir: true }, ACENTO, 1.3, 5.5)
+    if (ev.tipo === 'cierre') particula({ de: 'pipe-auditoria', a: 'pipe-juntar' }, ACENTO, 0.9)
+  }
+}
 
 // Unir a mano: se arrastra desde el punto de una tarjeta hasta otra.
 function empezarEnlace(ev, origen) {
@@ -175,13 +264,14 @@ function empezarEnlace(ev, origen) {
   ev.preventDefault()
   const temp = document.createElementNS(NS, 'path')
   temp.setAttribute('class', 'temp')
-  lineas.appendChild(temp)
-  const [x1, y1] = borde(origen, origen.tipo === 'tarea' ? 'abajo' : 'arriba')
+  gParticulas.appendChild(temp)
+  const x1 = origen.x + origen.el.offsetWidth / 2
+  const y1 = origen.y + (origen.tipo === 'tarea' ? origen.el.offsetHeight : 0)
   const mover = e => { const [x, y] = aMundo(e.clientX, e.clientY); temp.setAttribute('d', `M${x1} ${y1} L${x} ${y}`) }
   const soltar = e => {
     window.removeEventListener('pointermove', mover)
     temp.remove()
-    const destino = [...tarjetas.values()].find(t => t.el === document.elementFromPoint(e.clientX, e.clientY)?.closest('.tarjeta-t'))
+    const destino = [...piezas.values()].find(t => t.el === document.elementFromPoint(e.clientX, e.clientY)?.closest('.pieza'))
     if (destino && destino !== origen && destino.tipo !== origen.tipo && ['tarea', 'terminal'].includes(destino.tipo)) {
       const tarea = origen.tipo === 'tarea' ? origen : destino
       const term = origen.tipo === 'terminal' ? origen : destino
@@ -195,31 +285,71 @@ function empezarEnlace(ev, origen) {
   window.addEventListener('pointerup', soltar, { once: true })
 }
 
-// ---------- contenido de cada tipo de tarjeta ----------
+// ---------- las piezas fijas: Tú, el jefe, el paso actual y la tubería ----------
+const yo = crearPieza('yo', 'yo', 'circulo yo', [-65, -65])
+yo.el.append(el('span', 'etq', 'Usuario'), el('b', '', 'Tú'), el('small', '', 'pides con /mst'))
+yo.el.title = 'Clic: tu cuenta, el tema y el acento'
+arrastrable(yo, yo.el, () => abrirDetalle({ tipo: 'yo' }))
+const jefe = crearPieza('jefe', 'jefe', 'circulo jefe', [240, -105])
+jefe.etq = el('span', 'etq', 'Jefe')
+jefe.nombre = el('b', '', 'Claude')
+jefe.fase = el('small', '', 'planifica · reparte · verifica')
+jefe.el.append(jefe.etq, jefe.nombre, jefe.fase)
+jefe.el.title = 'Doble clic: escríbele a la sesión del jefe'
+arrastrable(jefe, jefe.el)
+jefe.el.addEventListener('dblclick', () => abrirDetalle({ tipo: 'jefe' }))
+const paso = conCabecera(crearPieza('paso', 'paso', 'paso-t', [-120, -340]), 'Paso actual')
+paso.fasesBarra = el('div', 'fases')
+FASES.forEach(() => paso.fasesBarra.appendChild(document.createElement('span')))
+const PIPES = [
+  { id: 'pipe-verificar', nombre: 'Verificar (tests)', rol: 'en la carpeta de cada agente', pos: [-40, 330] },
+  { id: 'pipe-auditoria', nombre: 'Auditoría 1-10', rol: '≥6 hecha · <6 se rehace', pos: [245, 330] },
+  { id: 'pipe-juntar', nombre: 'Juntar', rol: 'ramas o carpeta compartida', pos: [520, 330] },
+  { id: 'pipe-informe', nombre: 'Informe + aviso', rol: 'Markdown · ntfy al móvil', pos: [520, 450] },
+]
+for (const p of PIPES) {
+  const t = crearPieza(p.id, 'pipe', 'pipe', p.pos)
+  t.el.append(el('b', '', p.nombre), el('small', '', p.rol))
+  arrastrable(t, t.el)
+}
+
+// ---------- contenido de cada tipo de pieza ----------
+function pintarFijas(d, fase) {
+  jefe.nombre.textContent = d.jefe ?? 'Claude'
+  jefe.fase.textContent = fase.indice < 0 ? 'en reposo' : fase.nombre.toLowerCase()
+  jefe.el.classList.toggle('activo', fase.indice === 1 || fase.indice === 6)
+  yo.el.querySelector('b').textContent = ajustes.nombre.trim() || 'Tú'
+  paso.estado.textContent = fase.indice < 0 ? 'reposo' : `fase ${fase.indice + 1} / 8`
+  paso.cuerpo.replaceChildren(el('h3', '', fase.titulo), el('p', '', fase.texto), paso.fasesBarra)
+  ;[...paso.fasesBarra.children].forEach((s, i) => { s.className = i < fase.indice ? 'pasada' : i === fase.indice ? 'actual' : '' })
+  piezas.get('pipe-verificar').el.classList.toggle('activo', fase.indice === 5)
+  piezas.get('pipe-auditoria').el.classList.toggle('activo', fase.indice === 5)
+  piezas.get('pipe-juntar').el.classList.toggle('activo', fase.indice === 6)
+  piezas.get('pipe-informe').el.classList.toggle('activo', fase.indice === 7)
+}
 function pintarTerminal(tar, d) {
   const e = estadoAgente(d, tar.agente)
-  tar.el.className = `tarjeta-t terminal-t${e.activo ? ' activo' : ''}${e.falla ? ' falla' : ''}${e.apartado ? ' apartado' : ''}${e.hecho && !e.activo ? ' hecha' : ''}`
+  tar.el.className = `pieza terminal-t${e.activo ? ' activo' : ''}${e.falla ? ' falla' : ''}${e.apartado ? ' apartado' : ''}${e.hecho && !e.activo ? ' hecha' : ''}`
   tar.estado.textContent = e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'
   const info = (d.agentes ?? []).find(a => a.nombre === tar.agente)
-  const vivo = tar.vivo
-  vivo.replaceChildren()
+  tar.vivo.replaceChildren()
   const modelo = el('small', '', `${e.apartado || e.modelo || d.modelos?.[tar.agente]?.[0] || ''}${info && !info.ok && !e.apartado ? ` · ${info.nota}` : ''}`)
   const pre = el('pre', '', e.lineas.length ? e.lineas.join('\n') : e.apartado ? '' : '› en espera')
-  vivo.append(modelo, pre)
-  if (e.ultimo && e.activo && e.ultimo.subtarea !== undefined) vivo.append(el('div', 'estado', `haciendo la tarea ${e.ultimo.subtarea}`))
-  if (e.nota !== undefined) vivo.append(el('div', `estado nota${e.nota < 6 ? ' mal' : ''}`, `última nota ${e.nota}/10`))
+  tar.vivo.append(modelo, pre)
+  if (e.ultimo && e.activo && e.ultimo.subtarea !== undefined) tar.vivo.append(el('div', 'estado', `haciendo la tarea ${e.ultimo.subtarea}`))
+  if (e.nota !== undefined) tar.vivo.append(el('div', `estado nota${e.nota < 6 ? ' mal' : ''}`, `última nota ${e.nota}/10`))
   if (e.activo && e.ultimo) {
     const b = el('button', 'cancelar', '■ Cancelar')
     b.onclick = () => enviar({ tipo: 'cancelar', id: e.ultimo.id }, b)
-    vivo.append(b)
+    tar.vivo.append(b)
   }
-  // Las tareas unidas a esta terminal (con ✕ para soltarlas).
   tar.enlazadas.replaceChildren()
   const mias = guardado.enlaces.filter(l => l.a === tar.agente)
   const subs = d.plan?.subtareas ?? []
   for (const l of mias) {
     const chip = el('span', 'chip')
-    chip.append(el('span', '', `→ tarea ${l.n}${subs.find(s => s.n === l.n) ? `: ${subs.find(s => s.n === l.n).titulo.slice(0, 22)}` : ''}`))
+    const s = subs.find(o => o.n === l.n)
+    chip.append(el('span', '', `→ tarea ${l.n}${s ? `: ${s.titulo.slice(0, 22)}` : ''}`))
     const x = el('button', '', '✕')
     x.title = 'Soltar esta tarea'
     x.onclick = () => { guardado.enlaces = guardado.enlaces.filter(o => o !== l); guardar(); sincronizar() }
@@ -232,7 +362,7 @@ function pintarTerminal(tar, d) {
   tar.enviarCaja.querySelector('button').disabled = !mias.length
 }
 function crearTerminal(a, i) {
-  const tar = crearTarjeta(`term-${a}`, 'terminal', NOMBRES[a], [i * 380, TY], 'terminal-t')
+  const tar = conCabecera(crearPieza(`term-${a}`, 'terminal', 'terminal-t', [1180 + (i % 2) * 380, Math.floor(i / 2) * 390 - 230]), NOMBRES[a])
   tar.agente = a
   tar.vivo = el('div', 'vivo')
   tar.enlazadas = el('div', 'enlazadas')
@@ -248,21 +378,27 @@ function crearTerminal(a, i) {
     const texto = input.value.trim()
     const mias = guardado.enlaces.filter(l => l.a === a)
     if (!texto || !mias.length) return
-    const n = mias[mias.length - 1].n
     input.value = ''
     ir.textContent = 'enviado ✓'
-    await enviar({ tipo: 'encargar', agente: a, n, texto })
+    await enviar({ tipo: 'encargar', agente: a, n: mias[mias.length - 1].n, texto })
     setTimeout(() => { ir.textContent = 'Enviar' }, 2500)
   })
   tar.cuerpo.append(tar.vivo, tar.enlazadas, tar.enviarCaja)
+  tar.el.addEventListener('dblclick', ev => { if (!ev.target.closest('input,button,.puerto')) abrirDetalle({ tipo: 'terminal', clave: a }) })
+  conPuerto(tar, 'arriba')
+  return tar
+}
+function crearTarea(s, i, n) {
+  const tar = conCabecera(crearPieza(`tarea-${s.n}`, 'tarea', 'tarea', [760, (i - (n - 1) / 2) * 170 - 60]), `Tarea ${s.n}`)
+  tar.n = s.n
+  tar.el.addEventListener('dblclick', ev => { if (!ev.target.closest('input,button,.puerto')) abrirDetalle({ tipo: 'tarea', clave: s.n }) })
+  conPuerto(tar, 'abajo')
   return tar
 }
 function pintarTarea(tar, s) {
-  tar.el.className = `tarjeta-t tarea ${s.estado === 'hecha' ? 'hecha' : s.estado === 'en curso' ? 'en-curso' : ''}`
-  tar.n = s.n
+  tar.el.className = `pieza tarea ${s.estado === 'hecha' ? 'hecha' : s.estado === 'en curso' ? 'en-curso' : ''}`
   tar.estado.textContent = s.estado
-  tar.cuerpo.replaceChildren()
-  tar.cuerpo.append(el('p', 'titulo', s.titulo), el('div', 'estado', [s.quien ? `con ${s.quien.split(':')[0]}` : 'sin asignar', s.puntaje !== undefined ? `nota ${s.puntaje}/10` : '', s.espera?.length ? `espera a ${s.espera.join(', ')}` : ''].filter(Boolean).join(' · ')))
+  tar.cuerpo.replaceChildren(el('p', 'titulo', s.titulo), el('div', 'estado', [s.quien ? `con ${s.quien.split(':')[0]}` : 'sin asignar', s.puntaje !== undefined ? `nota ${s.puntaje}/10` : '', s.espera?.length ? `espera a ${s.espera.join(', ')}` : ''].filter(Boolean).join(' · ')))
 }
 
 async function enviar(accion, boton) {
@@ -271,15 +407,114 @@ async function enviar(accion, boton) {
   try { await fetch('/accion' + location.search, { method: 'POST', body: JSON.stringify(accion) }) } catch {}
 }
 
-// ---------- el panel de detalle (doble clic) ----------
-const detalle = el('aside', '')
+// ---------- el panel lateral ----------
+const detalle = el('aside')
 detalle.id = 'detalle'
 document.body.appendChild(detalle)
 let abierto = null
-function abrirDetalle(que) { abierto = que; pintarDetalle() }
-function cerrarDetalle() { abierto = null; detalle.classList.remove('visible') }
-document.addEventListener('keydown', ev => { if (ev.key === 'Escape') cerrarDetalle() })
+let refs = null
 const seg = ms => (ms >= 60_000 ? `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s` : `${Math.round((ms ?? 0) / 1000)} s`)
+function cabecera(titulo, estado) {
+  const cab = el('div', 'cab-detalle')
+  const x = el('button', '', '✕')
+  x.onclick = cerrarDetalle
+  cab.append(el('b', '', titulo), el('span', '', estado ?? ''), x)
+  return cab
+}
+function abrirDetalle(que) {
+  abierto = que
+  refs = null
+  if (que.tipo === 'yo') construirYo()
+  else if (que.tipo === 'jefe') construirJefe()
+  pintarDetalle()
+}
+function cerrarDetalle() { abierto = null; refs = null; detalle.classList.remove('visible') }
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape') cerrarDetalle() })
+const hms = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` }
+
+// Tú: cuenta, tiempo de la sesión, tema y acento. Se construye una vez (tiene campos de texto) y solo se refresca el reloj.
+function construirYo() {
+  detalle.replaceChildren(cabecera('Tú'))
+  const campo = (rotulo, clave, ayuda) => {
+    const f = el('div', 'fila')
+    const i = el('input')
+    i.type = 'text'
+    i.value = ajustes[clave]
+    i.placeholder = ayuda
+    i.oninput = () => { ajustes[clave] = i.value; guardarAjustes(); pintarFijas(ultimo, faseDe(ultimo)) }
+    f.append(el('label', '', rotulo), i)
+    return f
+  }
+  detalle.append(el('div', 'rotulo', 'Mi cuenta'), campo('Nombre', 'nombre', 'Cómo te llamas'), campo('Cuenta', 'cuenta', 'Tu correo o usuario'))
+  detalle.append(el('div', 'estado', 'Se guardan solo en este navegador.'))
+  detalle.append(el('div', 'rotulo', 'Tiempo de la sesión'))
+  refs = { tiempo: el('p', 'titulo', '0:00:00'), origen: el('div', 'estado'), datos: el('div', 'estado') }
+  detalle.append(refs.tiempo, refs.origen, refs.datos)
+  detalle.append(el('div', 'rotulo', 'Tema'))
+  const tema = el('div', 'opciones')
+  for (const t of ['oscuro', 'claro']) {
+    const b = el('button', ajustes.tema === t ? 'elegido' : '', t === 'oscuro' ? 'Oscuro' : 'Claro')
+    b.onclick = () => { ajustes.tema = t; guardarAjustes(); aplicarAjustes(); tema.querySelectorAll('button').forEach(o => o.classList.toggle('elegido', o === b)) }
+    tema.append(b)
+  }
+  detalle.append(tema, el('div', 'rotulo', 'Acento'))
+  const acentos = el('div', 'opciones')
+  for (const [clave, [color, , , nombre]] of Object.entries(ACENTOS)) {
+    const b = el('button', `muestra${ajustes.acento === clave ? ' elegido' : ''}`)
+    b.style.background = color
+    b.title = nombre
+    b.onclick = () => { ajustes.acento = clave; guardarAjustes(); aplicarAjustes(); acentos.querySelectorAll('button').forEach(o => o.classList.toggle('elegido', o === b)); acentoNombre.textContent = nombre }
+    acentos.append(b)
+  }
+  const acentoNombre = el('div', 'estado', ACENTOS[ajustes.acento]?.[3] ?? '')
+  detalle.append(acentos, acentoNombre)
+}
+function refrescarYo(d) {
+  const inicios = (d.trabajos ?? []).map(t => t.inicio)
+  const desde = inicios.length ? Math.min(...inicios) : abiertoEn
+  refs.tiempo.textContent = hms(Date.now() - desde)
+  refs.origen.textContent = inicios.length ? 'Desde el primer trabajo de este chat.' : 'Desde que abriste el tablero (este chat aún no tiene trabajos).'
+  refs.datos.textContent = `Chat ${chat.slice(0, 18)} · jefe ${d.jefe ?? 'Claude'}${d.ejemplo ? ' · datos de ejemplo' : ''}`
+}
+
+// El jefe: se le escribe a la sesión de Claude en vivo. Se construye una vez (tiene un cuadro de texto).
+function construirJefe() {
+  detalle.replaceChildren()
+  refs = { cab: cabecera('Jefe'), titulo: el('p', 'titulo'), texto: el('div', 'estado'), nota: el('div', 'estado'), lista: el('div') }
+  const area = el('textarea')
+  area.maxLength = 2000
+  area.placeholder = 'Escríbele al jefe: cambia el plan, pídele que revise algo, que repita una tarea…'
+  const ir = el('button', 'accion', 'Enviar al jefe')
+  const mandar = async () => {
+    const texto = area.value.trim()
+    if (!texto) return
+    if (modoEjemplo) { ir.textContent = 'solo es un ejemplo'; return }
+    guardado.mensajes = [...(guardado.mensajes ?? []), { t: Date.now(), texto }].slice(-20)
+    guardar()
+    area.value = ''
+    ir.textContent = 'enviado ✓'
+    setTimeout(() => { ir.textContent = 'Enviar al jefe' }, 2500)
+    await enviar({ tipo: 'jefe', texto })
+    refrescarJefe(ultimo)
+  }
+  ir.onclick = mandar
+  area.addEventListener('keydown', ev => { if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) mandar() })
+  detalle.append(refs.cab, el('div', 'rotulo', 'Qué hace ahora'), refs.titulo, refs.texto, el('div', 'rotulo', 'Escríbele a la sesión'), area, el('div', 'fila'), refs.nota, el('div', 'rotulo', 'Lo que le has escrito'), refs.lista)
+  detalle.querySelector('.fila').append(ir, el('span', 'estado', 'Ctrl+Enter también envía'))
+}
+function refrescarJefe(d) {
+  const fase = faseDe(d)
+  refs.cab.querySelector('b').textContent = `Jefe · ${d.jefe ?? 'Claude'}`
+  refs.cab.querySelector('span').textContent = fase.indice < 0 ? 'en reposo' : `fase ${fase.indice + 1} / 8`
+  refs.titulo.textContent = fase.titulo
+  refs.texto.textContent = fase.texto
+  refs.nota.textContent = (d.jefe ?? 'Claude') === 'Claude'
+    ? 'El mensaje entra en tu sesión de Claude Code como si lo escribieras en el chat (espera a que la sesión esté libre). La respuesta aparece allí.'
+    : 'OpenCode no recibe mensajes en vivo: el mensaje le llega en su siguiente llamada al centro.'
+  const mensajes = guardado.mensajes ?? []
+  refs.lista.replaceChildren(...(mensajes.length ? [...mensajes].reverse().map(m => { const f = el('div', 'mensaje', m.texto); f.prepend(el('small', '', new Date(m.t).toLocaleTimeString())); return f }) : [el('p', 'vacio', 'Todavía no le has escrito.')]))
+}
+
 function filaTrabajo(t, ahora) {
   const f = el('div', `trabajo${t.estado === 'error' ? ' mal' : ''}`)
   f.append(el('div', 'linea', `${t.estado === 'corriendo' ? '●' : t.estado === 'error' ? '✗' : '✓'} ${t.trabajador}${t.subtarea !== undefined ? ` · tarea ${t.subtarea}` : ''} · ${seg(t.ms ?? ahora - t.inicio)}${t.puntaje !== undefined ? ` · nota ${t.puntaje}/10` : ''}`))
@@ -290,43 +525,40 @@ function filaTrabajo(t, ahora) {
 function pintarDetalle() {
   const d = ultimo
   if (!abierto || !d) return
-  const arriba = detalle.scrollTop
-  const alFondo = detalle.scrollHeight - detalle.scrollTop - detalle.clientHeight < 40
-  detalle.replaceChildren()
-  const cab = el('div', 'cab-detalle')
-  const x = el('button', '', '✕')
-  x.onclick = cerrarDetalle
-  const ahora = d.ahora ?? Date.now()
-  if (abierto.tipo === 'terminal') {
-    const a = abierto.clave
-    const e = estadoAgente(d, a)
-    cab.append(el('b', '', `Terminal · ${NOMBRES[a]}`), el('span', '', e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'), x)
-    detalle.append(cab)
-    const subs = d.plan?.subtareas ?? []
-    const suyos = d.trabajos.filter(t => agenteDe(t) === a)
-    const actual = suyos.filter(t => t.estado === 'corriendo').pop()
-    detalle.append(el('div', 'rotulo', 'Qué está ejecutando'))
-    if (actual) {
-      const s = subs.find(o => o.n === actual.subtarea)
-      detalle.append(el('p', 'titulo', s ? `Tarea ${s.n}: ${s.titulo}` : actual.tarea ?? 'Encargo suelto'))
-    } else detalle.append(el('p', 'vacio', e.apartado ? e.apartado : 'Nada ahora mismo.'))
-    for (const t of [...suyos].reverse().slice(0, 6)) detalle.append(filaTrabajo(t, ahora))
-  } else {
-    const s = (d.plan?.subtareas ?? []).find(o => o.n === abierto.clave)
-    if (!s) { cerrarDetalle(); return }
-    cab.append(el('b', '', `Tarea ${s.n}`), el('span', '', s.estado), x)
-    detalle.append(cab, el('p', 'titulo', s.titulo))
-    detalle.append(el('div', 'estado', [s.quien ? `con ${s.quien}` : 'sin asignar', s.puntaje !== undefined ? `nota ${s.puntaje}/10` : 'sin nota', s.espera?.length ? `espera a ${s.espera.join(', ')}` : 'no espera a nadie'].join(' · ')))
-    const suyos = d.trabajos.filter(t => t.subtarea === s.n)
-    detalle.append(el('div', 'rotulo', `${suyos.length} intento${suyos.length === 1 ? '' : 's'}`))
-    if (!suyos.length) detalle.append(el('p', 'vacio', 'Aún no la ha tomado ningún agente.'))
-    for (const t of [...suyos].reverse()) detalle.append(filaTrabajo(t, ahora))
+  if (abierto.tipo === 'yo') refrescarYo(d)
+  else if (abierto.tipo === 'jefe') refrescarJefe(d)
+  else {
+    const arriba = detalle.scrollTop
+    detalle.replaceChildren()
+    const ahora = d.ahora ?? Date.now()
+    if (abierto.tipo === 'terminal') {
+      const a = abierto.clave
+      const e = estadoAgente(d, a)
+      detalle.append(cabecera(`Terminal · ${NOMBRES[a]}`, e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'))
+      const suyos = d.trabajos.filter(t => agenteDe(t) === a)
+      const actual = suyos.filter(t => t.estado === 'corriendo').pop()
+      detalle.append(el('div', 'rotulo', 'Qué está ejecutando'))
+      if (actual) {
+        const s = (d.plan?.subtareas ?? []).find(o => o.n === actual.subtarea)
+        detalle.append(el('p', 'titulo', s ? `Tarea ${s.n}: ${s.titulo}` : actual.tarea ?? 'Encargo suelto'))
+      } else detalle.append(el('p', 'vacio', e.apartado ? e.apartado : 'Nada ahora mismo.'))
+      for (const t of [...suyos].reverse().slice(0, 6)) detalle.append(filaTrabajo(t, ahora))
+    } else {
+      const s = (d.plan?.subtareas ?? []).find(o => o.n === abierto.clave)
+      if (!s) { cerrarDetalle(); return }
+      detalle.append(cabecera(`Tarea ${s.n}`, s.estado), el('p', 'titulo', s.titulo))
+      detalle.append(el('div', 'estado', [s.quien ? `con ${s.quien}` : 'sin asignar', s.puntaje !== undefined ? `nota ${s.puntaje}/10` : 'sin nota', s.espera?.length ? `espera a ${s.espera.join(', ')}` : 'no espera a nadie'].join(' · ')))
+      const suyos = d.trabajos.filter(t => t.subtarea === s.n)
+      detalle.append(el('div', 'rotulo', `${suyos.length} intento${suyos.length === 1 ? '' : 's'}`))
+      if (!suyos.length) detalle.append(el('p', 'vacio', 'Aún no la ha tomado ningún agente.'))
+      for (const t of [...suyos].reverse()) detalle.append(filaTrabajo(t, ahora))
+    }
+    detalle.scrollTop = arriba
+    detalle.querySelectorAll('pre.salida').forEach(p => { p.scrollTop = p.scrollHeight })
   }
   detalle.classList.add('visible')
-  detalle.scrollTop = alFondo && abierto.tipo === 'terminal' && false ? detalle.scrollHeight : arriba
-  // Las salidas en vivo se quedan mirando al final.
-  detalle.querySelectorAll('pre.salida').forEach(p => { p.scrollTop = p.scrollHeight })
 }
+setInterval(() => { if (abierto?.tipo === 'yo' && refs && ultimo) refrescarYo(ultimo) }, 1000)
 
 // ---------- la barra de abajo ----------
 function pintarBarra() {
@@ -338,7 +570,7 @@ function pintarBarra() {
   }
   barra.append(el('span', 'sep'))
   crear('+ Todos', () => { guardado.terminales = [...AGENTES]; guardar(); sincronizar() })
-  crear(modoEjemplo ? '✓ Ejemplo' : 'Ejemplo', () => { guardado.ejemplo = !guardado.ejemplo; guardar(); ultimo = null; leerYa() }, modoEjemplo ? 'abierto' : '')
+  crear(modoEjemplo ? '✓ Ejemplo' : 'Ejemplo', () => { guardado.ejemplo = !guardado.ejemplo; guardar(); ultimo = null; leer() }, modoEjemplo ? 'abierto' : '')
   crear('Reordenar', reordenar)
   crear('Centrar', centrar)
   crear('■ Cancelar todo', () => ultimo?.trabajos.filter(t => t.estado === 'corriendo').forEach(t => enviar({ tipo: 'cancelar', id: t.id })))
@@ -351,69 +583,55 @@ function alternarTerminal(a) {
 }
 function reordenar() {
   guardado.pos = {}
-  for (const id of [...tarjetas.keys()]) if (id !== 'grafo') quitar(id)
+  for (const t of [...piezas.values()]) {
+    if (t.tipo === 'tarea' || t.tipo === 'terminal') quitar(t.id)
+    else if (t.tipo !== 'yo') {}
+  }
+  const base = { yo: [-65, -65], jefe: [240, -105], paso: [-120, -340] }
+  for (const p of PIPES) base[p.id] = p.pos
+  for (const [id, [x, y]] of Object.entries(base)) { const t = piezas.get(id); if (t) { t.x = x; t.y = y; t.el.style.left = `${x}px`; t.el.style.top = `${y}px` } }
   guardar()
   sincronizar()
   centrar()
 }
-function centrar() {
-  vista.k = Math.min(1, Math.max(0.2, innerWidth / 2400))
-  vista.x = 40
-  vista.y = 70
-  aplicarVista()
-  guardar()
-}
 
-// ---------- sincronizar las tarjetas con los datos ----------
+// ---------- sincronizar las piezas con los datos ----------
 let ultimo = null
-let modoEjemplo = false
-let temporizador
-const grafoTar = crearTarjeta('grafo', 'grafo', 'Grafo principal', [0, 0], 'grafo-t')
-grafoTar.cuerpo.id = 'grafo-montaje'
-const grafo = crearGrafo(grafoTar.cuerpo)
-// El tooltip del grafo usa position:fixed, que dentro de un lienzo con transform se descoloca: va al documento.
-const tip = grafoTar.cuerpo.querySelector('#g-tip')
-if (tip) document.body.appendChild(tip)
-// Las tareas cuelgan debajo del grafo, y las terminales debajo de las tareas.
-const GH = grafoTar.el.offsetHeight || 900
-const FILA_TAREAS = GH + 150
-const TY = FILA_TAREAS + 300
-
 function sincronizar() {
   const d = ultimo
   if (!d) return
+  const fase = faseDe(d)
+  pintarFijas(d, fase)
   const subs = d.plan?.subtareas ?? []
   const ids = new Set(subs.map(s => `tarea-${s.n}`))
-  for (const id of [...tarjetas.keys()]) if (id.startsWith('tarea-') && !ids.has(id)) quitar(id)
-  subs.forEach((s, i) => {
-    const tar = tarjetas.get(`tarea-${s.n}`) ?? crearTarjeta(`tarea-${s.n}`, 'tarea', `Tarea ${s.n}`, [i * 340, FILA_TAREAS])
-    pintarTarea(tar, s)
-  })
-  for (const id of [...tarjetas.keys()]) if (id.startsWith('term-') && !guardado.terminales.includes(id.slice(5))) quitar(id)
-  guardado.terminales.forEach((a, i) => {
-    const tar = tarjetas.get(`term-${a}`) ?? crearTerminal(a, i)
-    pintarTerminal(tar, d)
-  })
-  // Líneas: el jefe con cada tarea, las dependencias entre tareas, y cada tarea con las terminales que la hacen (o que unió el usuario).
-  conexiones = []
+  for (const id of [...piezas.keys()]) if (id.startsWith('tarea-') && !ids.has(id)) quitar(id)
+  subs.forEach((s, i) => pintarTarea(piezas.get(`tarea-${s.n}`) ?? crearTarea(s, i, subs.length), s))
+  for (const id of [...piezas.keys()]) if (id.startsWith('term-') && !guardado.terminales.includes(id.slice(5))) quitar(id)
+  guardado.terminales.forEach((a, i) => pintarTerminal(piezas.get(`term-${a}`) ?? crearTerminal(a, i), d))
+  // Líneas: Tú ↔ jefe (fija), el jefe con cada tarea, las dependencias, cada tarea con las terminales que la hacen o que unió el usuario,
+  // y la tubería (terminales → verificar → auditoría → notas al jefe, y → juntar → informe).
+  conexiones = [{ de: 'yo', a: 'jefe', clase: 'fija' }]
   const manual = new Set(guardado.enlaces.map(l => `${l.n}|${l.a}`))
   for (const s of subs) {
-    conexiones.push({ de: 'jefe', a: `tarea-${s.n}`, vertical: true, clase: 'jefe' })
-    for (const e of s.espera ?? []) conexiones.push({ de: `tarea-${e}`, a: `tarea-${s.n}`, clase: 'dep' })
+    conexiones.push({ de: 'jefe', a: `tarea-${s.n}`, clase: 'jefe' })
+    for (const e of s.espera ?? []) conexiones.push({ de: `tarea-${e}`, a: `tarea-${s.n}`, vertical: true, clase: 'dep' })
     const suyos = d.trabajos.filter(t => t.subtarea === s.n)
     const t = suyos[suyos.length - 1]
     if (t) {
       const agente = agenteDe(t)
-      if (tarjetas.has(`term-${agente}`) && !manual.has(`${s.n}|${agente}`)) conexiones.push({ de: `tarea-${s.n}`, a: `term-${agente}`, vertical: true, viva: t.estado === 'corriendo' })
+      if (piezas.has(`term-${agente}`) && !manual.has(`${s.n}|${agente}`)) conexiones.push({ de: `tarea-${s.n}`, a: `term-${agente}`, viva: t.estado === 'corriendo' })
     }
   }
-  for (const l of guardado.enlaces) if (tarjetas.has(`tarea-${l.n}`) && tarjetas.has(`term-${l.a}`)) conexiones.push({ de: `tarea-${l.n}`, a: `term-${l.a}`, vertical: true, clase: 'manual', viva: estadoAgente(d, l.a).activo })
+  for (const l of guardado.enlaces) if (piezas.has(`tarea-${l.n}`) && piezas.has(`term-${l.a}`)) conexiones.push({ de: `tarea-${l.n}`, a: `term-${l.a}`, clase: 'manual', viva: estadoAgente(d, l.a).activo })
+  for (const a of guardado.terminales) conexiones.push({ de: `term-${a}`, a: 'pipe-verificar', clase: 'bus' })
+  conexiones.push({ de: 'pipe-verificar', a: 'pipe-auditoria', clase: 'flujo' }, { de: 'pipe-auditoria', a: 'jefe', subir: true, clase: 'notas' }, { de: 'pipe-auditoria', a: 'pipe-juntar', clase: 'flujo' }, { de: 'pipe-juntar', a: 'pipe-informe', vertical: true, clase: 'flujo' })
   trazar()
   pintarBarra()
   pintarDetalle()
 }
 
 // ---------- leer los datos del chat ----------
+let temporizador
 async function leer() {
   clearTimeout(temporizador)
   try {
@@ -422,20 +640,17 @@ async function leer() {
     const doc = new DOMParser().parseFromString(await r.text(), 'text/html')
     let datos = JSON.parse(doc.getElementById('datos').textContent)
     // Sin plan real (o si lo pides con el botón), se enseñan datos de ejemplo: ni se mandan órdenes ni se guardan.
-    const real = (datos.plan?.subtareas ?? []).length > 0
-    if (guardado.ejemplo || !real) datos = ejemplo(Date.now())
-    hud.textContent = `${datos.ejemplo ? 'DATOS DE EJEMPLO · ' : ''}zoom ${Math.round(vista.k * 100)}%`
+    if (guardado.ejemplo || !(datos.plan?.subtareas ?? []).length) datos = ejemplo(Date.now())
     modoEjemplo = !!datos.ejemplo
     const antes = ultimo
     ultimo = datos
-    grafo.actualizar(datos)
     if (!antes && !guardado.terminales.length) guardado.terminales = AGENTES.filter(a => estadoAgente(datos, a).ultimo).slice(0, 4)
     sincronizar()
+    aplicarVista()
+    particulasDe(eventosEntre(antes, datos))
   } catch {}
   temporizador = setTimeout(leer, 2000)
 }
-const leerYa = () => leer()
 document.getElementById('volver').href = `/${location.search}`
-aplicarVista()
 pintarBarra()
-leer()
+leer().then(() => { if (!guardado.vista) { guardado.vista = vista; centrar() } else aplicarVista() })
