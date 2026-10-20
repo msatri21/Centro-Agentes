@@ -16,6 +16,36 @@ const NS = 'http://www.w3.org/2000/svg'
 const chat = new URLSearchParams(location.search).get('s') ?? 'sin-chat'
 const CLAVE_GUARDADO = `tablero2:${chat}`
 
+// ---------- datos de ejemplo: un plan a medias con todos los estados, para probar el tablero sin trabajo real ----------
+function ejemplo(ahora) {
+  const t = (id, trabajador, subtarea, estado, hace, ms, extra = {}) => ({ id, trabajador, subtarea, estado, inicio: ahora - hace * 1000, ms: ms && ms * 1000, categoria: 'ejemplo', ...extra })
+  const sub = (n, titulo, estado, quien, puntaje, espera) => ({ n, titulo, estado, quien, puntaje, espera })
+  return {
+    ejemplo: true,
+    jefe: 'Claude',
+    ahora,
+    plan: {
+      objetivo: 'Calculadora completa hecha por varios agentes (ejemplo)',
+      subtareas: [
+        sub(1, 'Función cubo en productos.py', 'hecha', 'opencode:ollama/gpt-oss:120b-cloud', 9),
+        sub(2, 'Resumen del README', 'hecha', 'hermes:ollama-local/beam:cloud', 8),
+        sub(3, 'Tests de la calculadora', 'en curso', 'aider:ollama_chat/gemma4:31b-cloud'),
+        sub(4, 'Función raíz con validación', 'en curso', 'opencode:ollama/gpt-oss:120b-cloud'),
+        sub(5, 'Revisar y entregar', 'pendiente', undefined, undefined, [3, 4]),
+      ],
+    },
+    trabajos: [
+      t('a', 'opencode:ollama/gpt-oss:120b-cloud', 1, 'listo', 60, 11, { puntaje: 9, tokensIn: 24000, tokensOut: 300, instruccion: 'En productos.py añade una función cubo(x) que devuelva x ** 3. Edita solo productos.py.', salida: '› editando productos.py\n› python test_calc.py\nok: 4 pass' }),
+      t('b', 'ollama:gpt-oss:120b-cloud', 2, 'error', 58, 4, { tokensIn: 100, tokensOut: 0, instruccion: 'Resume el README en tres frases.', salida: 'escribiendo…\n✗ 429: sin cupo' }),
+      t('e', 'hermes:ollama-local/beam:cloud', 2, 'listo', 52, 13, { puntaje: 8, tokensIn: 52000, tokensOut: 900, instruccion: 'Resume el README en tres frases.\n\nContexto: esto es parte de la subtarea 2 del plan.', salida: '› relevo: subtarea 2\n› leyendo README.md\nok' }),
+      t('c', 'aider:ollama_chat/gemma4:31b-cloud', 3, 'corriendo', 14, undefined, { instruccion: 'Escribe tests en test_calc.py para suma, resta, multiplica y divide.', salida: '› test_calc.py\nApplied edit to test_calc.py\nTokens: 1.2k sent' }),
+      t('d', 'opencode:ollama/gpt-oss:120b-cloud', 4, 'corriendo', 6, undefined, { instruccion: 'Añade raiz(x) con ValueError si x < 0.', salida: '› rehaciendo raiz()\n› python test_calc.py' }),
+    ],
+    agentes: ['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude'].map(n => ({ nombre: n, ok: n !== 'codex', nota: n === 'codex' ? 'sin sesión · usa Ollama' : 'disponible' })),
+    modelos: { opencode: ['ollama/gpt-oss:120b-cloud'], ollama: ['gpt-oss:120b-cloud'], hermes: ['ollama-local/gpt-oss:120b-cloud'], aider: ['ollama_chat/gemma4:31b-cloud'], codex: ['chatgpt'], claude: ['haiku'] },
+  }
+}
+
 // ---------- estado guardado (posiciones, terminales abiertas, enlaces hechos a mano, vista) ----------
 let guardado = { vista: { x: 40, y: 70, k: 0.5 }, pos: {}, terminales: [], enlaces: [] }
 try {
@@ -32,7 +62,7 @@ function aplicarVista() {
   lienzo.style.backgroundSize = `${28 * vista.k}px ${28 * vista.k}px`
   lienzo.style.backgroundPosition = `${vista.x}px ${vista.y}px`
   mundo.classList.toggle('lejos', vista.k < 0.4)
-  hud.textContent = `zoom ${Math.round(vista.k * 100)}%`
+  hud.textContent = `${modoEjemplo ? 'DATOS DE EJEMPLO · ' : ''}zoom ${Math.round(vista.k * 100)}%`
 }
 lienzo.addEventListener('wheel', ev => {
   ev.preventDefault()
@@ -236,6 +266,7 @@ function pintarTarea(tar, s) {
 }
 
 async function enviar(accion, boton) {
+  if (modoEjemplo) { if (boton) boton.textContent = 'solo es un ejemplo'; return }
   if (boton) { boton.disabled = true; boton.textContent = 'enviando…' }
   try { await fetch('/accion' + location.search, { method: 'POST', body: JSON.stringify(accion) }) } catch {}
 }
@@ -307,6 +338,7 @@ function pintarBarra() {
   }
   barra.append(el('span', 'sep'))
   crear('+ Todos', () => { guardado.terminales = [...AGENTES]; guardar(); sincronizar() })
+  crear(modoEjemplo ? '✓ Ejemplo' : 'Ejemplo', () => { guardado.ejemplo = !guardado.ejemplo; guardar(); ultimo = null; leerYa() }, modoEjemplo ? 'abierto' : '')
   crear('Reordenar', reordenar)
   crear('Centrar', centrar)
   crear('■ Cancelar todo', () => ultimo?.trabajos.filter(t => t.estado === 'corriendo').forEach(t => enviar({ tipo: 'cancelar', id: t.id })))
@@ -334,6 +366,8 @@ function centrar() {
 
 // ---------- sincronizar las tarjetas con los datos ----------
 let ultimo = null
+let modoEjemplo = false
+let temporizador
 const grafoTar = crearTarjeta('grafo', 'grafo', 'Grafo principal', [0, 0], 'grafo-t')
 grafoTar.cuerpo.id = 'grafo-montaje'
 const grafo = crearGrafo(grafoTar.cuerpo)
@@ -381,19 +415,26 @@ function sincronizar() {
 
 // ---------- leer los datos del chat ----------
 async function leer() {
+  clearTimeout(temporizador)
   try {
     const r = await fetch(`/${location.search}`, { cache: 'no-store' })
     if (!r.ok) throw new Error(String(r.status))
     const doc = new DOMParser().parseFromString(await r.text(), 'text/html')
-    const datos = JSON.parse(doc.getElementById('datos').textContent)
+    let datos = JSON.parse(doc.getElementById('datos').textContent)
+    // Sin plan real (o si lo pides con el botón), se enseñan datos de ejemplo: ni se mandan órdenes ni se guardan.
+    const real = (datos.plan?.subtareas ?? []).length > 0
+    if (guardado.ejemplo || !real) datos = ejemplo(Date.now())
+    hud.textContent = `${datos.ejemplo ? 'DATOS DE EJEMPLO · ' : ''}zoom ${Math.round(vista.k * 100)}%`
+    modoEjemplo = !!datos.ejemplo
     const antes = ultimo
     ultimo = datos
     grafo.actualizar(datos)
     if (!antes && !guardado.terminales.length) guardado.terminales = AGENTES.filter(a => estadoAgente(datos, a).ultimo).slice(0, 4)
     sincronizar()
   } catch {}
-  setTimeout(leer, 2000)
+  temporizador = setTimeout(leer, 2000)
 }
+const leerYa = () => leer()
 document.getElementById('volver').href = `/${location.search}`
 aplicarVista()
 pintarBarra()
