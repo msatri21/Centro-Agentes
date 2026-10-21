@@ -202,6 +202,41 @@ const servidor = http.createServer((req, res) => {
     })
     return
   }
+  // Terminales del tablero (web/terminales.mjs): cada una es una conversación propia con un agente.
+  if (url.pathname.startsWith('/terminal/')) {
+    const ruta = url.pathname.slice('/terminal/'.length)
+    if ((ruta === 'estado') !== (req.method === 'GET')) {
+      res.writeHead(405).end()
+      return
+    }
+    const atender = a =>
+      import('./terminales.mjs')
+        .then(m => {
+          const r = m.manejar({ ...a, ruta, chat })
+          res.writeHead(r.codigo, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(r.datos))
+        })
+        .catch(e => res.writeHead(500).end(String(e)))
+    if (req.method === 'GET') {
+      atender({ id: url.searchParams.get('id'), agente: url.searchParams.get('agente') })
+      return
+    }
+    let cuerpo = ''
+    req.on('data', trozo => {
+      cuerpo += trozo
+      if (cuerpo.length > 12000) req.destroy()
+    })
+    req.on('end', () => {
+      let a
+      try {
+        a = JSON.parse(cuerpo)
+      } catch {
+        res.writeHead(400).end('json inválido')
+        return
+      }
+      atender(a ?? {})
+    })
+    return
+  }
   res.writeHead(404).end()
 })
 

@@ -79,12 +79,11 @@ const nuevoId = a => { let i = 1; while (guardado.terminales.some(t => t.id === 
 // Lo que hizo esta terminal: los trabajos de su agente (y de su modelo, si lo fijó).
 const datosDe = (d, t) => ({ ...d, trabajos: d.trabajos.filter(x => agenteDe(x) === t.a && (!t.m || modeloDe(x) === t.m)) })
 // Las partículas hablan de agentes: van a la primera terminal de ese agente.
-const termDe = agente => `term-${guardado.terminales.find(t => t.a === agente)?.id}`
 const guardar = () => { try { localStorage.setItem(CLAVE_GUARDADO, JSON.stringify(guardado)) } catch {} }
 
 // Los modelos de cada agente: los que informa el centro y, si no llegan, unos de respaldo (Claude siempre trae haiku, sonnet y opus).
-const RESPALDO = { claude: ['haiku', 'sonnet', 'opus'], ollama: ['gpt-oss:120b-cloud'], opencode: ['opencode/big-pickle'], hermes: ['ollama-local/gpt-oss:120b-cloud'], aider: ['ollama_chat/gpt-oss:120b-cloud'], codex: ['chatgpt'] }
-const modelosDe = a => { const l = ultimo?.modelos?.[a]; return a === 'claude' ? [...new Set([...RESPALDO.claude, ...(l ?? [])])] : l?.length ? l : RESPALDO[a] ?? [] }
+const RESPALDO = { claude: ['haiku', 'sonnet', 'opus'], ollama: ['gpt-oss:120b-cloud'], opencode: ['ollama/gpt-oss:120b-cloud', 'ollama/beam:cloud', 'opencode/big-pickle'], hermes: ['ollama-local/gpt-oss:120b-cloud'], aider: ['ollama_chat/gpt-oss:120b-cloud'], codex: ['chatgpt'] }
+const modelosDe = a => [...new Set([...(a === 'claude' ? RESPALDO.claude : []), ...(ultimo?.modelos?.[a] ?? []), ...(RESPALDO[a] ?? [])])]
 
 // ---------- vista: mover el lienzo y hacer zoom ----------
 const vista = guardado.vista ?? { x: 0, y: 0, k: 0.5 }
@@ -286,11 +285,9 @@ function particulasDe(eventos) {
     if (ev.tipo === 'plan') [0, 0.3, 0.6].forEach(r => despues(r, () => particula({ de: 'yo', a: 'jefe' }, GRIS, 1.1)))
     if (ev.tipo === 'encargo' && ev.subtarea !== undefined) {
       particula({ de: 'jefe', a: `tarea-${ev.subtarea}` }, GRIS, 1.1)
-      despues(1.1, () => particula({ de: `tarea-${ev.subtarea}`, a: termDe(ev.agente) }, GRIS, 1.1))
     }
-    if (ev.tipo === 'cambio') particula({ de: termDe(ev.de), a: termDe(ev.agente) }, ACENTO, 1.4, 6)
     if (ev.tipo === 'resultado') {
-      particula({ de: termDe(ev.agente), a: 'pipe-verificar' }, ev.ok ? GRIS : ACENTO, 1.3)
+      particula({ de: `tarea-${ev.subtarea}`, a: 'pipe-verificar' }, ev.ok ? GRIS : ACENTO, 1.3)
       if (ev.ok) despues(1.3, () => particula({ de: 'pipe-verificar', a: 'pipe-auditoria' }, GRIS, 0.9))
     }
     if (ev.tipo === 'nota') particula({ de: 'pipe-auditoria', a: 'jefe', subir: true }, ACENTO, 1.3, 5.5)
@@ -372,51 +369,81 @@ function pintarFijas(d, fase) {
   piezas.get('pipe-juntar').el.classList.toggle('activo', fase.indice === 6)
   piezas.get('pipe-informe').el.classList.toggle('activo', fase.indice === 7)
 }
+// Lo que se ve en una terminal: lo hablado y, al final, lo que el agente va escribiendo ahora mismo.
+function textoVivo(s) {
+  if (!s) return ''
+  const partes = s.turnos.map(x => (x.rol === 'usuario' ? `› ${x.texto}${x.enCola ? '   (en cola)' : ''}` : x.texto))
+  if (s.actual) partes.push(s.actual)
+  else if (s.estado === 'trabajando') partes.push('…')
+  return partes.join('\n\n')
+}
+const URL_TERMINAL = (ruta, tar) => `/terminal/${ruta}${location.search}${tar ? `&id=${encodeURIComponent(tar.tid)}&agente=${tar.agente}` : ''}`
+const llamar = (ruta, cuerpo) => fetch(`/terminal/${ruta}${location.search}`, { method: 'POST', body: JSON.stringify(cuerpo) })
+// En modo ejemplo no se lanza ningún agente: se enseña una conversación inventada.
+const srvEjemplo = tar => ({ agente: tar.agente, modelo: terminalDe(tar.tid)?.m || 'ejemplo', cwd: '(ejemplo)', estado: 'libre', ms: 0, actual: '', turnos: [{ rol: 'usuario', texto: 'Crea hola.txt con un saludo' }, { rol: 'agente', texto: 'Listo: creé hola.txt con "hola".', ms: 4200 }] })
 function pintarTerminal(tar, d) {
-  const e = estadoAgente(datosDe(d, terminalDe(tar.tid)), tar.agente)
-  tar.el.className = `pieza terminal-t${e.activo ? ' activo' : ''}${e.falla ? ' falla' : ''}${e.apartado ? ' apartado' : ''}${e.hecho && !e.activo ? ' hecha' : ''}`
-  tar.estado.textContent = e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'
+  const t = terminalDe(tar.tid)
+  const s = tar.srv
+  const trabajando = s?.estado === 'trabajando'
+  const falla = !trabajando && !!s?.turnos.at(-1)?.fallo
+  tar.el.className = `pieza terminal-t${trabajando ? ' activo' : ''}${falla ? ' falla' : ''}`
+  tar.estado.textContent = !s ? '…' : trabajando ? '● trabajando' : falla ? '✗ falló' : s.turnos.length ? '✓ libre' : 'lista'
   const lista = modelosDe(tar.agente)
-  const actual = terminalDe(tar.tid).m
-  const huella = lista.join('|') + '#' + actual
+  const huella = lista.join('|') + '#' + t.m
   if (tar.huellaModelos !== huella) {
     tar.huellaModelos = huella
-    tar.selModelo.replaceChildren(new Option('Automático (el centro elige)', ''), ...lista.map(m => new Option(m, m)))
-    tar.selModelo.value = lista.includes(actual) ? actual : ''
+    tar.selModelo.replaceChildren(new Option('Automático (el mejor gratis)', ''), ...lista.map(m => new Option(m, m)))
+    tar.selModelo.value = lista.includes(t.m) ? t.m : ''
   }
-  const info = (d.agentes ?? []).find(a => a.nombre === tar.agente)
-  tar.vivo.replaceChildren()
-  const modelo = el('small', '', `${e.apartado || e.modelo || d.modelos?.[tar.agente]?.[0] || ''}${info && !info.ok && !e.apartado ? ` · ${info.nota}` : ''}`)
-  const pre = el('pre', '', e.lineas.length ? e.lineas.join('\n') : e.apartado ? '' : '› en espera')
-  tar.vivo.append(modelo, pre)
-  if (e.ultimo && e.activo && e.ultimo.subtarea !== undefined) tar.vivo.append(el('div', 'estado', `haciendo la tarea ${e.ultimo.subtarea}`))
-  if (e.nota !== undefined) tar.vivo.append(el('div', `estado nota${e.nota < 6 ? ' mal' : ''}`, `última nota ${e.nota}/10`))
-  if (e.activo && e.ultimo) {
-    const b = el('button', 'cancelar', '■ Cancelar')
-    b.onclick = () => enviar({ tipo: 'cancelar', id: e.ultimo.id }, b)
-    tar.vivo.append(b)
+  tar.carpeta.placeholder = s?.cwd ? `Carpeta: ${s.cwd}` : 'Carpeta de trabajo (opcional)'
+  const txt = textoVivo(s) || '› escríbele algo para empezar'
+  if (tar.txt !== txt) {
+    const abajo = tar.pre.scrollTop + tar.pre.clientHeight >= tar.pre.scrollHeight - 12
+    tar.pre.textContent = txt
+    tar.txt = txt
+    if (abajo) tar.pre.scrollTop = tar.pre.scrollHeight
   }
+  tar.parar.hidden = !trabajando
   tar.enlazadas.replaceChildren()
   const mias = guardado.enlaces.filter(l => l.t === tar.tid)
-  const subs = d.plan?.subtareas ?? []
+  const subs = d?.plan?.subtareas ?? []
   for (const l of mias) {
     const chip = el('span', 'chip')
-    const s = subs.find(o => o.n === l.n)
-    chip.append(el('span', '', `→ tarea ${l.n}${s ? `: ${s.titulo.slice(0, 22)}` : ''}`))
+    const sub = subs.find(o => o.n === l.n)
+    chip.append(el('span', '', `→ tarea ${l.n}${sub ? `: ${sub.titulo.slice(0, 22)}` : ''}`))
     const x = el('button', '', '✕')
     x.title = 'Soltar esta tarea'
     x.onclick = () => { guardado.enlaces = guardado.enlaces.filter(o => o !== l); guardar(); sincronizar() }
     chip.append(x)
     tar.enlazadas.append(chip)
   }
-  const input = tar.enviarCaja.querySelector('input')
-  input.placeholder = mias.length ? `¿Qué debe hacer ${NOMBRES[tar.agente]} de la tarea ${mias[mias.length - 1].n}?` : 'Une esta terminal a una tarea (arrastra su punto) para escribirle'
-  input.disabled = !mias.length
-  tar.enviarCaja.querySelector('button').disabled = !mias.length
+  tar.entrada.placeholder = mias.length ? `Háblale (irá con el contexto de la tarea ${mias[mias.length - 1].n})` : `Háblale a ${NOMBRES[tar.agente]}…`
 }
+// Pregunta al servidor cómo va la terminal; solo repinta si algo cambió.
+async function sondear(tar) {
+  if (tar.sondeando) return
+  tar.sondeando = true
+  try {
+    let srv
+    if (modoEjemplo) srv = srvEjemplo(tar)
+    else {
+      const r = await fetch(URL_TERMINAL('estado', tar), { cache: 'no-store' })
+      if (r.ok) srv = await r.json()
+    }
+    const nuevo = JSON.stringify(srv)
+    if (srv && nuevo !== tar.srvTxt) {
+      tar.srvTxt = nuevo
+      tar.srv = srv
+      pintarTerminal(tar, ultimo)
+      if (abierto?.tipo === 'terminal' && abierto.clave === tar.tid) pintarDetalle()
+    }
+  } catch {}
+  tar.sondeando = false
+}
+setInterval(() => { for (const p of piezas.values()) if (p.tipo === 'terminal') sondear(p) }, 1000)
 function crearTerminal(t, i) {
   const a = t.a
-  const tar = conCabecera(crearPieza(`term-${t.id}`, 'terminal', 'terminal-t', [1180 + (i % 3) * 380, Math.floor(i / 3) * 390 - 230]), NOMBRES[a])
+  const tar = conCabecera(crearPieza(`term-${t.id}`, 'terminal', 'terminal-t', [1180 + (i % 3) * 380, Math.floor(i / 3) * 440 - 230]), NOMBRES[a])
   tar.agente = a
   tar.tid = t.id
   const cerrar = el('button', 'cerrar', '✕')
@@ -424,30 +451,46 @@ function crearTerminal(t, i) {
   cerrar.onclick = () => quitarTerminal(t.id)
   tar.cab.append(cerrar)
   tar.selModelo = el('select', 'modelo')
-  tar.selModelo.title = 'Modelo con el que trabaja esta terminal'
-  tar.selModelo.onchange = () => { terminalDe(t.id).m = tar.selModelo.value; guardar(); sincronizar() }
-  tar.vivo = el('div', 'vivo')
+  tar.selModelo.title = 'Modelo con el que trabaja esta terminal (vale desde su siguiente mensaje)'
+  tar.selModelo.onchange = () => { terminalDe(t.id).m = tar.selModelo.value; guardar() }
+  tar.carpeta = el('input', 'carpeta')
+  tar.carpeta.type = 'text'
+  tar.carpeta.value = t.c ?? ''
+  tar.carpeta.title = 'Carpeta donde trabaja el agente. Vacía: una propia de esta terminal'
+  tar.carpeta.onchange = () => { terminalDe(t.id).c = tar.carpeta.value.trim(); guardar() }
+  tar.pre = el('pre', 'vivo-pre')
   tar.enlazadas = el('div', 'enlazadas')
   tar.enviarCaja = el('form', 'enviar')
-  const input = el('input')
-  input.type = 'text'
-  input.maxLength = 2000
+  tar.entrada = el('input')
+  tar.entrada.type = 'text'
+  tar.entrada.maxLength = 3000
   const ir = el('button', '', 'Enviar')
   ir.type = 'submit'
-  tar.enviarCaja.append(input, ir)
+  tar.parar = el('button', 'cancelar', '■')
+  tar.parar.type = 'button'
+  tar.parar.title = 'Parar lo que está haciendo'
+  tar.parar.hidden = true
+  tar.parar.onclick = () => llamar('parar', { id: t.id, agente: a })
+  tar.enviarCaja.append(tar.entrada, ir, tar.parar)
   tar.enviarCaja.addEventListener('submit', async ev => {
     ev.preventDefault()
-    const texto = input.value.trim()
+    const texto = tar.entrada.value.trim()
+    if (!texto) return
+    if (modoEjemplo) { ir.textContent = 'solo es un ejemplo'; setTimeout(() => { ir.textContent = 'Enviar' }, 2000); return }
     const mias = guardado.enlaces.filter(l => l.t === t.id)
-    if (!texto || !mias.length) return
-    input.value = ''
-    ir.textContent = 'enviado ✓'
-    await enviar({ tipo: 'encargar', agente: a, n: mias[mias.length - 1].n, texto, ...(terminalDe(t.id).m ? { modelo: terminalDe(t.id).m } : {}) })
-    setTimeout(() => { ir.textContent = 'Enviar' }, 2500)
+    const sub = (ultimo?.plan?.subtareas ?? []).find(o => mias.length && o.n === mias[mias.length - 1].n)
+    const completo = sub ? `${texto}\n\nContexto: esto es parte de la subtarea ${sub.n} del plan: "${sub.titulo}".` : texto
+    tar.entrada.value = ''
+    try {
+      const r = await llamar('enviar', { id: t.id, agente: a, modelo: terminalDe(t.id).m, ...(terminalDe(t.id).c ? { cwd: terminalDe(t.id).c } : {}), texto: completo })
+      if (r.ok) { tar.srv = await r.json(); tar.srvTxt = JSON.stringify(tar.srv); pintarTerminal(tar, ultimo) }
+      else { const e = await r.json().catch(() => ({})); tar.entrada.value = texto; ir.textContent = e.error ?? 'no se pudo enviar'; setTimeout(() => { ir.textContent = 'Enviar' }, 3000) }
+    } catch { tar.entrada.value = texto }
   })
-  tar.cuerpo.append(tar.selModelo, tar.vivo, tar.enlazadas, tar.enviarCaja)
-  tar.el.addEventListener('dblclick', ev => { if (!ev.target.closest('input,button,.puerto')) abrirDetalle({ tipo: 'terminal', clave: t.id }) })
+  tar.cuerpo.append(tar.selModelo, tar.carpeta, tar.pre, tar.enlazadas, tar.enviarCaja)
+  tar.el.addEventListener('dblclick', ev => { if (!ev.target.closest('input,button,select,pre,.puerto')) abrirDetalle({ tipo: 'terminal', clave: t.id }) })
   conPuerto(tar, 'arriba')
+  sondear(tar)
   return tar
 }
 function crearTarea(s, i, n) {
@@ -645,21 +688,25 @@ function pintarDetalle() {
       else detalle.append(ficha([['Plan', d.plan?.objetivo ?? '—'], ['Tokens', `${mil(suma(d.trabajos, x => x.tokensIn))} leídos · ${mil(suma(d.trabajos, x => x.tokensOut))} escritos`], ['Tiempo de trabajo', seg(suma(d.trabajos.filter(x => x.ms !== undefined), x => x.ms))], ...(typeof d.ahorro === 'number' ? [['Ahorro frente a Claude', `$${d.ahorro.toFixed(2)}`]] : [])]))
     } else if (abierto.tipo === 'terminal') {
       const t = terminalDe(abierto.clave)
-      if (!t) { cerrarDetalle(); return }
-      const a = t.a
-      const e = estadoAgente(datosDe(d, t), a)
-      detalle.append(cabecera(`Terminal · ${NOMBRES[a]}${t.m ? ` · ${t.m}` : ''}`, e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'))
-      const suyos = datosDe(d, t).trabajos
-      const actual = suyos.filter(x => x.estado === 'corriendo').pop()
-      const info = (d.agentes ?? []).find(o => o.nombre === a)
+      const tar = piezas.get(`term-${abierto.clave}`)
+      if (!t || !tar) { cerrarDetalle(); return }
+      const srv = tar.srv
       const unidas = guardado.enlaces.filter(l => l.t === t.id).map(l => `tarea ${l.n}`)
-      detalle.append(ficha([['Agente', NOMBRES[a]], ['Modelo', t.m || 'automático (el centro elige)'], ['Disponibilidad', info ? (info.ok ? 'disponible' : info.nota) : '—'], ...cifras(suyos), ['Unida a', unidas.length ? unidas.join(', ') : 'ninguna tarea']]))
-      detalle.append(el('div', 'rotulo', 'Qué está ejecutando'))
-      if (actual) {
-        const s = (d.plan?.subtareas ?? []).find(o => o.n === actual.subtarea)
-        detalle.append(el('p', 'titulo', s ? `Tarea ${s.n}: ${s.titulo}` : actual.tarea ?? 'Encargo suelto'))
-      } else detalle.append(el('p', 'vacio', e.apartado ? e.apartado : 'Nada ahora mismo.'))
-      for (const t of [...suyos].reverse().slice(0, 6)) detalle.append(filaTrabajo(t, ahora))
+      const trabajando = srv?.estado === 'trabajando'
+      detalle.append(cabecera(`Terminal · ${NOMBRES[t.a]}${t.m ? ` · ${t.m}` : ''}`, trabajando ? '● trabajando' : srv?.turnos.at(-1)?.fallo ? '✗ falló' : '✓ libre'))
+      detalle.append(ficha([['Agente', NOMBRES[t.a]], ['Modelo', srv?.modelo ?? '—'], ['Carpeta', srv?.cwd ?? '—'], ['Mensajes tuyos', srv?.turnos.filter(x => x.rol === 'usuario').length ?? 0], ['Respuestas', srv?.turnos.filter(x => x.rol === 'agente').length ?? 0], ['Tiempo respondiendo', seg(suma(srv?.turnos ?? [], x => x.ms))], ['Trabajando hace', trabajando ? seg(srv.ms) : '—'], ['Unida a', unidas.length ? unidas.join(', ') : 'ninguna tarea']]))
+      detalle.append(el('div', 'rotulo', 'Conversación'))
+      if (!srv?.turnos.length && !srv?.actual) detalle.append(el('p', 'vacio', 'Todavía no le has escrito. Hazlo desde la propia terminal.'))
+      for (const x of srv?.turnos ?? []) {
+        const caja = el('div', `trabajo${x.fallo ? ' mal' : ''}`)
+        caja.append(el('div', 'linea', x.rol === 'usuario' ? `Tú${x.enCola ? ' · en cola' : ''}` : `${NOMBRES[t.a]}${x.ms ? ` · ${seg(x.ms)}` : ''}`), el('pre', 'salida', x.texto))
+        detalle.append(caja)
+      }
+      if (trabajando) {
+        const caja = el('div', 'trabajo')
+        caja.append(el('div', 'linea', `${NOMBRES[t.a]} · escribiendo ahora`), el('pre', 'salida', srv.actual || '…'))
+        detalle.append(caja)
+      }
     } else {
       const s = (d.plan?.subtareas ?? []).find(o => o.n === abierto.clave)
       if (!s) { cerrarDetalle(); return }
@@ -719,6 +766,8 @@ function abrirMenu(boton, a) {
   menu.style.bottom = `${innerHeight - r.top + 8}px`
 }
 function quitarTerminal(id) {
+  const t = terminalDe(id)
+  if (t && !modoEjemplo) llamar('cerrar', { id, agente: t.a }).catch(() => {})
   guardado.terminales = guardado.terminales.filter(t => t.id !== id)
   guardado.enlaces = guardado.enlaces.filter(l => l.t !== id)
   guardar()
@@ -751,23 +800,15 @@ function sincronizar() {
   subs.forEach((s, i) => pintarTarea(piezas.get(`tarea-${s.n}`) ?? crearTarea(s, i, subs.length), s))
   for (const id of [...piezas.keys()]) if (id.startsWith('term-') && !terminalDe(id.slice(5))) quitar(id)
   guardado.terminales.forEach((t, i) => pintarTerminal(piezas.get(`term-${t.id}`) ?? crearTerminal(t, i), d))
-  // Líneas: Tú ↔ jefe (fija), el jefe con cada tarea, las dependencias, cada tarea con las terminales que la hacen o que unió el usuario,
-  // y la tubería (terminales → verificar → auditoría → notas al jefe, y → juntar → informe).
+  // Líneas: Tú ↔ jefe (fija), el jefe con cada tarea, las dependencias, cada tarea con las terminales que el usuario le unió
+  // y la tubería (tareas → verificar → auditoría → notas al jefe, y → juntar → informe).
   conexiones = [{ de: 'yo', a: 'jefe', clase: 'fija' }]
-  const manual = new Set(guardado.enlaces.map(l => `${l.n}|${l.t}`))
   for (const s of subs) {
     conexiones.push({ de: 'jefe', a: `tarea-${s.n}`, clase: 'jefe' })
     for (const e of s.espera ?? []) conexiones.push({ de: `tarea-${e}`, a: `tarea-${s.n}`, vertical: true, clase: 'dep' })
-    const suyos = d.trabajos.filter(t => t.subtarea === s.n)
-    const t = suyos[suyos.length - 1]
-    if (t) {
-      const agente = agenteDe(t)
-      const term = guardado.terminales.find(x => x.a === agente && (!x.m || x.m === modeloDe(t))) ?? guardado.terminales.find(x => x.a === agente)
-      if (term && piezas.has(`term-${term.id}`) && !manual.has(`${s.n}|${term.id}`)) conexiones.push({ de: `tarea-${s.n}`, a: `term-${term.id}`, viva: t.estado === 'corriendo' })
-    }
+    conexiones.push({ de: `tarea-${s.n}`, a: 'pipe-verificar', clase: 'bus' })
   }
-  for (const l of guardado.enlaces) if (piezas.has(`tarea-${l.n}`) && piezas.has(`term-${l.t}`)) conexiones.push({ de: `tarea-${l.n}`, a: `term-${l.t}`, clase: 'manual', viva: estadoAgente(datosDe(d, terminalDe(l.t)), terminalDe(l.t).a).activo })
-  for (const t of guardado.terminales) conexiones.push({ de: `term-${t.id}`, a: 'pipe-verificar', clase: 'bus' })
+  for (const l of guardado.enlaces) if (piezas.has(`tarea-${l.n}`) && piezas.has(`term-${l.t}`)) conexiones.push({ de: `tarea-${l.n}`, a: `term-${l.t}`, clase: 'manual', viva: piezas.get(`term-${l.t}`).el.classList.contains('activo') })
   conexiones.push({ de: 'pipe-verificar', a: 'pipe-auditoria', clase: 'flujo' }, { de: 'pipe-auditoria', a: 'jefe', subir: true, clase: 'notas' }, { de: 'pipe-auditoria', a: 'pipe-juntar', clase: 'flujo' }, { de: 'pipe-juntar', a: 'pipe-informe', vertical: true, clase: 'flujo' })
   trazar()
   pintarBarra()

@@ -25,6 +25,18 @@ try {
   assert.equal(await enviar({ tipo: 'jefe', texto: 'Cambia el plan' }), 200)
   assert.equal(await enviar({ tipo: 'jefe', texto: '' }), 400, 'mensaje vacío al jefe')
   assert.equal(await enviar({ tipo: 'borrar-todo' }), 400, 'tipo desconocido')
+  // Terminales del tablero: solo se prueba lo que se rechaza y el estado de una nueva (lanzar agentes de verdad gasta modelos).
+  const urlT = `http://127.0.0.1:${puerto}/terminal`
+  const T = (ruta, cuerpo) => fetch(`${urlT}/${ruta}?t=clavedeprueba&s=chat1`, { method: 'POST', body: JSON.stringify(cuerpo) }).then(r => r.status)
+  assert.equal(await T('enviar', { id: 'a b', agente: 'ollama', modelo: '', texto: 'hola' }), 400, 'id inválido')
+  assert.equal(await T('enviar', { id: 'x1', agente: 'rm', modelo: '', texto: 'hola' }), 400, 'agente desconocido')
+  assert.equal(await T('enviar', { id: 'x1', agente: 'ollama', modelo: 'a b; rm', texto: 'hola' }), 400, 'modelo con caracteres raros')
+  assert.equal(await T('enviar', { id: 'x1', agente: 'ollama', modelo: '', texto: '  ' }), 400, 'mensaje vacío')
+  assert.equal(await T('enviar', { id: 'x1', agente: 'ollama', modelo: '', texto: 'hola', cwd: 'C:/no/existe/nunca' }), 400, 'carpeta inexistente')
+  const estado = await (await fetch(`${urlT}/estado?t=clavedeprueba&s=chat1&id=nueva-1&agente=claude`)).json()
+  assert.deepEqual([estado.estado, estado.turnos.length], ['libre', 0], 'una terminal nueva está libre y vacía')
+  assert.equal((await fetch(`${urlT}/estado?t=mala&s=chat1&id=nueva-1&agente=claude`)).status, 403, 'sin clave no hay terminales')
+  assert.equal((await fetch(`${urlT}/enviar?t=clavedeprueba&s=chat1`)).status, 405, 'enviar solo por POST')
   const res = await fetch(`http://127.0.0.1:${puerto}/accion?t=mala&s=chat1`, { method: 'POST', body: '{}' })
   assert.equal(res.status, 403, 'sin la clave no se acepta nada')
   const lineas = fs.readFileSync(path.join(base, 'chats', 'chat1', 'acciones.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l))

@@ -167,3 +167,10 @@ select.modelo:focus{outline:none;border-color:var(--acento)}
 .fase-fila .marca{color:var(--acento-claro);font:14px ui-monospace,Consolas,monospace;width:16px}
 .fase-fila b{display:block;color:var(--t1);font:600 14px 'Segoe UI',system-ui,sans-serif}.fase-fila small{color:var(--t4);font:12px ui-monospace,Consolas,monospace;margin:2px 0 0}
 @media (prefers-reduced-motion:reduce){.pieza,.pieza.activo,.pieza.falla,#detalle.abriendo>*,.menu-modelos,#lineas path.nueva{animation:none!important}}
+
+/* Terminal viva: su conversación con scroll, la carpeta y el botón de parar */
+.terminal-t pre.vivo-pre{height:190px;min-height:0;overflow:auto;margin:0 0 6px;padding:8px 10px;background:var(--panel2);border:1px solid var(--borde)}
+input.carpeta{width:100%;box-sizing:border-box;margin-bottom:8px;background:var(--panel2);border:1px solid var(--borde);color:var(--t3);padding:5px 8px;font:11px ui-monospace,Consolas,monospace}
+input.carpeta:focus{outline:none;border-color:var(--acento);color:var(--t1)}
+.enviar button.cancelar{padding:6px 10px}
+.enviar button[hidden]{display:none}
