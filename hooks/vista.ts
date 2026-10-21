@@ -75,8 +75,9 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 .g-rotulo{position:absolute;top:14px;font:11px ui-monospace,Consolas,monospace;color:#5a5a5a;letter-spacing:.12em;text-transform:uppercase;pointer-events:none}
 .g-izq{left:18px}.g-der{right:18px;text-align:right}
 .g-controles{position:absolute;right:14px;bottom:14px;display:flex;gap:6px}
-.g-controles button{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:6px 11px;font:13px ui-monospace,Consolas,monospace;cursor:pointer;border-radius:3px}
-.g-controles button:hover{border-color:var(--vino);color:#fff}
+.g-controles button,.g-controles a{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:6px 11px;font:13px ui-monospace,Consolas,monospace;cursor:pointer;border-radius:3px}
+.g-controles a{text-decoration:none;display:inline-block}
+.g-controles button:hover,.g-controles a:hover{border-color:var(--vino);color:#fff}
 .arista{fill:none;stroke:#333;stroke-width:1.2;transition:stroke .4s}.arista.viva{stroke:#666}
 .bus{fill:none;stroke:#2f2f2f;stroke-width:1;stroke-dasharray:3 5}
 .cambio{fill:none;stroke:transparent;stroke-width:1.4;stroke-dasharray:5 4}.cambio.viva{stroke:#5c1822}

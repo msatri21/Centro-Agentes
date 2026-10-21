@@ -75,7 +75,7 @@ export function crearGrafo(montaje) {
   const sinMovimiento = matchMedia('(prefers-reduced-motion: reduce)').matches
   montaje.innerHTML = `<div class="lienzo" id="g-lienzo"><svg role="img" aria-label="Grafo animado del Centro de agentes MST: Claude en el centro y, alrededor, un cuadrado por plan con los subagentes que trabajan en él"></svg>
 <div class="g-rotulo g-izq">Fig 1 · cómo se hablan los agentes</div><div class="g-rotulo g-der" id="g-vivo">EN REPOSO</div>
-<div class="g-controles"><button type="button" data-zoom="mas" aria-label="Acercar">+</button><button type="button" data-zoom="menos" aria-label="Alejar">−</button><button type="button" data-zoom="ajustar">Ajustar</button></div>
+<div class="g-controles"><button type="button" data-zoom="mas" aria-label="Acercar">+</button><button type="button" data-zoom="menos" aria-label="Alejar">−</button><button type="button" data-zoom="ajustar">Ajustar</button><a class="g-tablero" href="/tablero.html${location.search}" target="_blank">Tablero</a></div>
 <div id="g-alerta" role="status" aria-live="assertive" style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden"></div></div>
 <div id="g-lista" class="g-lista"></div>
 <section class="paso" aria-live="polite"><div><p class="rotulo">Paso actual</p><h2><i id="g-num">REPOSO</i><span id="g-titulo"></span></h2></div>
