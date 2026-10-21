@@ -33,8 +33,10 @@ El centro puede darles a los agentes que programan la skill [ponytail](https://g
 
 - Copia `skills/ponytail/SKILL.md` (y, si quieres, `ponytail-review` y `ponytail-audit`) de ese repositorio a `~/.claude/skills/<nombre>/SKILL.md`. Si no quieres que Claude la active solo en tus sesiones, añade `disable-model-invocation: true` al encabezado de `ponytail`: el centro la sigue leyendo.
 - Copia `hooks/ponytail-map.js` a `~/.centro-agentes/ponytail/ponytail-map.js`. Es un script local, sin red ni modelo, que lista las funciones y clases que ya hay en una carpeta.
-- Cuando Claude delega con `skills: ["ponytail"]` (OpenCode, Codex o Hermes; Ollama y Aider no siguen skills), el centro añade al encargo el mapa del código de la carpeta donde trabajará el agente. Sin el script, el encargo sale sin mapa.
-- El protocolo del jefe sugiere `ponytail-review` al auditar el cambio de un agente de código y `ponytail-audit` antes de planificar en un repositorio nuevo.
+- **El centro las añade solo**, según la clase de tarea, sin depender de que Claude se acuerde (ajuste `ponytailAutomatico`, activado por defecto): `ponytail` a toda tarea que escribe o cambia código, `ponytail-review` a las auditorías de un cambio y `ponytail-audit` a las de un repositorio entero. Solo las que estén instaladas, y solo a los agentes que leen skills (OpenCode, Codex y Hermes; Ollama y Aider quedan como están).
+- **Cómo decide si es código:** mira la categoría, si la tarea nombra archivos de código o usa vocabulario de programación, y si el encargo declara `archivos`, `aislar` o `verificar`. Es amplio a propósito: ante la duda cuenta como código. Una tarea que audita sin pedir cambios es una auditoría (de un repo entero si dice "todo el repositorio" o su categoría es `auditoria-repo`); "revisa y corrige" es escritura.
+- Con `ponytail` y `ponytail-audit` el encargo lleva además el mapa del código de la carpeta donde trabajará el agente (sin el script, sale sin mapa). `ponytail-review` no lo lleva: revisa un cambio concreto.
+- El resultado de una tarea de código trae `auditar_con` y `aviso_auditoria`, para que el jefe la audite con `ponytail-review`. Para no añadir las skills a un encargo concreto: `sin_skills_automaticas: true`.
 
 ## Comandos
 

@@ -108,6 +108,103 @@ test('con la skill ponytail el encargo lleva el mapa del código de la carpeta d
   expect(vistos[vistos.length - 1].input).not.toContain('Codebase map')
 })
 
+import { CON_MAPA, clasificarTarea, skillsAutomaticas } from './skillsAuto'
+
+test('clasificarTarea: código, auditoría de un cambio, auditoría de un repo o texto; ante la duda, código', () => {
+  const clase = (e: any) => clasificarTarea(e).clase
+  // Escritura: por la categoría, por los archivos o el vocabulario, y por cómo se pide (aislar, verificar, archivos).
+  expect(clase({ categoria: 'codigo', tarea: 'añade un botón' })).toBe('escritura')
+  expect(clase({ categoria: 'general', tarea: 'Corrígelo en src/cart.js' })).toBe('escritura')
+  expect(clase({ categoria: 'x', tarea: 'haz algo', archivos: ['a.js'] })).toBe('escritura')
+  expect(clase({ categoria: 'x', tarea: 'haz algo', verificar: 'npm test' })).toBe('escritura')
+  expect(clase({ categoria: 'x', tarea: 'haz algo', aislar: true })).toBe('escritura')
+  expect(clase({ categoria: 'docs', tarea: 'documenta la función calcularTotal' })).toBe('escritura')
+  expect(clase({ categoria: 'x', tarea: 'usa `formatNumber` para mostrarlo' })).toBe('escritura')
+  // Revisar y corregir escribe código: no es solo una auditoría.
+  expect(clase({ categoria: 'revision', tarea: 'revisa y corrige los errores de src/a.js' })).toBe('escritura')
+  // Auditoría de un cambio y de un repo entero.
+  expect(clase({ categoria: 'revision', tarea: 'revisa el último commit de src/cart.js' })).toBe('auditoria')
+  expect(clase({ categoria: 'auditoria', tarea: 'audita este PR' })).toBe('auditoria')
+  expect(clase({ categoria: 'auditoria', tarea: 'audita todo el repositorio y dime qué sobra' })).toBe('auditoria-repo')
+  expect(clase({ categoria: 'analisis', tarea: 'code review de todo el proyecto' })).toBe('auditoria-repo')
+  // Texto: sin ninguna señal de código.
+  expect(clase({ categoria: 'texto', tarea: 'traduce este párrafo al inglés' })).toBe('texto')
+  expect(clase({ categoria: 'diseño', tarea: 'haz la portada' })).toBe('texto')
+  expect(clase({ categoria: 'revision', tarea: 'revisa el informe de ventas' })).toBe('texto')
+  expect(clase({ categoria: 'investigacion', tarea: 'busca precios de hosting' })).toBe('texto')
+  // Qué skill lleva cada clase, y cuáles llevan el mapa del código.
+  expect(skillsAutomaticas('escritura')).toEqual(['ponytail'])
+  expect(skillsAutomaticas('auditoria')).toEqual(['ponytail-review'])
+  expect(skillsAutomaticas('auditoria-repo')).toEqual(['ponytail-audit'])
+  expect(skillsAutomaticas('texto')).toEqual([])
+  expect(CON_MAPA).toEqual(['ponytail', 'ponytail-audit'])
+})
+
+// Un centro con ponytail, ponytail-review y ponytail-audit instaladas y el script del mapa; devuelve lo que ve el agente.
+const centroConPonytail = (on: any) => {
+  base(on)
+  on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: /SKILL\.md$|ponytail-map\.js$/.test(String(e.path)) }))
+  const mapas: string[] = []
+  const lanzados: { argv: string[]; input?: string }[] = []
+  on('process.run', async (_$: any, e: any) => {
+    if (e.argv.some((a: string) => a.includes('ponytail-map.js'))) {
+      mapas.push(e.init?.cwd)
+      return { value: { exitCode: 0, stdout: 'Codebase map (what already exists)\nweb/: crearGrafo\n', stderr: '', isStdoutTruncated: false } }
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }
+  })
+  on('process.spawn', async function* (_$: any, e: any) {
+    lanzados.push({ argv: e.argv, input: e.input })
+    yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
+    return { value: { code: 0, signal: null } }
+  })
+  const visto = () => { const l = lanzados[lanzados.length - 1]; return `${l.argv.join(' ')} ${l.input ?? ''}` }
+  return { mapas, lanzados, visto }
+}
+
+test('el centro añade solo ponytail a las tareas de código, con el mapa, aunque Claude no lo pida', async ($, on) => {
+  const c = centroConPonytail(on)
+  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' } }))
+  expect(d.exito).toBe(true)
+  expect(c.visto()).toContain('Usa estas skills')
+  expect(c.visto()).toContain('ponytail: lee')
+  expect(c.visto()).toContain('Codebase map')
+  expect(c.mapas).toEqual(['C:/proyecto'])
+  // Y al devolver el resultado le recuerda al jefe con qué auditar el cambio.
+  expect(d.auditar_con).toBe('ponytail-review')
+  expect(d.aviso_auditoria).toContain('ponytail-review')
+})
+
+test('el centro añade ponytail-review o ponytail-audit a las auditorías, sin mapa de ponytail-review ni skill de escritura', async ($, on) => {
+  const c = centroConPonytail(on)
+  const cambio = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'revision', tarea: 'revisa el último commit de src/cart.js', cwd: 'C:/proyecto' } }))
+  expect(cambio.exito).toBe(true)
+  expect(c.visto()).toContain('ponytail-review: lee')
+  expect(c.visto()).not.toContain('ponytail: lee')
+  expect(c.mapas).toEqual([])
+  expect(cambio.auditar_con).toBeUndefined()
+  const repo = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'auditoria', tarea: 'audita todo el repositorio', cwd: 'C:/proyecto' } }))
+  expect(repo.exito).toBe(true)
+  expect(c.visto()).toContain('ponytail-audit: lee')
+  expect(c.mapas).toEqual(['C:/proyecto'])
+})
+
+test('sin skills automáticas: tareas de texto, el interruptor del encargo, el ajuste y los agentes que no leen skills', async ($, on) => {
+  const c = centroConPonytail(on)
+  const texto = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'texto', tarea: 'traduce este párrafo al inglés', cwd: 'C:/proyecto' } }))
+  expect(texto.exito).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+  const apagada = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto', sin_skills_automaticas: true } }))
+  expect(apagada.exito).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+  expect(apagada.auditar_con).toBe('ponytail-review')
+  // Un agente que no lee skills (Aider) no cambia de agente ni recibe la instrucción.
+  const aider = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'aider', categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' } }))
+  expect(aider.trabajador.startsWith('aider')).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+})
+
 test('compara versiones para saber si hay que autoactualizar', async () => {
   expect(esMasNueva('0.3.1', '0.3.0')).toBe(true)
   expect(esMasNueva('0.10.0', '0.9.9')).toBe(true)
