@@ -27,6 +27,15 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 | Codex | `npm i -g @openai/codex` y `codex login` con tu cuenta de ChatGPT | Cupo gratis limitado de tu cuenta; si no hay sesión o se acaba, usa tu Ollama |
 | Claude headless | ya viene con Claude Code | Solo si los gratis rinden claramente peor |
 
+## Skills opcionales: ponytail
+
+El centro puede darles a los agentes que programan la skill [ponytail](https://github.com/DietrichGebert/ponytail) (MIT): pide el cambio más pequeño pero completo, que reutilicen lo que ya existe y que dejen una línea con lo que omitieron. No viene incluida; si la instalas, el centro la usa:
+
+- Copia `skills/ponytail/SKILL.md` (y, si quieres, `ponytail-review` y `ponytail-audit`) de ese repositorio a `~/.claude/skills/<nombre>/SKILL.md`. Si no quieres que Claude la active solo en tus sesiones, añade `disable-model-invocation: true` al encabezado de `ponytail`: el centro la sigue leyendo.
+- Copia `hooks/ponytail-map.js` a `~/.centro-agentes/ponytail/ponytail-map.js`. Es un script local, sin red ni modelo, que lista las funciones y clases que ya hay en una carpeta.
+- Cuando Claude delega con `skills: ["ponytail"]` (OpenCode, Codex o Hermes; Ollama y Aider no siguen skills), el centro añade al encargo el mapa del código de la carpeta donde trabajará el agente. Sin el script, el encargo sale sin mapa.
+- El protocolo del jefe sugiere `ponytail-review` al auditar el cambio de un agente de código y `ponytail-audit` antes de planificar en un repositorio nuevo.
+
 ## Comandos
 
 - `/mst [tarea]` — panel + web; con tarea, el jefe la reparte.

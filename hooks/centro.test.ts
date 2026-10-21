@@ -73,6 +73,41 @@ test('una tarea con skills no va a Ollama y el agente recibe la instrucción de 
   expect(`${lanzado.argv.join(' ')} ${lanzado.input ?? ''}`).toContain('design-md')
 })
 
+test('con la skill ponytail el encargo lleva el mapa del código de la carpeta de trabajo; sin ella, no', async ($, on) => {
+  base(on)
+  on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: String(e.path).includes('ponytail-map.js') }))
+  const vistos: { argv: string[]; input?: string; cwd?: string }[] = []
+  // El mapa lo genera un script de ponytail con process.run; el agente se lanza con process.spawn.
+  on('process.run', async (_$: any, e: any) => {
+    if (e.argv.some((a: string) => a.includes('ponytail-map.js'))) {
+      vistos.push({ argv: e.argv, cwd: e.init?.cwd })
+      return { value: { exitCode: 0, stdout: 'Codebase map (what already exists)\nweb/: crearGrafo, enviarRespuesta\n', stderr: '', isStdoutTruncated: false } }
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }
+  })
+  on('process.spawn', async function* (_$: any, e: any) {
+    vistos.push({ argv: e.argv, input: e.input })
+    yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
+    return { value: { code: 0, signal: null } }
+  })
+  const con = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón', cwd: 'C:/proyecto', skills: ['ponytail'] } }))
+  expect(con.exito).toBe(true)
+  const mapa = vistos.find(v => v.argv.some(a => a.includes('ponytail-map.js')))
+  expect(mapa?.argv[0]).toBe('node')
+  expect(mapa?.cwd).toBe('C:/proyecto')
+  const lanzado = vistos[vistos.length - 1]
+  expect(lanzado.input).toContain('añade un botón')
+  expect(lanzado.input).toContain('Codebase map')
+  expect(lanzado.input).toContain('crearGrafo')
+  // Otra skill, o ninguna: el mapa no se pide ni se añade.
+  vistos.length = 0
+  const sin = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'diseño', tarea: 'haz la portada', cwd: 'C:/proyecto', skills: ['design-md'] } }))
+  expect(sin.exito).toBe(true)
+  expect(vistos.some(v => v.argv.some(a => a.includes('ponytail-map.js')))).toBe(false)
+  expect(vistos[vistos.length - 1].input).not.toContain('Codebase map')
+})
+
 test('compara versiones para saber si hay que autoactualizar', async () => {
   expect(esMasNueva('0.3.1', '0.3.0')).toBe(true)
   expect(esMasNueva('0.10.0', '0.9.9')).toBe(true)

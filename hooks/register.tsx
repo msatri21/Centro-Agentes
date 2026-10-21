@@ -952,6 +952,18 @@ async function instruccionSkills($: EngineInterface, skills: string[]): Promise<
   return `\n\nUsa estas skills: antes de empezar, lee el SKILL.md de cada una y sigue sus instrucciones.\n${lineas.join('\n')}`
 }
 
+// Con la skill ponytail, el encargo lleva también el mapa del código de su carpeta de trabajo: qué funciones y clases hay ya, para reutilizarlas
+// en vez de escribir otras. Lo genera un script de ponytail (local, sin red ni modelo) que vive en ~/.centro-agentes/ponytail; si no está, el encargo sale sin mapa.
+async function mapaDelCodigo($: EngineInterface, cwd: string): Promise<string> {
+  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  if (!casa) return ''
+  const guion = `${casa}/.centro-agentes/ponytail/ponytail-map.js`
+  if (!(await $.fs.exists(guion).catch(() => false))) return ''
+  const r = await $.process.run(['node', guion], { cwd, timeoutMs: 5000 }).catch(() => undefined)
+  const mapa = r && r.exitCode === 0 ? r.stdout.trim() : ''
+  return mapa ? '\n\n' + mapa : ''
+}
+
 type Encargo = {
   trabajador?: Trabajador | 'auto'; modelo?: string; categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]
   /** Trabajar en una copia aislada (git worktree) del repo de cwd, en su propia rama */
@@ -1056,6 +1068,8 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   // Copia aislada: varios agentes pueden editar el mismo repo a la vez sin pisarse.
   const copia = input.aislar && input.cwd ? await crearCopia($, input.cwd, `s${input.subtarea ?? 'x'}-${Date.now().toString(36)}`) : undefined
   if (copia && 'carpeta' in copia) input = { ...input, cwd: copia.carpeta }
+  // La skill ponytail va con el mapa del código de la carpeta donde trabajará el agente.
+  if (conSkills.includes('ponytail') && input.cwd) input = { ...input, tarea: input.tarea + (await mapaDelCodigo($, input.cwd)) }
 
   // Si un modelo falla (sin sesión, sin cuota, caído), se pasa solo al siguiente de la cola.
   const cambios: string[] = []
