@@ -618,7 +618,7 @@ async function atenderAcciones($: EngineInterface) {
   const nuevas = texto.slice(leidoHasta)
   leidoHasta = texto.length
   for (const linea of nuevas.split('\n')) {
-    let a: { tipo: string; id?: string; n?: number; agente?: Trabajador; texto?: string }
+    let a: { tipo: string; id?: string; n?: number; agente?: Trabajador; texto?: string; modelo?: string }
     try {
       a = JSON.parse(linea)
     } catch {
@@ -626,19 +626,19 @@ async function atenderAcciones($: EngineInterface) {
     }
     if (a.tipo === 'cancelar' && a.id) cortadores.get(a.id)?.(CANCELADO)
     if (a.tipo === 'relanzar' && a.n !== undefined && encargos.has(a.n) && contexto) void relanzar($, a.n)
-    if (a.tipo === 'encargar' && a.agente && a.texto && TRABAJADORES.includes(a.agente) && contexto) void encargarDesdeWeb($, a.agente, a.texto, a.n)
+    if (a.tipo === 'encargar' && a.agente && a.texto && TRABAJADORES.includes(a.agente) && contexto) void encargarDesdeWeb($, a.agente, a.texto, a.n, a.modelo)
     // Un mensaje para el jefe: entra en esta sesión de Claude como un mensaje más (espera a que la sesión esté libre).
     if (a.tipo === 'jefe' && a.texto) void $.prompt.submit({ text: `[Mensaje del usuario desde el tablero] ${a.texto}` }).catch(() => undefined)
   }
 }
 
 // Una instrucción escrita en el tablero para una terminal concreta, opcionalmente ligada a una subtarea del plan.
-async function encargarDesdeWeb($: EngineInterface, agente: Trabajador, texto: string, n?: number) {
+async function encargarDesdeWeb($: EngineInterface, agente: Trabajador, texto: string, n?: number, modelo?: string) {
   if (!contexto) return
   const sub = n !== undefined ? ((await read($, plan))?.subtareas ?? []).find(s => s.n === n) : undefined
   const tarea = sub ? `${texto}\n\nContexto: esto es parte de la subtarea ${sub.n} del plan: "${sub.titulo}".` : texto
   $.ui.toast(`Encargo desde el tablero para ${agente}${sub ? ` (subtarea ${sub.n})` : ''}`)
-  const r = await delegarUno($, contexto.modelos, { trabajador: agente, categoria: 'manual', tarea, subtarea: sub?.n, cwd: rutaProyecto || undefined }, contexto.timeoutMs)
+  const r = await delegarUno($, contexto.modelos, { trabajador: agente, modelo, categoria: 'manual', tarea, subtarea: sub?.n, cwd: rutaProyecto || undefined }, contexto.timeoutMs)
   void $.prompt.submit({
     text: `[Centro de agentes MST] El usuario le encargó a ${agente} desde el tablero${sub ? ` la subtarea ${sub.n}` : ''}: "${corto(texto, 200)}". Verifica este resultado y registra su puntaje con registrar_auditoria:\n\n${JSON.stringify(r, null, 1)}`,
   }).catch(() => undefined)

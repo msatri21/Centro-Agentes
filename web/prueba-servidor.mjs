@@ -18,6 +18,8 @@ try {
   assert.equal(await enviar({ tipo: 'relanzar', n: 2 }), 200)
   assert.equal(await enviar({ tipo: 'encargar', agente: 'opencode', n: 1, texto: 'Añade cuadrado(x)' }), 200)
   assert.equal(await enviar({ tipo: 'encargar', agente: 'rm -rf', texto: 'x' }), 400, 'agente desconocido')
+  assert.equal(await enviar({ tipo: 'encargar', agente: 'claude', n: 1, texto: 'Hazlo', modelo: 'opus' }), 200, 'con modelo')
+  assert.equal(await enviar({ tipo: 'encargar', agente: 'claude', texto: 'x', modelo: 'a b; rm' }), 400, 'modelo con caracteres raros')
   assert.equal(await enviar({ tipo: 'encargar', agente: 'opencode', texto: '   ' }), 400, 'texto vacío')
   assert.equal(await enviar({ tipo: 'encargar', agente: 'opencode', texto: 'x'.repeat(2001) }), 400, 'texto demasiado largo')
   assert.equal(await enviar({ tipo: 'jefe', texto: 'Cambia el plan' }), 200)
@@ -26,7 +28,7 @@ try {
   const res = await fetch(`http://127.0.0.1:${puerto}/accion?t=mala&s=chat1`, { method: 'POST', body: '{}' })
   assert.equal(res.status, 403, 'sin la clave no se acepta nada')
   const lineas = fs.readFileSync(path.join(base, 'chats', 'chat1', 'acciones.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l))
-  assert.deepEqual(lineas.map(l => l.tipo), ['cancelar', 'relanzar', 'encargar', 'jefe'])
+  assert.deepEqual(lineas.map(l => l.tipo), ['cancelar', 'relanzar', 'encargar', 'encargar', 'jefe'])
   assert.equal(lineas[2].texto, 'Añade cuadrado(x)')
   console.log('ok: servidor web')
 } finally {

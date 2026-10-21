@@ -69,9 +69,13 @@ function aplicarAjustes() {
 const guardarAjustes = () => { try { localStorage.setItem(CLAVE_AJUSTES, JSON.stringify(ajustes)) } catch {} }
 aplicarAjustes()
 
-let guardado = { vista: null, pos: {}, terminales: [], enlaces: [], mensajes: [] }
+let guardado = { vista: null, pos: {}, terminales: [], enlaces: [], mensajes: [], modelo: {} }
 try { guardado = { ...guardado, ...JSON.parse(localStorage.getItem(CLAVE_GUARDADO) ?? '{}') } } catch {}
 const guardar = () => { try { localStorage.setItem(CLAVE_GUARDADO, JSON.stringify(guardado)) } catch {} }
+
+// Los modelos de cada agente: los que informa el centro y, si no llegan, unos de respaldo (Claude siempre trae haiku, sonnet y opus).
+const RESPALDO = { claude: ['haiku', 'sonnet', 'opus'], ollama: ['gpt-oss:120b-cloud'], opencode: ['opencode/big-pickle'], hermes: ['ollama-local/gpt-oss:120b-cloud'], aider: ['ollama_chat/gpt-oss:120b-cloud'], codex: ['chatgpt'] }
+const modelosDe = a => { const l = ultimo?.modelos?.[a]; return a === 'claude' ? [...new Set([...RESPALDO.claude, ...(l ?? [])])] : l?.length ? l : RESPALDO[a] ?? [] }
 
 // ---------- vista: mover el lienzo y hacer zoom ----------
 const vista = guardado.vista ?? { x: 0, y: 0, k: 0.5 }
@@ -132,7 +136,7 @@ const quitar = id => { piezas.get(id)?.el.remove(); piezas.delete(id) }
 // Arrastrar por el asa; si no se movió, cuenta como clic.
 function arrastrable(tar, asa, alClic) {
   asa.addEventListener('pointerdown', ev => {
-    if (ev.target.closest('button,input,textarea,.puerto')) return
+    if (ev.target.closest('button,input,textarea,select,.puerto')) return
     ev.preventDefault()
     asa.setPointerCapture(ev.pointerId)
     const o = { x: ev.clientX, y: ev.clientY, tx: tar.x, ty: tar.y }
@@ -331,6 +335,14 @@ function pintarTerminal(tar, d) {
   const e = estadoAgente(d, tar.agente)
   tar.el.className = `pieza terminal-t${e.activo ? ' activo' : ''}${e.falla ? ' falla' : ''}${e.apartado ? ' apartado' : ''}${e.hecho && !e.activo ? ' hecha' : ''}`
   tar.estado.textContent = e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'
+  const lista = modelosDe(tar.agente)
+  const actual = guardado.modelo[tar.agente] ?? ''
+  const huella = lista.join('|') + '#' + actual
+  if (tar.huellaModelos !== huella) {
+    tar.huellaModelos = huella
+    tar.selModelo.replaceChildren(new Option('Automático (el centro elige)', ''), ...lista.map(m => new Option(m, m)))
+    tar.selModelo.value = lista.includes(actual) ? actual : ''
+  }
   const info = (d.agentes ?? []).find(a => a.nombre === tar.agente)
   tar.vivo.replaceChildren()
   const modelo = el('small', '', `${e.apartado || e.modelo || d.modelos?.[tar.agente]?.[0] || ''}${info && !info.ok && !e.apartado ? ` · ${info.nota}` : ''}`)
@@ -364,6 +376,9 @@ function pintarTerminal(tar, d) {
 function crearTerminal(a, i) {
   const tar = conCabecera(crearPieza(`term-${a}`, 'terminal', 'terminal-t', [1180 + (i % 2) * 380, Math.floor(i / 2) * 390 - 230]), NOMBRES[a])
   tar.agente = a
+  tar.selModelo = el('select', 'modelo')
+  tar.selModelo.title = 'Modelo con el que trabaja esta terminal'
+  tar.selModelo.onchange = () => { if (tar.selModelo.value) guardado.modelo[a] = tar.selModelo.value; else delete guardado.modelo[a]; guardar(); sincronizar() }
   tar.vivo = el('div', 'vivo')
   tar.enlazadas = el('div', 'enlazadas')
   tar.enviarCaja = el('form', 'enviar')
@@ -380,10 +395,10 @@ function crearTerminal(a, i) {
     if (!texto || !mias.length) return
     input.value = ''
     ir.textContent = 'enviado ✓'
-    await enviar({ tipo: 'encargar', agente: a, n: mias[mias.length - 1].n, texto })
+    await enviar({ tipo: 'encargar', agente: a, n: mias[mias.length - 1].n, texto, ...(guardado.modelo[a] ? { modelo: guardado.modelo[a] } : {}) })
     setTimeout(() => { ir.textContent = 'Enviar' }, 2500)
   })
-  tar.cuerpo.append(tar.vivo, tar.enlazadas, tar.enviarCaja)
+  tar.cuerpo.append(tar.selModelo, tar.vivo, tar.enlazadas, tar.enviarCaja)
   tar.el.addEventListener('dblclick', ev => { if (!ev.target.closest('input,button,.puerto')) abrirDetalle({ tipo: 'terminal', clave: a }) })
   conPuerto(tar, 'arriba')
   return tar
@@ -561,12 +576,17 @@ function pintarDetalle() {
 setInterval(() => { if (abierto?.tipo === 'yo' && refs && ultimo) refrescarYo(ultimo) }, 1000)
 
 // ---------- la barra de abajo ----------
+let huellaBarra = ''
 function pintarBarra() {
+  // Solo se redibuja si cambió algo: si no, un clic podría caer justo cuando los botones se reemplazan.
+  const huella = guardado.terminales.join(',') + modoEjemplo
+  if (huella === huellaBarra) return
+  huellaBarra = huella
   barra.replaceChildren()
-  const crear = (texto, fn, clase = '') => { const b = el('button', clase, texto); b.onclick = fn; barra.appendChild(b) }
+  const crear = (texto, fn, clase = '') => { const b = el('button', clase, texto); b.onclick = ev => fn(ev); barra.appendChild(b) }
   for (const a of AGENTES) {
     const abierta = guardado.terminales.includes(a)
-    crear(`${abierta ? '✓' : '+'} ${NOMBRES[a]}`, () => alternarTerminal(a), abierta ? 'abierto' : '')
+    crear(`${abierta ? '✓' : '+'} ${NOMBRES[a]}`, ev => (abierta ? alternarTerminal(a) : abrirMenu(ev.currentTarget, a)), abierta ? 'abierto' : '')
   }
   barra.append(el('span', 'sep'))
   crear('+ Todos', () => { guardado.terminales = [...AGENTES]; guardar(); sincronizar() })
@@ -574,6 +594,25 @@ function pintarBarra() {
   crear('Reordenar', reordenar)
   crear('Centrar', centrar)
   crear('■ Cancelar todo', () => ultimo?.trabajos.filter(t => t.estado === 'corriendo').forEach(t => enviar({ tipo: 'cancelar', id: t.id })))
+}
+// Menú con los modelos del agente: al elegir uno, se abre su terminal con ese modelo.
+let menu = null
+function cerrarMenu() { menu?.remove(); menu = null }
+document.addEventListener('pointerdown', ev => { if (menu && !menu.contains(ev.target) && !ev.target.closest('#barra')) cerrarMenu() })
+function abrirMenu(boton, a) {
+  cerrarMenu()
+  menu = el('div', 'menu-modelos')
+  menu.append(el('div', 'rotulo', `${NOMBRES[a]} · elige un modelo`))
+  const elegir = m => { if (m) guardado.modelo[a] = m; else delete guardado.modelo[a]; guardado.terminales = [...guardado.terminales, a]; guardar(); cerrarMenu(); sincronizar() }
+  for (const m of [['', 'Automático (el centro elige)'], ...modelosDe(a).map(x => [x, x])]) {
+    const b = el('button', '', m[1])
+    b.onclick = () => elegir(m[0])
+    menu.append(b)
+  }
+  document.body.append(menu)
+  const r = boton.getBoundingClientRect()
+  menu.style.left = `${Math.max(8, Math.min(innerWidth - menu.offsetWidth - 8, r.left))}px`
+  menu.style.bottom = `${innerHeight - r.top + 8}px`
 }
 function alternarTerminal(a) {
   guardado.terminales = guardado.terminales.includes(a) ? guardado.terminales.filter(x => x !== a) : [...guardado.terminales, a]

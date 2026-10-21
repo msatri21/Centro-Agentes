@@ -185,7 +185,8 @@ const servidor = http.createServer((req, res) => {
         return
       }
       const textoBueno = typeof a.texto === 'string' && a.texto.trim().length > 0 && a.texto.length <= 2000
-      const encargoMalo = (a.tipo === 'encargar' && !(AGENTES.has(a.agente) && textoBueno)) || (a.tipo === 'jefe' && !textoBueno)
+      const modeloMalo = a.modelo !== undefined && !(typeof a.modelo === 'string' && /^[\w.:\/@+-]{1,100}$/.test(a.modelo))
+      const encargoMalo = (a.tipo === 'encargar' && !(AGENTES.has(a.agente) && textoBueno && !modeloMalo)) || (a.tipo === 'jefe' && !textoBueno)
       // El usuario contesta una consulta de un agente (pregunta o permiso): no se registra en acciones.jsonl.
       if (a.tipo === 'responder') {
         responder(res, carpeta, a)
@@ -195,7 +196,7 @@ const servidor = http.createServer((req, res) => {
         res.writeHead(400).end('acción inválida')
         return
       }
-      fs.appendFile(path.join(carpeta, 'acciones.jsonl'), JSON.stringify({ tipo: a.tipo, id: a.id, n: a.n, agente: a.agente, texto: a.texto, en: Date.now() }) + '\n', err => {
+      fs.appendFile(path.join(carpeta, 'acciones.jsonl'), JSON.stringify({ tipo: a.tipo, id: a.id, n: a.n, agente: a.agente, modelo: a.modelo, texto: a.texto, en: Date.now() }) + '\n', err => {
         res.writeHead(err ? 500 : 200).end(err ? 'no se pudo guardar' : 'ok')
       })
     })
