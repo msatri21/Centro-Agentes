@@ -37,6 +37,8 @@ const MODELOS = {
   // Este servidor existe para cuando no queda Claude: Claude headless solo entra si se activa en la config.
   claude: CONFIG.conClaude ? ['haiku', 'sonnet'] : [],
   ...(CONFIG.modelos ?? {}),
+  // CENTRO_MODELOS: otro reparto de modelos para pruebas y desarrollo, p. ej. {"opencode":["opencode/big-pickle"]}.
+  ...(process.env.CENTRO_MODELOS ? JSON.parse(process.env.CENTRO_MODELOS) : {}),
 }
 const TRABAJADORES = ['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude']
 const TIMEOUT_MS = Math.min(10, Math.max(1, Number(CONFIG.timeoutMin ?? 8))) * 60_000
@@ -125,7 +127,11 @@ function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SI
     let p
     try {
       // OpenCode toma su carpeta de PWD, no de cwd: sin esto trabajaría en la carpeta del jefe y no en la suya.
-      p = spawn(argv[0], argv.slice(1), { cwd, env: { ...process.env, ...(cwd ? { PWD: cwd } : {}), ...env }, windowsHide: true })
+      // En Windows, un CLI que no es un .exe (el acceso directo .cmd de npm o de pnpm) solo arranca a través de cmd.
+      // Solo se entrecomillan los argumentos con espacios o símbolos; si traen saltos de línea, cmd los cortaría, así que se aplanan.
+      const porCmd = process.platform === 'win32' && !/\.exe$/i.test(argv[0])
+      const orden = porCmd ? ['cmd', ['/d', '/s', '/c', argv.map((a, i) => (i === 0 || !/[\s"&|<>^%]/.test(a) ? a : `"${a.replace(/"/g, "'").replace(/\r?\n/g, ' ')}"`)).join(' ')]] : [argv[0], argv.slice(1)]
+      p = spawn(orden[0], orden[1], { cwd, env: { ...process.env, ...(cwd ? { PWD: cwd } : {}), ...env }, windowsHide: true })
     } catch (e) {
       resolve({ exitCode: null, stdout: '', stderr: String(e), cortado: '' })
       return
@@ -267,7 +273,7 @@ async function intentar(c, input) {
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea }
+  const trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, ultimaActividad: t0 }
   trabajos.push(trabajo)
   marcar(input.subtarea, { estado: 'en curso', quien })
   guardar()
@@ -286,6 +292,7 @@ async function intentar(c, input) {
   const r = await correr(argv, { cwd: input.cwd, stdin, env, esperando: () => esperaUsuario(id) }, crudo => {
     if (Date.now() - ultimo < 1500) return
     ultimo = Date.now()
+    trabajo.ultimaActividad = ultimo
     trabajo.salida = vistaDe(c.trabajador, crudo).slice(-1500)
     guardar()
   }, cortar => cortadores.set(id, cortar))
@@ -479,7 +486,8 @@ function claveWeb() {
 const urlWeb = () => `http://127.0.0.1:${PUERTO_WEB}/?t=${claveWeb()}&s=${ID}`
 let webLista = false
 async function asegurarWeb() {
-  if (webLista) return
+  // CENTRO_SIN_WEB=1: pruebas con su propio servidor, sin tocar el que escucha en el puerto de siempre.
+  if (webLista || process.env.CENTRO_SIN_WEB === '1') return
   webLista = true
   const vivo = await fetch(`http://127.0.0.1:${PUERTO_WEB}/version`, { signal: AbortSignal.timeout(1500) }).then(r => r.ok || r.status === 403, () => false)
   if (!vivo) {

@@ -148,6 +148,7 @@ async function hayRed($: EngineInterface, t: Trabajador): Promise<boolean> {
 
 // Hermes vive en tu carpeta de usuario (fuera de AppData, que Windows redirige para la app de Claude).
 // Ruta completa: una app abierta antes de instalarlo no tiene aún su carpeta en el PATH.
+// Según cómo se instaló, vive en ~\.hermes o en AppData\Local\hermes: se usa la que exista.
 async function hermesExe($: EngineInterface) {
   const casa = await $.env.get('USERPROFILE').catch(() => undefined)
   return casa ? `${casa}\\.hermes\\bin\\hermes.exe` : 'hermes'
@@ -161,6 +162,18 @@ async function entornoHermes($: EngineInterface): Promise<Record<string, string>
   if (await $.env.get('HERMES_HOME').catch(() => undefined)) return {}
   const casa = await $.env.get('USERPROFILE').catch(() => undefined)
   return casa ? { HERMES_HOME: `${casa}\\.hermes` } : {}
+}
+
+// Codex lee su servidor MCP de la línea de comandos (-c), así que no hace falta tocar su configuración: el centro le da su propio
+// servidor de preguntar y pedir_permiso, le reenvía la identidad del trabajo y le amplía el tiempo de espera (60 s por defecto).
+function mcpCodex($: EngineInterface): string[] {
+  const guion = `${$.plugin.root}/mcp/centro-mcp.mjs`.split(String.fromCharCode(92)).join('/')
+  return [
+    '-c', 'mcp_servers.centro.command="node"',
+    '-c', `mcp_servers.centro.args=["${guion}"]`,
+    '-c', 'mcp_servers.centro.env_vars=["CENTRO_TRABAJADOR","CENTRO_CHAT_DIR","CENTRO_TRABAJO","CENTRO_ESPERA_MS"]',
+    '-c', 'mcp_servers.centro.tool_timeout_sec=1200',
+  ]
 }
 
 // ¿Hay una pregunta o un permiso de este trabajo esperando al usuario? Mientras lo hay, no se corta al agente por tardar ni por callar.
@@ -784,7 +797,10 @@ ${PROTOCOLO_AGENTE}`
     const corte = c.modelo.indexOf('/')
     const [proveedor, modelo] = corte > 0 ? [c.modelo.slice(0, corte), c.modelo.slice(corte + 1)] : ['auto', c.modelo]
     argv = [await hermesExe($), 'chat', '--oneshot', '--query-file', '-', '--format', 'stream-json', '--yolo', '--provider', proveedor, '-m', modelo]
-    stdin = input.tarea
+    // Las herramientas preguntar y pedir_permiso las trae la entrada centro-agente de mcp_servers en su config.yaml (ver el README).
+    stdin = `${input.tarea}
+
+${PROTOCOLO_AGENTE}`
   } else if (c.trabajador === 'aider') {
     // --no-git: no hace commits en tu repo; --yes-always: no se queda esperando confirmaciones.
     // Aider solo edita los archivos que recibe en la línea de comandos: se le pasan los que nombra la tarea y existen.
@@ -795,8 +811,10 @@ ${PROTOCOLO_AGENTE}`
     // --json: un evento por línea. danger-full-access: en Windows su sandbox le impide escribir y ejecutar;
     // trabaja en su carpeta (o en su copia aislada), como los demás agentes. La tarea va por stdin.
     const local = c.modelo.startsWith('ollama/') ? ['--oss', '--local-provider', 'ollama', '-m', c.modelo.slice('ollama/'.length)] : c.modelo && c.modelo !== 'chatgpt' ? ['-m', c.modelo] : []
-    argv = ['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check', ...local]
-    stdin = input.tarea
+    argv = ['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check', ...mcpCodex($), ...local]
+    stdin = `${input.tarea}
+
+${PROTOCOLO_AGENTE}`
   } else {
     // La tarea va por stdin: como argumento, el shim .cmd de Windows la corta en el primer salto de línea.
     // acceptEdits: sin él, claude -p no puede escribir archivos y el encargo se pierde (tests y comandos los corre el centro con "verificar").

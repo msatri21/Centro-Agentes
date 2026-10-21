@@ -56,8 +56,23 @@ Los agentes trabajan en modo autónomo (`--yolo`), pero pueden pararse a pregunt
 - La consulta se escribe en `consultas.jsonl` del chat y aparece en la web en **Esperan tu respuesta**, con la card del agente marcada como PREGUNTA o PERMISO. Contestas con los botones (o escribiendo) y la respuesta llega al agente por `respuestas.jsonl`.
 - **Permitir siempre en esta petición** aprueba esa categoría de permiso (`comando`, `instalar`, `red`, `escribir-fuera`, `otro`) para el resto del chat. Lo `destructivo` siempre se pregunta.
 - Mientras una consulta espera, el centro no corta al agente por tardar ni por callar. Si pasan 15 min sin respuesta, un permiso se da por denegado y el agente sigue por lo más seguro.
-- Hoy está conectado a OpenCode. Codex y Hermes siguen en `pendientes.json`.
-- Pruébalo sin gastar nada: `node mcp/prueba-consultas.mjs` (de punta a punta) o `node mcp/demo-bucle.mjs` (la web con consultas que se pueden contestar).
+- **OpenCode:** usa la entrada `centro-agentes` de su config (la de la sección de abajo).
+- **Codex:** no hace falta configurar nada: el centro le pasa su servidor MCP en cada ejecución (`-c mcp_servers.centro...`), con la identidad reenviada y el tiempo de espera de herramientas ampliado a 20 min (por defecto son 60 s).
+- **Hermes:** añade a su `config.yaml` (la que muestra `hermes config path`) esta entrada. Hermes no hereda el entorno, por eso cada variable va declarada, y `timeout` sube de 120 s a 20 min. Fuera del centro las herramientas existen pero avisan de que no están dentro del centro.
+  ```yaml
+  mcp_servers:
+    centro-agente:
+      command: node
+      args: ["<ruta>/centro-agentes/mcp/centro-mcp.mjs"]
+      timeout: 1200
+      env:
+        CENTRO_TRABAJADOR: "1"
+        CENTRO_CHAT_DIR: "${CENTRO_CHAT_DIR}"
+        CENTRO_TRABAJO: "${CENTRO_TRABAJO}"
+        CENTRO_ESPERA_MS: "${CENTRO_ESPERA_MS}"
+  ```
+- Aider no usa MCP: solo cuenta la alarma de silencio.
+- Pruébalo sin gastar nada: `node mcp/prueba-consultas.mjs` (de punta a punta) o `node mcp/demo-bucle.mjs` (la web con consultas que se pueden contestar). Con agentes de verdad (OpenCode con modelos gratuitos): `node mcp/prueba-en-vivo.mjs` lanza tandas de cinco agentes que preguntan y piden permiso, y tú contestas en la web; se para con Ctrl+C y borra lo que creó.
 
 ## Web
 
