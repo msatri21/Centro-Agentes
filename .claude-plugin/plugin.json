@@ -1,6 +1,6 @@
 {
   "name": "centro-agentes",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "description": "Centro de agentes MST: Claude como jefe reparte subtareas entre OpenCode, Ollama, Hermes, Aider y Claude headless, las verifica y lo muestra en vivo.",
   "types": "./types/index.d.ts",
   "userConfig": {

@@ -127,6 +127,7 @@ export function tarjetasDe(d) {
         lineas: ultimasLineas(t.salida),
         puntaje: t.puntaje,
         skills: !!t.skills?.length,
+        clasificacion: t.clasificacion,
       }
     })
 }

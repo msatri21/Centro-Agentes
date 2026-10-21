@@ -81,6 +81,10 @@ function estadoEn(t, respondidas) {
       // Un agente en silencio lleva más de un minuto sin escribir; los demás acaban de hablar.
       ultimaActividad: callado ? ahora - 75_000 : ahora - 1500,
       plan: OBJETIVO,
+      // Un trabajo sí y otro no es de código, para ver cómo se muestra lo que decidió el centro.
+      clasificacion: h.sub % 2
+        ? { clase: 'escritura', motivos: ['categoría de código', 'vocabulario de código'], anadidas: ['ponytail'] }
+        : { clase: 'texto', motivos: [], anadidas: [] },
     }
   })
   const subtareas = SUBS.map(s => {

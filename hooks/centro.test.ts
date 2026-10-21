@@ -182,6 +182,11 @@ test('el centro añade solo ponytail a las tareas de código, con el mapa, aunqu
   // Y al devolver el resultado le recuerda al jefe con qué auditar el cambio.
   expect(d.auditar_con).toBe('ponytail-review')
   expect(d.aviso_auditoria).toContain('ponytail-review')
+  // El resultado dice qué decidió el centro y por qué, para detectar falsos positivos.
+  expect(d.clasificacion.clase).toBe('escritura')
+  expect(d.clasificacion.motivos.length).toBeGreaterThan(0)
+  expect(d.clasificacion.skills_anadidas).toEqual(['ponytail'])
+  expect(d.clasificacion.apagada_por_encargo).toBeUndefined()
 })
 
 test('el centro añade ponytail-review o ponytail-audit a las auditorías, sin mapa de ponytail-review ni skill de escritura', async ($, on) => {
@@ -207,6 +212,10 @@ test('sin skills automáticas: tareas de texto, el interruptor del encargo, el a
   expect(apagada.exito).toBe(true)
   expect(c.visto()).not.toContain('Usa estas skills')
   expect(apagada.auditar_con).toBe('ponytail-review')
+  expect(apagada.clasificacion.skills_anadidas).toEqual([])
+  expect(apagada.clasificacion.apagada_por_encargo).toBe(true)
+  expect(texto.clasificacion.clase).toBe('texto')
+  expect(texto.clasificacion.skills_anadidas).toEqual([])
   // Un agente que no lee skills (Aider) no cambia de agente ni recibe la instrucción.
   const aider = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'aider', categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' } }))
   expect(aider.trabajador.startsWith('aider')).toBe(true)
@@ -910,6 +919,10 @@ test('las cards: una por trabajo, en orden cronológico, y el modelo con : y / s
   expect(c.tokensOut).toBe(5)
   expect(c.puntaje).toBe(8)
   expect(c.titulo).toBe('')
+  // La card lleva lo que decidió el centro (clase, motivos, skills añadidas); sin clasificación, nada.
+  expect(c.clasificacion).toBeUndefined()
+  const clasif = { clase: 'escritura', motivos: ['categoría de código'], anadidas: ['ponytail'] }
+  expect(tarjetasDe({ ahora: 30_000, trabajos: [trab('d', 'hermes:m', 1, 'listo', { inicio: 1000, ms: 500, clasificacion: clasif })] } as any)[0].clasificacion).toEqual(clasif)
 })
 
 test('las cards: de los trabajos terminados solo salen los 20 más recientes, y los que están corriendo siempre entran', () => {

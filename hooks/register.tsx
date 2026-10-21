@@ -770,13 +770,13 @@ const todosLosCandidatos = (m: Modelos): Candidato[] =>
 async function intentar(
   $: EngineInterface,
   c: Candidato,
-  input: { categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[] },
+  input: { categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]; clasificacion?: Trabajo['clasificacion'] },
   timeoutMs: number,
 ): Promise<Intento> {
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
+  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, clasificacion: input.clasificacion, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
   await marcar($, input.subtarea, { estado: 'en curso', quien })
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
@@ -1091,6 +1091,7 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   const cambios: string[] = []
   let r: Intento | undefined
   let elegido = cola[0]
+  let anadidas: string[] = []
   for (const c of cola) {
     if (cambios.length > MAX_CAMBIOS) break
     const k = clave(c.trabajador, c.modelo)
@@ -1101,7 +1102,10 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     try {
       const leeSkills = c.trabajador !== 'ollama' && c.trabajador !== 'aider'
       const extra = leeSkills && automaticas.length ? (await instruccionSkills($, automaticas)) + (input.cwd && automaticas.some(n => CON_MAPA.includes(n)) ? await mapaDelCodigo($, input.cwd) : '') : ''
-      r = await intentar($, c, { ...input, categoria, ...(extra ? { tarea: input.tarea + extra, skills: [...conSkills, ...automaticas] } : {}) }, timeoutMs)
+      // Lo que el centro decidió y por qué, para estudiar los falsos positivos: solo cuenta lo que este agente recibió de verdad.
+      anadidas = extra ? automaticas : []
+      const clasificacion = clasificada ? { clase: claseTarea, motivos: clasificada.motivos, anadidas, ...(input.sin_skills_automaticas ? { apagada: true } : {}) } : undefined
+      r = await intentar($, c, { ...input, categoria, clasificacion, ...(extra ? { tarea: input.tarea + extra, skills: [...conSkills, ...automaticas] } : {}) }, timeoutMs)
     } finally {
       ocupados.set(k, (ocupados.get(k) ?? 1) - 1)
     }
@@ -1149,6 +1153,8 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     aviso: verificacion
       ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
       : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
+    // Para detectar falsos positivos: la clase que decidió el centro, sus motivos y las skills que añadió solo.
+    ...(clasificada ? { clasificacion: { clase: claseTarea, motivos: clasificada.motivos, skills_anadidas: anadidas, ...(input.sin_skills_automaticas ? { apagada_por_encargo: true } : {}) } } : {}),
     ...(revisor ? { auditar_con: 'ponytail-review', aviso_auditoria: `Es un cambio de código: audítalo con la skill ponytail-review (lee ${revisor}); revisa los archivos que cambió y quién los usa.` } : {}),
   }
 }

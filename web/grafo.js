@@ -314,6 +314,12 @@ export function crearGrafo(montaje) {
     if (t.puntaje !== undefined) fila('Nota', `${t.puntaje}/10`)
     if (t.tokensIn !== undefined) fila('Tokens', `${miles(t.tokensIn)}→${miles(t.tokensOut ?? 0)}`)
     if (t.subtarea !== undefined) fila('Subtarea', `#${t.subtarea}${t.titulo ? ' · ' + corto(t.titulo, 28) : ''}`)
+    // Lo que decidió el centro (para detectar falsos positivos): la clase, las skills que añadió y por qué.
+    if (t.clasificacion) {
+      fila('Clase', t.clasificacion.apagada ? `${t.clasificacion.clase} (skills apagadas)` : t.clasificacion.clase)
+      fila('Skills', t.clasificacion.anadidas?.length ? t.clasificacion.anadidas.join(', ') : 'ninguna')
+      if (t.clasificacion.motivos?.length) cuerpo.append(html('div', 'fo-salida', corto('Por qué: ' + t.clasificacion.motivos.join(', '), 90)))
+    }
     const ultima = t.lineas?.length ? t.lineas[t.lineas.length - 1] : ''
     if (ultima) cuerpo.append(html('div', 'fo-salida', corto(ultima, 60)))
     return { cuerpo, filas: cuerpo.childElementCount }
@@ -326,9 +332,9 @@ export function crearGrafo(montaje) {
     if (t.alarma === 'silencio') return { tipo: 'silencio', w: 250, h: 140 }
     if (abiertos.has(t.id)) {
       // Cada dato ocupa una fila; el modelo, la subtarea y la última línea de salida pueden dar una segunda línea.
-      const filas = 2 + (t.puntaje !== undefined ? 1 : 0) + (t.tokensIn !== undefined ? 1 : 0) + (t.subtarea !== undefined ? 1 : 0)
+      const filas = 2 + (t.puntaje !== undefined ? 1 : 0) + (t.tokensIn !== undefined ? 1 : 0) + (t.subtarea !== undefined ? 1 : 0) + (t.clasificacion ? 2 : 0)
       const subLargo = t.subtarea !== undefined && `#${t.subtarea}${t.titulo ? ' · ' + corto(t.titulo, 28) : ''}`.length > 21
-      return { tipo: 'detalles', w: 250, h: 50 + 25 * filas + ((t.modelo || '').length > 21 ? 18 : 0) + (subLargo ? 18 : 0) + (t.lineas?.length ? 40 : 0) }
+      return { tipo: 'detalles', w: 250, h: 50 + 25 * filas + ((t.modelo || '').length > 21 ? 18 : 0) + (subLargo ? 18 : 0) + (t.lineas?.length ? 40 : 0) + (t.clasificacion?.motivos?.length ? 40 : 0) }
     }
     return { tipo: 'cerrado', w: NODO.w, h: NODO.h }
   }

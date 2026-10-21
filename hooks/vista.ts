@@ -262,7 +262,7 @@ export function paginaCentro(d: DatosPagina): string {
     jefe: d.jefe,
     ahora,
     plan: d.plan,
-    trabajos: d.trabajos.slice(-60).map(t => ({ id: t.id, trabajador: t.trabajador, estado: t.estado, subtarea: t.subtarea, inicio: t.inicio, ms: t.ms, puntaje: t.puntaje, salida: (t.salida ?? '').slice(-400), skills: t.skills, tokensIn: t.tokensIn, tokensOut: t.tokensOut, ultimaActividad: t.ultimaActividad, plan: t.plan })),
+    trabajos: d.trabajos.slice(-60).map(t => ({ id: t.id, trabajador: t.trabajador, estado: t.estado, subtarea: t.subtarea, inicio: t.inicio, ms: t.ms, puntaje: t.puntaje, salida: (t.salida ?? '').slice(-400), skills: t.skills, clasificacion: t.clasificacion, tokensIn: t.tokensIn, tokensOut: t.tokensOut, ultimaActividad: t.ultimaActividad, plan: t.plan })),
     planes: (d.planes ?? []).slice(-6).map(p => ({ objetivo: p.objetivo, subtareas: p.subtareas.map(x => ({ n: x.n, titulo: x.titulo, estado: x.estado, quien: x.quien, puntaje: x.puntaje })) })),
     agentes: d.agentes,
     modelos: d.modelos,
