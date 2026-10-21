@@ -440,7 +440,9 @@ async function sondear(tar) {
   } catch {}
   tar.sondeando = false
 }
-setInterval(() => { for (const p of piezas.values()) if (p.tipo === 'terminal') sondear(p) }, 1000)
+// Las que trabajan se miran cada segundo; las quietas, cada 4 (así no se llena el servidor de preguntas).
+let turno = 0
+setInterval(() => { turno++; for (const p of piezas.values()) if (p.tipo === 'terminal' && (p.srv?.estado !== 'libre' || turno % 4 === 0)) sondear(p) }, 1000)
 function crearTerminal(t, i) {
   const a = t.a
   const tar = conCabecera(crearPieza(`term-${t.id}`, 'terminal', 'terminal-t', [1180 + (i % 3) * 380, Math.floor(i / 3) * 440 - 230]), NOMBRES[a])

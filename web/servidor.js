@@ -171,6 +171,7 @@ const servidor = http.createServer((req, res) => {
   }
   if (req.method === 'POST' && url.pathname === '/accion') {
     let cuerpo = ''
+    req.setEncoding('utf8') // sin esto un carácter con tilde puede partirse entre dos trozos
     req.on('data', trozo => {
       cuerpo += trozo
       // En 4000 cabe un 'responder' con su texto de hasta 2000; los demás tipos son mucho más cortos.
@@ -221,6 +222,7 @@ const servidor = http.createServer((req, res) => {
       return
     }
     let cuerpo = ''
+    req.setEncoding('utf8') // sin esto un carácter con tilde puede partirse entre dos trozos
     req.on('data', trozo => {
       cuerpo += trozo
       if (cuerpo.length > 12000) req.destroy()

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { leerAider } from '../hooks/extras.ts'
 import { sinAnsi, vistaDe } from '../hooks/nucleo.ts'
 
 const CASA = path.join(os.homedir(), '.centro-agentes')
@@ -14,6 +15,8 @@ const AGENTES = ['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude']
 const MODELO_POR_DEFECTO = { claude: 'haiku', ollama: 'gpt-oss:120b-cloud', opencode: 'ollama/gpt-oss:120b-cloud', hermes: 'ollama-local/gpt-oss:120b-cloud', aider: 'ollama_chat/gpt-oss:120b-cloud', codex: 'chatgpt' }
 const TIEMPO_MAX_MS = 30 * 60_000
 const MAX_ACTIVAS = 8
+// Lo que se lee de la salida de cada agente; Aider mezcla su banner con la respuesta y se limpia aparte.
+const textoDe = (agente, crudo) => sinAnsi(agente === 'aider' ? leerAider(crudo).texto : vistaDe(agente, crudo))
 const MAX_HISTORIAL = 10_000 // caracteres de conversación que se le repiten al agente
 
 // ---------- Procesos (mismas reglas que el servidor MCP del centro) ----------
@@ -139,7 +142,7 @@ function siguiente(t) {
     clearTimeout(tope)
     if (t.proc !== p) return // se cerró la terminal mientras trabajaba
     t.proc = null
-    let texto = sinAnsi(vistaDe(t.agente, t.crudo)).trim()
+    let texto = textoDe(t.agente, t.crudo).trim()
     const fallo = (codigo !== 0 && !texto) || !!cortado || (!texto && !!stderr.trim())
     if (cortado === 'parada') texto = `${texto}\n[parada por el usuario]`.trim()
     else if (cortado) texto = `${texto}\n[cortada: ${cortado}]`.trim()
@@ -162,7 +165,7 @@ const vista = t => ({
   estado: t.activo ? 'trabajando' : 'libre',
   ms: t.activo ? Date.now() - t.inicio : 0,
   turnos: t.turnos.slice(-30).map(x => ({ rol: x.rol, texto: x.texto.slice(-6000), fallo: !!x.fallo, ms: x.ms, enCola: !!x.enCola })),
-  actual: t.activo ? sinAnsi(vistaDe(t.agente, t.crudo)).slice(-6000) : '',
+  actual: t.activo ? textoDe(t.agente, t.crudo).slice(-6000) : '',
 })
 
 // accion: { ruta: 'estado'|'enviar'|'parar'|'cerrar', chat, id, agente, modelo, cwd, texto }
@@ -179,7 +182,7 @@ export function manejar(a) {
   const t = cargar(a.chat, a.id, a.agente)
   if (a.ruta === 'estado') return { codigo: 200, datos: vista(t) }
   if (a.ruta === 'parar') {
-    t.cola = []
+    // Para solo lo que está haciendo: si hay mensajes en cola, siguen después.
     t.parar?.()
     return { codigo: 200, datos: { ok: true } }
   }
