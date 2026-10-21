@@ -252,6 +252,24 @@ test('compara versiones para saber si hay que autoactualizar', async () => {
   expect(esMasNueva('1.0', '0.99.99')).toBe(true)
 })
 
+import { BUSCAR_ACTUALIZACION_CADA_MS, debeBuscarActualizacion, enCacheDePlugins } from './nucleo'
+
+test('autoactualizar: solo la copia instalada busca versión nueva, y como mucho cada 6 horas (ya no depende de la carpeta de nadie)', async () => {
+  const instalada = 'C:\\Users\\Ana\\.claude\\plugins\\cache\\centro-mst\\centro-agentes\\0.18.0'
+  const ahora = 10_000_000_000
+  // Instalada desde el marketplace, en Windows o en Linux/Mac.
+  expect(enCacheDePlugins(instalada)).toBe(true)
+  expect(enCacheDePlugins('/home/ana/.claude/plugins/cache/centro-mst/centro-agentes/0.18.0')).toBe(true)
+  // Cargada desde una carpeta de trabajo (desarrollo, --plugin-dir): nada que actualizar.
+  expect(enCacheDePlugins('C:\\Users\\Juan\\Desktop\\Centro-Agentes')).toBe(false)
+  expect(debeBuscarActualizacion('C:\\Users\\Juan\\Desktop\\Centro-Agentes', undefined, ahora)).toBe(false)
+  // Primera vez: busca. Hace poco: no. Pasadas 6 horas: otra vez. Un valor guardado raro cuenta como primera vez.
+  expect(debeBuscarActualizacion(instalada, undefined, ahora)).toBe(true)
+  expect(debeBuscarActualizacion(instalada, ahora - 3_600_000, ahora)).toBe(false)
+  expect(debeBuscarActualizacion(instalada, ahora - BUSCAR_ACTUALIZACION_CADA_MS, ahora)).toBe(true)
+  expect(debeBuscarActualizacion(instalada, Number.NaN, ahora)).toBe(true)
+})
+
 test('el ahorro se calcula con el precio de Claude Sonnet 5.5', async () => {
   // 1M de entrada a $2 y 1M de salida a $10.
   expect(costoComoClaude(1_000_000, 0)).toBe(2)
