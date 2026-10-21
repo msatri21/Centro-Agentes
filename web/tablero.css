@@ -135,3 +135,35 @@ select.modelo{width:100%;margin-bottom:8px;background:var(--panel2);border:1px s
 select.modelo:focus{outline:none;border-color:var(--acento)}
 .cab .cerrar{background:transparent;border:0;color:var(--t4);cursor:pointer;font:12px ui-monospace,Consolas,monospace;padding:0 0 0 8px}
 .cab .cerrar:hover{color:var(--acento-claro)}
+
+/* Animaciones: las piezas aparecen con un rebote suave, las activas respiran, las que fallan tiemblan y la vista se mueve sin saltos */
+@keyframes aparecer{from{opacity:0;transform:translateY(14px) scale(.94)}to{opacity:1;transform:none}}
+@keyframes respirar{0%,100%{box-shadow:0 6px 24px #0006,0 0 0 0 color-mix(in srgb,var(--acento) 0%,transparent)}50%{box-shadow:0 6px 24px #0006,0 0 24px 2px color-mix(in srgb,var(--acento) 38%,transparent)}}
+@keyframes temblar{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-2px)}80%{transform:translateX(2px)}}
+.pieza{animation:aparecer .55s cubic-bezier(.2,.8,.2,1) backwards;transition:border-color .35s,box-shadow .35s,transform .25s cubic-bezier(.2,.8,.2,1),background .35s}
+.pieza:not(.circulo):hover{transform:translateY(-3px);box-shadow:0 12px 32px #0008}
+.pieza.moviendo{transform:scale(1.025);box-shadow:0 24px 54px #000a;transition:transform .15s,box-shadow .15s}
+.pieza.activo:not(.circulo){animation:aparecer .55s cubic-bezier(.2,.8,.2,1) backwards,respirar 2.4s ease-in-out .6s infinite}
+.pieza.falla:not(.circulo){animation:aparecer .55s cubic-bezier(.2,.8,.2,1) backwards,temblar .5s}
+@keyframes trazo{from{opacity:0}to{opacity:1}}
+#lineas path{transition:stroke .4s,stroke-width .4s}
+#lineas path.nueva{animation:trazo .7s ease-out}
+#lineas path.viva.nueva{animation:trazo .7s ease-out,fluir .8s linear infinite}
+#barra button{transition:border-color .2s,color .2s,transform .15s}
+#barra button:hover{transform:translateY(-2px)}
+#barra button:active{transform:scale(.96)}
+@keyframes sube{from{opacity:0;transform:translateY(10px) scale(.96)}to{opacity:1;transform:none}}
+.menu-modelos{animation:sube .22s cubic-bezier(.2,.8,.2,1)}
+#detalle{transition:transform .45s cubic-bezier(.2,.8,.2,1)}
+@keyframes entra{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}
+#detalle.abriendo>*{animation:entra .45s cubic-bezier(.2,.8,.2,1) backwards}
+#detalle.abriendo>*:nth-child(2){animation-delay:.04s}#detalle.abriendo>*:nth-child(3){animation-delay:.08s}#detalle.abriendo>*:nth-child(4){animation-delay:.12s}#detalle.abriendo>*:nth-child(5){animation-delay:.16s}#detalle.abriendo>*:nth-child(6){animation-delay:.2s}#detalle.abriendo>*:nth-child(7){animation-delay:.24s}#detalle.abriendo>*:nth-child(n+8){animation-delay:.28s}
+/* Fichas de datos y lista de fases del panel */
+.ficha{display:grid;grid-template-columns:auto 1fr;gap:6px 18px;margin:10px 0 4px;padding:12px 14px;background:var(--panel);border:1px solid var(--borde)}
+.ficha .k{color:var(--t5);font:12px ui-monospace,Consolas,monospace}
+.ficha .v{color:var(--t1);font:13px ui-monospace,Consolas,monospace;word-break:break-word}
+.fase-fila{display:flex;gap:12px;padding:10px 4px;border-bottom:1px solid var(--borde);opacity:.55;transition:opacity .3s}
+.fase-fila.pasada{opacity:.8}.fase-fila.actual{opacity:1;background:color-mix(in srgb,var(--acento) 10%,transparent)}
+.fase-fila .marca{color:var(--acento-claro);font:14px ui-monospace,Consolas,monospace;width:16px}
+.fase-fila b{display:block;color:var(--t1);font:600 14px 'Segoe UI',system-ui,sans-serif}.fase-fila small{color:var(--t4);font:12px ui-monospace,Consolas,monospace;margin:2px 0 0}
+@media (prefers-reduced-motion:reduce){.pieza,.pieza.activo,.pieza.falla,#detalle.abriendo>*,.menu-modelos,#lineas path.nueva{animation:none!important}}

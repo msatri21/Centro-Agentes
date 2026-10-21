@@ -88,6 +88,9 @@ const modelosDe = a => { const l = ultimo?.modelos?.[a]; return a === 'claude' ?
 
 // ---------- vista: mover el lienzo y hacer zoom ----------
 const vista = guardado.vista ?? { x: 0, y: 0, k: 0.5 }
+// El zoom y el encuadre no saltan: la vista persigue a la meta un poco en cada fotograma.
+const meta = { ...vista }
+let animandoVista = false
 let modoEjemplo = false
 const aMundo = (cx, cy) => [(cx - vista.x) / vista.k, (cy - vista.y) / vista.k]
 function aplicarVista() {
@@ -97,32 +100,30 @@ function aplicarVista() {
   mundo.classList.toggle('lejos', vista.k < 0.4)
   hud.textContent = `${modoEjemplo ? 'DATOS DE EJEMPLO · ' : ''}zoom ${Math.round(vista.k * 100)}%`
 }
-function centrar() {
+function centrar(instante = false) {
   // Encuadra todas las piezas en la pantalla (deja sitio arriba para la cabecera y abajo para la barra).
   const ps = [...piezas.values()]
   const x0 = Math.min(...ps.map(p => p.x)), y0 = Math.min(...ps.map(p => p.y))
   const x1 = Math.max(...ps.map(p => p.x + p.el.offsetWidth)), y1 = Math.max(...ps.map(p => p.y + p.el.offsetHeight))
-  vista.k = Math.min(1, Math.max(0.15, Math.min((innerWidth - 80) / (x1 - x0), (innerHeight - 200) / (y1 - y0))))
-  vista.x = (innerWidth - (x1 - x0) * vista.k) / 2 - x0 * vista.k
-  vista.y = 70 + (innerHeight - 200 - (y1 - y0) * vista.k) / 2 - y0 * vista.k
-  aplicarVista()
+  meta.k = Math.min(1, Math.max(0.15, Math.min((innerWidth - 80) / (x1 - x0), (innerHeight - 200) / (y1 - y0))))
+  meta.x = (innerWidth - (x1 - x0) * meta.k) / 2 - x0 * meta.k
+  meta.y = 70 + (innerHeight - 200 - (y1 - y0) * meta.k) / 2 - y0 * meta.k
+  if (instante) { Object.assign(vista, meta); aplicarVista() }
   guardar()
 }
 lienzo.addEventListener('wheel', ev => {
   ev.preventDefault()
-  const k = Math.min(2.5, Math.max(0.12, vista.k * (ev.deltaY < 0 ? 1.1 : 1 / 1.1)))
-  vista.x = ev.clientX - ((ev.clientX - vista.x) / vista.k) * k
-  vista.y = ev.clientY - ((ev.clientY - vista.y) / vista.k) * k
-  vista.k = k
-  aplicarVista()
-  guardar()
+  const k = Math.min(2.5, Math.max(0.12, meta.k * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)))
+  meta.x = ev.clientX - ((ev.clientX - meta.x) / meta.k) * k
+  meta.y = ev.clientY - ((ev.clientY - meta.y) / meta.k) * k
+  meta.k = k
 }, { passive: false })
 lienzo.addEventListener('pointerdown', ev => {
   if (ev.target !== lienzo && ev.target !== mundo && ev.target !== lineas) return
   lienzo.setPointerCapture(ev.pointerId)
   lienzo.classList.add('arrastrando')
   const inicio = { x: ev.clientX - vista.x, y: ev.clientY - vista.y }
-  const mover = e => { vista.x = e.clientX - inicio.x; vista.y = e.clientY - inicio.y; aplicarVista() }
+  const mover = e => { vista.x = meta.x = e.clientX - inicio.x; vista.y = meta.y = e.clientY - inicio.y; aplicarVista() }
   const soltar = () => { lienzo.classList.remove('arrastrando'); lienzo.removeEventListener('pointermove', mover); lienzo.removeEventListener('pointerup', soltar); guardar() }
   lienzo.addEventListener('pointermove', mover)
   lienzo.addEventListener('pointerup', soltar)
@@ -152,7 +153,7 @@ function arrastrable(tar, asa, alClic) {
     let movio = false
     tar.el.style.zIndex = String(++cima)
     const mover = m => {
-      if (Math.hypot(m.clientX - o.x, m.clientY - o.y) > 4) movio = true
+      if (!movio && Math.hypot(m.clientX - o.x, m.clientY - o.y) > 4) { movio = true; tar.el.classList.add('moviendo') }
       tar.x = o.tx + (m.clientX - o.x) / vista.k
       tar.y = o.ty + (m.clientY - o.y) / vista.k
       tar.el.style.left = `${tar.x}px`
@@ -162,6 +163,7 @@ function arrastrable(tar, asa, alClic) {
     const soltar = () => {
       asa.removeEventListener('pointermove', mover)
       asa.removeEventListener('pointerup', soltar)
+      tar.el.classList.remove('moviendo')
       if (movio) { guardado.pos[tar.id] = [Math.round(tar.x), Math.round(tar.y)]; guardar() } else alClic?.()
     }
     asa.addEventListener('pointermove', mover)
@@ -211,16 +213,26 @@ function geometria(c) {
   }
   return `M${x1} ${y1} C ${x1 + dx} ${y1 + dy}, ${x2 - dx} ${y2 - dy}, ${x2} ${y2}`
 }
+const caminos = new Map()
 function trazar() {
-  gLineas.replaceChildren()
+  const vivos = new Set()
   for (const c of conexiones) {
     const d = geometria(c)
     if (!d) continue
-    const p = document.createElementNS(NS, 'path')
+    const clave = `${c.de}>${c.a}>${c.clase ?? ''}`
+    vivos.add(clave)
+    let p = caminos.get(clave)
+    if (!p) {
+      p = document.createElementNS(NS, 'path')
+      p.setAttribute('class', `${c.clase ?? ''} nueva`.trim())
+      setTimeout(() => p.classList.remove('nueva'), 800)
+      gLineas.appendChild(p)
+      caminos.set(clave, p)
+    }
     p.setAttribute('d', d)
-    p.setAttribute('class', `${c.clase ?? ''}${c.viva ? ' viva' : ''}`.trim())
-    gLineas.appendChild(p)
+    p.classList.toggle('viva', !!c.viva)
   }
+  for (const [clave, p] of caminos) if (!vivos.has(clave)) { p.remove(); caminos.delete(clave) }
 }
 // Partículas: lo que pasa de verdad (un encargo que sale, un resultado, una nota) viaja por las líneas.
 const particulas = []
@@ -233,20 +245,35 @@ function particula(c, color, dur = 1.3, r = 5) {
   medida.style.stroke = 'none'
   gParticulas.appendChild(medida)
   const brillo = document.createElementNS(NS, 'circle')
+  const estela = document.createElementNS(NS, 'circle')
   const punto = document.createElementNS(NS, 'circle')
   brillo.setAttribute('r', String(r * 2.6)); brillo.style.fill = color; brillo.style.opacity = '0.2'
+  estela.setAttribute('r', String(r * 0.7)); estela.style.fill = color; estela.style.opacity = '0.35'
   punto.setAttribute('r', String(r)); punto.style.fill = color
-  gParticulas.append(brillo, punto)
-  particulas.push({ medida, largo: medida.getTotalLength(), t0: performance.now(), dur: dur * 1000, punto, brillo })
+  gParticulas.append(brillo, estela, punto)
+  particulas.push({ medida, largo: medida.getTotalLength(), t0: performance.now(), dur: dur * 1000, punto, brillo, estela })
 }
+const suave = t => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2)
 function animar(ahora) {
+  const dx = meta.x - vista.x, dy = meta.y - vista.y, dk = meta.k - vista.k
+  if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1 || Math.abs(dk) > 0.0003) {
+    vista.x += dx * 0.2; vista.y += dy * 0.2; vista.k += dk * 0.2
+    animandoVista = true
+    aplicarVista()
+  } else if (animandoVista) {
+    animandoVista = false
+    Object.assign(vista, meta)
+    aplicarVista()
+    guardar()
+  }
   for (let i = particulas.length - 1; i >= 0; i--) {
     const p = particulas[i]
     const t = (ahora - p.t0) / p.dur
-    if (t >= 1) { p.medida.remove(); p.punto.remove(); p.brillo.remove(); particulas.splice(i, 1); continue }
-    const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
-    const pt = p.medida.getPointAtLength(e * p.largo)
+    if (t >= 1) { p.medida.remove(); p.punto.remove(); p.brillo.remove(); p.estela.remove(); particulas.splice(i, 1); continue }
+    const pt = p.medida.getPointAtLength(suave(t) * p.largo)
     for (const c of [p.punto, p.brillo]) { c.setAttribute('cx', pt.x); c.setAttribute('cy', pt.y) }
+    const cola = p.medida.getPointAtLength(suave(Math.max(0, t - 0.08)) * p.largo)
+    p.estela.setAttribute('cx', cola.x); p.estela.setAttribute('cy', cola.y)
   }
   requestAnimationFrame(animar)
 }
@@ -302,6 +329,7 @@ function empezarEnlace(ev, origen) {
 const yo = crearPieza('yo', 'yo', 'circulo yo', [-65, -65])
 yo.el.append(el('span', 'etq', 'Usuario'), el('b', '', 'Tú'), el('small', '', 'pides con /mst'))
 yo.el.title = 'Clic: tu cuenta, el tema y el acento'
+yo.el.addEventListener('dblclick', () => abrirDetalle({ tipo: 'yo' }))
 arrastrable(yo, yo.el, () => abrirDetalle({ tipo: 'yo' }))
 const jefe = crearPieza('jefe', 'jefe', 'circulo jefe', [240, -105])
 jefe.etq = el('span', 'etq', 'Jefe')
@@ -312,6 +340,8 @@ jefe.el.title = 'Doble clic: escríbele a la sesión del jefe'
 arrastrable(jefe, jefe.el)
 jefe.el.addEventListener('dblclick', () => abrirDetalle({ tipo: 'jefe' }))
 const paso = conCabecera(crearPieza('paso', 'paso', 'paso-t', [-120, -340]), 'Paso actual')
+paso.el.title = 'Doble clic: ver las 8 fases'
+paso.el.addEventListener('dblclick', ev => { if (!ev.target.closest('button')) abrirDetalle({ tipo: 'paso' }) })
 paso.fasesBarra = el('div', 'fases')
 FASES.forEach(() => paso.fasesBarra.appendChild(document.createElement('span')))
 const PIPES = [
@@ -323,6 +353,8 @@ const PIPES = [
 for (const p of PIPES) {
   const t = crearPieza(p.id, 'pipe', 'pipe', p.pos)
   t.el.append(el('b', '', p.nombre), el('small', '', p.rol))
+  t.el.title = 'Doble clic: ver los detalles'
+  t.el.addEventListener('dblclick', () => abrirDetalle({ tipo: 'pipe', clave: p.id }))
   arrastrable(t, t.el)
 }
 
@@ -452,6 +484,8 @@ function cabecera(titulo, estado) {
   return cab
 }
 function abrirDetalle(que) {
+  const igual = detalle.classList.contains('visible') && abierto && abierto.tipo === que.tipo && abierto.clave === que.clave
+  if (!igual) { detalle.classList.remove('abriendo'); void detalle.offsetWidth; detalle.classList.add('abriendo'); setTimeout(() => detalle.classList.remove('abriendo'), 900) }
   abierto = que
   refs = null
   if (que.tipo === 'yo') construirYo()
@@ -545,6 +579,30 @@ function refrescarJefe(d) {
   refs.lista.replaceChildren(...(mensajes.length ? [...mensajes].reverse().map(m => { const f = el('div', 'mensaje', m.texto); f.prepend(el('small', '', new Date(m.t).toLocaleTimeString())); return f }) : [el('p', 'vacio', 'Todavía no le has escrito.')]))
 }
 
+const mil = n => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))
+const suma = (l, f) => l.reduce((a, x) => a + (f(x) ?? 0), 0)
+function ficha(pares) {
+  const g = el('div', 'ficha')
+  for (const [k, v] of pares) g.append(el('span', 'k', k), el('span', 'v', String(v)))
+  return g
+}
+// Los números de un conjunto de trabajos: cuántos salieron bien, tokens, tiempo y notas.
+function cifras(ts) {
+  const terminados = ts.filter(x => x.ms !== undefined)
+  const notas = ts.filter(x => x.puntaje !== undefined).map(x => x.puntaje)
+  return [
+    ['Trabajos', `${ts.length} (${ts.filter(x => x.estado === 'listo').length} bien · ${ts.filter(x => x.estado === 'error').length} fallaron · ${ts.filter(x => x.estado === 'corriendo').length} en curso)`],
+    ['Tokens', `${mil(suma(ts, x => x.tokensIn))} leídos · ${mil(suma(ts, x => x.tokensOut))} escritos`],
+    ['Tiempo medio', terminados.length ? seg(suma(terminados, x => x.ms) / terminados.length) : '—'],
+    ['Nota media', notas.length ? `${(suma(notas, x => x) / notas.length).toFixed(1)} / 10` : '—'],
+  ]
+}
+const TUBERIA = {
+  'pipe-verificar': ['Verificar (tests)', 'Después de cada trabajo el centro ejecuta el comando de verificación (tests, node --check…) en la carpeta donde trabajó el agente y le devuelve su salida al jefe. Así el jefe no se fía de lo que el agente dice que hizo.'],
+  'pipe-auditoria': ['Auditoría 1-10', 'El jefe lee cada resultado de verdad (archivos, tests, errores) y le pone una nota del 1 al 10. Con 6 o más la subtarea queda hecha; con menos se rehace con otro modelo, hasta 2 veces.'],
+  'pipe-juntar': ['Juntar', 'Si los agentes trabajaron en copias aisladas (ramas), el jefe las junta; si compartieron carpeta, comprueba que nadie tocó archivos ajenos. Después cierra lo que falte del plan.'],
+  'pipe-informe': ['Informe + aviso', 'Al terminar se guarda el informe en Markdown (qué hizo cada agente, sus notas y qué se rehízo) y, si lo configuraste, llega un aviso al móvil por ntfy.'],
+}
 function filaTrabajo(t, ahora) {
   const f = el('div', `trabajo${t.estado === 'error' ? ' mal' : ''}`)
   f.append(el('div', 'linea', `${t.estado === 'corriendo' ? '●' : t.estado === 'error' ? '✗' : '✓'} ${t.trabajador}${t.subtarea !== undefined ? ` · tarea ${t.subtarea}` : ''} · ${seg(t.ms ?? ahora - t.inicio)}${t.puntaje !== undefined ? ` · nota ${t.puntaje}/10` : ''}`))
@@ -561,7 +619,31 @@ function pintarDetalle() {
     const arriba = detalle.scrollTop
     detalle.replaceChildren()
     const ahora = d.ahora ?? Date.now()
-    if (abierto.tipo === 'terminal') {
+    if (abierto.tipo === 'paso') {
+      const fase = faseDe(d)
+      const subs = d.plan?.subtareas ?? []
+      detalle.append(cabecera('Paso actual', fase.indice < 0 ? 'reposo' : `fase ${fase.indice + 1} / 8`), el('p', 'titulo', fase.titulo), el('div', 'estado', fase.texto))
+      detalle.append(ficha([['Objetivo', d.plan?.objetivo ?? '—'], ['Subtareas', `${subs.filter(s => s.estado === 'hecha').length} de ${subs.length} hechas`], ...cifras(d.trabajos)]))
+      detalle.append(el('div', 'rotulo', 'Las 8 fases'))
+      FASES.forEach((f, i) => {
+        const fila = el('div', `fase-fila${i === fase.indice ? ' actual' : i < fase.indice ? ' pasada' : ''}`)
+        fila.append(el('span', 'marca', i < fase.indice ? '✓' : i === fase.indice ? '●' : '○'), el('div'))
+        fila.lastChild.append(el('b', '', f.titulo), el('small', '', f.texto))
+        detalle.append(fila)
+      })
+    } else if (abierto.tipo === 'pipe') {
+      const [nombre, texto] = TUBERIA[abierto.clave]
+      const subs = d.plan?.subtareas ?? []
+      const conNota = d.trabajos.filter(x => x.puntaje !== undefined)
+      detalle.append(cabecera(nombre, ''), el('div', 'estado', texto))
+      if (abierto.clave === 'pipe-verificar') detalle.append(ficha(cifras(d.trabajos)))
+      else if (abierto.clave === 'pipe-auditoria') {
+        detalle.append(ficha(cifras(conNota)), el('div', 'rotulo', `Notas puestas (${conNota.length})`))
+        if (!conNota.length) detalle.append(el('p', 'vacio', 'Todavía no hay notas.'))
+        for (const x of [...conNota].reverse()) detalle.append(el('div', `trabajo${x.puntaje < 6 ? ' mal' : ''}`, `${x.puntaje}/10 · ${x.trabajador}${x.subtarea !== undefined ? ` · tarea ${x.subtarea}` : ''}`))
+      } else if (abierto.clave === 'pipe-juntar') detalle.append(ficha([['Subtareas hechas', `${subs.filter(s => s.estado === 'hecha').length} de ${subs.length}`], ['En curso', subs.filter(s => s.estado === 'en curso').length], ['Pendientes', subs.filter(s => s.estado === 'pendiente').length]]))
+      else detalle.append(ficha([['Plan', d.plan?.objetivo ?? '—'], ['Tokens', `${mil(suma(d.trabajos, x => x.tokensIn))} leídos · ${mil(suma(d.trabajos, x => x.tokensOut))} escritos`], ['Tiempo de trabajo', seg(suma(d.trabajos.filter(x => x.ms !== undefined), x => x.ms))], ...(typeof d.ahorro === 'number' ? [['Ahorro frente a Claude', `$${d.ahorro.toFixed(2)}`]] : [])]))
+    } else if (abierto.tipo === 'terminal') {
       const t = terminalDe(abierto.clave)
       if (!t) { cerrarDetalle(); return }
       const a = t.a
@@ -569,6 +651,9 @@ function pintarDetalle() {
       detalle.append(cabecera(`Terminal · ${NOMBRES[a]}${t.m ? ` · ${t.m}` : ''}`, e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'))
       const suyos = datosDe(d, t).trabajos
       const actual = suyos.filter(x => x.estado === 'corriendo').pop()
+      const info = (d.agentes ?? []).find(o => o.nombre === a)
+      const unidas = guardado.enlaces.filter(l => l.t === t.id).map(l => `tarea ${l.n}`)
+      detalle.append(ficha([['Agente', NOMBRES[a]], ['Modelo', t.m || 'automático (el centro elige)'], ['Disponibilidad', info ? (info.ok ? 'disponible' : info.nota) : '—'], ...cifras(suyos), ['Unida a', unidas.length ? unidas.join(', ') : 'ninguna tarea']]))
       detalle.append(el('div', 'rotulo', 'Qué está ejecutando'))
       if (actual) {
         const s = (d.plan?.subtareas ?? []).find(o => o.n === actual.subtarea)
@@ -581,6 +666,8 @@ function pintarDetalle() {
       detalle.append(cabecera(`Tarea ${s.n}`, s.estado), el('p', 'titulo', s.titulo))
       detalle.append(el('div', 'estado', [s.quien ? `con ${s.quien}` : 'sin asignar', s.puntaje !== undefined ? `nota ${s.puntaje}/10` : 'sin nota', s.espera?.length ? `espera a ${s.espera.join(', ')}` : 'no espera a nadie'].join(' · ')))
       const suyos = d.trabajos.filter(t => t.subtarea === s.n)
+      const skills = [...new Set(suyos.flatMap(x => x.skills ?? []))]
+      detalle.append(ficha([['Categoría', suyos[0]?.categoria ?? '—'], ['Espera a', s.espera?.length ? s.espera.map(e => `tarea ${e}`).join(', ') : 'nadie'], ...cifras(suyos), ['Skills', skills.length ? skills.join(', ') : '—']]))
       detalle.append(el('div', 'rotulo', `${suyos.length} intento${suyos.length === 1 ? '' : 's'}`))
       if (!suyos.length) detalle.append(el('p', 'vacio', 'Aún no la ha tomado ningún agente.'))
       for (const t of [...suyos].reverse()) detalle.append(filaTrabajo(t, ahora))
@@ -609,7 +696,7 @@ function pintarBarra() {
   crear('+ Todos', () => { for (const a of AGENTES) if (!guardado.terminales.some(t => t.a === a)) guardado.terminales.push({ id: nuevoId(a), a, m: '' }); guardar(); sincronizar() })
   crear(modoEjemplo ? '✓ Ejemplo' : 'Ejemplo', () => { guardado.ejemplo = !guardado.ejemplo; guardar(); ultimo = null; leer() }, modoEjemplo ? 'abierto' : '')
   crear('Reordenar', reordenar)
-  crear('Centrar', centrar)
+  crear('Centrar', () => centrar())
   crear('■ Cancelar todo', () => ultimo?.trabajos.filter(t => t.estado === 'corriendo').forEach(t => enviar({ tipo: 'cancelar', id: t.id })))
 }
 // Menú con los modelos del agente: al elegir uno, se abre su terminal con ese modelo.
@@ -711,4 +798,4 @@ async function leer() {
 document.getElementById('volver').href = `/${location.search}`
 pintarBarra()
 // Se encuadra cuando las piezas ya tienen medida (si no, el primer encuadre sale diminuto).
-leer().then(() => requestAnimationFrame(() => { if (!guardado.vista) { guardado.vista = vista; centrar() } else aplicarVista() }))
+leer().then(() => requestAnimationFrame(() => { if (!guardado.vista) { guardado.vista = vista; centrar(true) } else aplicarVista() }))
