@@ -25,6 +25,8 @@ export type DatosPagina = {
   /** Columnas de la rejilla de `extra`, según la proporción de cada figura (p. ej. "1.68fr 0.84fr") */
   columnasExtra?: string
   ahora?: number
+  /** Preguntas/permisos pendientes del agente al jefe */
+  pendientes?: { id: string; tipo: 'pregunta' | 'permiso'; texto: string }[]
 }
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
@@ -87,6 +89,23 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 @keyframes latido{0%,100%{transform:scale(1);opacity:.1}50%{transform:scale(1.18);opacity:.22}}
 @keyframes parpadeo{50%{opacity:.35}}
 @keyframes vibrar{0%{transform:translate(0,0)}25%{transform:translate(-2px,1px)}50%{transform:translate(2px,-1px)}75%{transform:translate(-1px,-1px)}}
+@keyframes pulso-amarillo{0%,100%{stroke-opacity:.35}50%{stroke-opacity:1}}
+@keyframes pulso-azul{0%,100%{stroke-opacity:.35}50%{stroke-opacity:1}}
+@keyframes pulso-rojo{0%,100%{stroke-opacity:.3}50%{stroke-opacity:1}}
+.nodo.card{transition:transform .45s cubic-bezier(.2,.7,.2,1)}
+.nodo.card rect{fill:#121212;stroke:#3e3e3e;stroke-width:1.2;transition:stroke .4s,fill .4s}
+.nodo.card.activo rect{stroke:var(--vino);fill:#170d0f}
+.nodo.card.hecho rect{stroke:#6a6a6a}
+.nodo.card.falla rect{stroke:#c4485a;animation:parpadeo .35s steps(2) infinite}
+.nodo.card.alarma-silencio rect{stroke:#d9a441;animation:pulso-amarillo 2.5s ease-in-out infinite}
+.nodo.card.alarma-pregunta rect{stroke:#5b9bd5;animation:pulso-azul 2s ease-in-out infinite}
+.nodo.card.alarma-permiso rect{stroke:#e0505f;animation:pulso-rojo 1.2s ease-in-out infinite}
+.card .insignia{font:11px ui-monospace,Consolas,monospace;fill:#d9a441}
+.card .insignia.pregunta{fill:#5b9bd5}
+.card .insignia.permiso{fill:#e0505f}
+.card-entra{animation:card-entra 0.35s ease-out}
+@keyframes card-entra{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.contador-agentes{font:700 28px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}
 .paso{display:grid;grid-template-columns:1fr;gap:18px;margin-top:20px;padding:22px 24px;border:1px solid #2a2a2a;background:#111}
 @media (min-width:900px){.paso{grid-template-columns:340px 1fr}}
 .paso h2{font:700 28px/1.1 'Segoe UI',system-ui,sans-serif;color:#f5f5f5;margin:0}.paso h2 i{font:normal 15px ui-monospace,Consolas,monospace;color:#c4485a;display:block;margin-bottom:6px}
@@ -104,7 +123,7 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 @media (max-width:700px){#grafo-montaje .lienzo{display:none}.g-lista{display:grid;gap:8px;margin-top:0}}
 #g-tip{position:fixed;z-index:10;max-width:320px;padding:12px 14px;background:#141414;border:1px solid var(--vino);color:#d4d4d4;font-size:14px;line-height:1.45;pointer-events:none;opacity:0;transition:opacity .15s}
 #g-tip b{display:block;color:#f5f5f5;font-size:15px;margin-bottom:4px}
-@media (prefers-reduced-motion:reduce){.anillo,.halo,.movil.vibra,.nodo.falla rect{animation:none!important}}
+@media (prefers-reduced-motion:reduce){.anillo,.halo,.movil.vibra,.nodo.falla rect,.nodo.card.alarma-silencio rect,.nodo.card.alarma-pregunta rect,.nodo.card.alarma-permiso rect,.card-entra{animation:none!important}.nodo.card{transition:none!important}}
 
 /* Gráficas y tablas */
 .rejilla{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(520px,100%),1fr));gap:24px;align-items:start}
@@ -157,10 +176,12 @@ export function paginaCentro(d: DatosPagina): string {
     jefe: d.jefe,
     ahora,
     plan: d.plan,
-    trabajos: d.trabajos.slice(-60).map(t => ({ id: t.id, trabajador: t.trabajador, estado: t.estado, subtarea: t.subtarea, inicio: t.inicio, ms: t.ms, puntaje: t.puntaje, salida: (t.salida ?? '').slice(-400), skills: t.skills, tokensIn: t.tokensIn, tokensOut: t.tokensOut })),
+    trabajos: d.trabajos.slice(-60).map(t => ({ id: t.id, trabajador: t.trabajador, estado: t.estado, subtarea: t.subtarea, inicio: t.inicio, ms: t.ms, puntaje: t.puntaje, salida: (t.salida ?? '').slice(-400), skills: t.skills, tokensIn: t.tokensIn, tokensOut: t.tokensOut, ultimaActividad: t.ultimaActividad })),
     agentes: d.agentes,
     modelos: d.modelos,
     listo,
+    pendientes: (d.pendientes ?? []).map(p => ({ id: p.id, tipo: p.tipo, texto: String(p.texto).slice(0, 300) })),
+    esperaSilencioMs: 60000,
   }
   const titulo = `${d.chat} · ${d.jefe} jefe · ${d.plan ? corto(d.plan.objetivo, 40) : 'sin plan'}`
   const graficas = [graficaTokens(d.trabajos), grafica(d.rendimiento), graficaTiempo(d.trabajos, ahora), graficaNotas(d.trabajos), graficaAhorro(d.trabajos)].join('')

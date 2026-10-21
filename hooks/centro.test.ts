@@ -408,6 +408,21 @@ test('aider: lee la respuesta sin ruido y sus tokens, y el centro lo lanza sin g
   expect(argvs[0].slice(1, 5)).toEqual(['--model', 'ollama_chat/gpt-oss:120b-cloud', '--message', 'crea hola.txt\n\nResponde siempre en español.'])
 })
 
+test('opencode: la tarea va por stdin completa, con sus saltos de línea, y no en la línea de comandos', async ($, on) => {
+  base(on)
+  const vistos: { argv: string[]; input?: string }[] = []
+  on('process.spawn', async function* (_$: any, e: any) {
+    vistos.push({ argv: e.argv, input: e.input })
+    yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
+    return { value: { code: 0, signal: null } }
+  })
+  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'opencode', categoria: 'codigo', tarea: 'línea uno\nlínea dos' } }))
+  expect(d.exito).toBe(true)
+  expect(vistos[0].argv[0]).toBe('opencode')
+  expect(vistos[0].argv.some(a => a.includes('línea'))).toBe(false)
+  expect(vistos[0].input).toContain('línea uno\nlínea dos')
+})
+
 test('rendimiento por modelo, informe en Markdown, tema de ntfy y estado de agentes', async () => {
   const r = agregarRendimiento({ codigo: { 'a:x': { n: 2, suma: 16, msTotal: 20_000 } }, texto: { 'a:x': { n: 1, suma: 5, msTotal: 4000 }, 'b:y': { n: 1, suma: 9, msTotal: 1000 } } })
   expect(r).toEqual([{ quien: 'a:x', media: 7, n: 3, segundos: 8 }, { quien: 'b:y', media: 9, n: 1, segundos: 1 }])
@@ -641,7 +656,7 @@ test('cerrojos: los archivos de otro agente cuentan como suyos aunque ya haya te
   expect(c.deOtros('/otra', b.id, b.desde)).toEqual([])
 })
 
-import { estadoAgente, eventosEntre, faseDe } from '../web/grafo-logica.js'
+import { estadoAgente, eventosEntre, faseDe, resumenDe, tarjetasDe } from '../web/grafo-logica.js'
 import { graficaAhorro, graficaNotas, graficaTiempo, graficaTokens } from './graficas'
 import { paginaCentro } from './vista'
 
@@ -698,4 +713,84 @@ test('las gráficas nuevas dibujan con datos y se quedan en blanco con mensaje s
   expect(html).toContain('Cancelar x')
   expect(html).not.toContain('</script><b>x')
   expect(html.match(/<\/script>/g)?.length).toBe(2)
+})
+
+test('las cards: una por trabajo, en orden cronológico, y el modelo con : y / separado bien del agente', () => {
+  const d: any = {
+    ahora: 30_000,
+    plan: { subtareas: [{ n: 1, titulo: 'primera', estado: 'en curso' }, { n: 2, titulo: 'segunda', estado: 'pendiente' }] },
+    trabajos: [
+      trab('b', 'opencode:qwen3:8b/instruct', 2, 'corriendo', { inicio: 5000 }),
+      trab('a', 'ollama:llama3', 1, 'corriendo', { inicio: 1000 }),
+    ],
+  }
+  const tarjetas = tarjetasDe(d)
+  expect(tarjetas.map(t => t.id)).toEqual(['a', 'b'])
+  expect(tarjetas[0]).toMatchObject({ id: 'a', agente: 'ollama', modelo: 'llama3', subtarea: 1, titulo: 'primera', estado: 'corriendo', alarma: '', segundos: 29, skills: false })
+  expect(tarjetas[1]).toMatchObject({ id: 'b', agente: 'opencode', modelo: 'qwen3:8b/instruct', subtarea: 2, titulo: 'segunda', segundos: 25 })
+  const fin: any = { ahora: 30_000, plan: { subtareas: [] }, trabajos: [trab('c', 'hermes:m', 9, 'listo', { inicio: 1000, ms: 6500, salida: 'uno\n\ndos   \ntres\ncuatro', skills: ['x'], tokensIn: 10, tokensOut: 5, puntaje: 8 })] }
+  const c = tarjetasDe(fin)[0]
+  expect(c.segundos).toBe(7)
+  expect(c.lineas).toEqual(['dos', 'tres', 'cuatro'])
+  expect(c.skills).toBe(true)
+  expect(c.tokensIn).toBe(10)
+  expect(c.tokensOut).toBe(5)
+  expect(c.puntaje).toBe(8)
+  expect(c.titulo).toBe('')
+})
+
+test('las cards: de los trabajos terminados solo salen los 20 más recientes, y los que están corriendo siempre entran', () => {
+  const terminados = Array.from({ length: 30 }, (_, i) => trab(`t${i}`, 'ollama:m', 1, 'listo', { inicio: i * 1000, ms: 500 }))
+  const d: any = { ahora: 60_000_000, trabajos: [...terminados, trab('viva', 'hermes:m', 2, 'corriendo', { inicio: 50_000_000 })] }
+  const tarjetas = tarjetasDe(d)
+  expect(tarjetas.length).toBe(21)
+  expect(tarjetas.filter(t => t.estado === 'corriendo').map(t => t.id)).toEqual(['viva'])
+  const ids = tarjetas.filter(t => t.estado === 'listo').map(t => t.id)
+  expect(ids.length).toBe(20)
+  expect(ids).toContain('t10')
+  expect(ids).toContain('t29')
+  expect(ids).not.toContain('t9')
+  expect(tarjetas.map(t => t.id)).toEqual([...ids, 'viva'])
+})
+
+test('las cards: alarma de silencio pasado el umbral y sin alarma si el trabajo acaba de hablar', () => {
+  const callado: any = { ahora: 120_000, esperaSilencioMs: 60_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000, ultimaActividad: 1000 })] }
+  expect(tarjetasDe(callado)[0].alarma).toBe('silencio')
+  const fresco: any = { ahora: 120_000, esperaSilencioMs: 60_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000, ultimaActividad: 100_000 })] }
+  expect(tarjetasDe(fresco)[0].alarma).toBe('')
+  const porDefecto: any = { ahora: 120_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000 })] }
+  expect(tarjetasDe(porDefecto)[0].alarma).toBe('silencio')
+  const terminado: any = { ahora: 120_000, esperaSilencioMs: 60_000, trabajos: [trab('a', 'opencode:m', 1, 'listo', { inicio: 1000, ms: 900 })] }
+  expect(tarjetasDe(terminado)[0].alarma).toBe('')
+})
+
+test('las cards: la pregunta o el permiso pendientes ponen su alarma, y mandan sobre el silencio', () => {
+  const d: any = {
+    ahora: 100_000,
+    pendientes: [{ id: 'a', tipo: 'pregunta', texto: '¿sigo?' }, { id: 'b', tipo: 'permiso', texto: '¿puedo tocar esto?' }],
+    trabajos: [
+      trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000, ultimaActividad: 1000 }),
+      trab('b', 'ollama:m', 2, 'corriendo', { inicio: 1000, ultimaActividad: 1000 }),
+      trab('c', 'hermes:m', 3, 'listo', { inicio: 1000, ms: 900 }),
+    ],
+  }
+  const tarjetas = tarjetasDe(d)
+  expect(tarjetas.find(t => t.id === 'a')?.alarma).toBe('pregunta')
+  expect(tarjetas.find(t => t.id === 'b')?.alarma).toBe('permiso')
+  expect(tarjetas.find(t => t.id === 'c')?.alarma).toBe('')
+})
+
+test('las cards: el resumen cuenta activos, alarmas, el reparto por agente y los ids con alarma', () => {
+  const tarjetas: any = [
+    { id: 'a', agente: 'opencode', estado: 'corriendo', alarma: 'pregunta' },
+    { id: 'b', agente: 'opencode', estado: 'corriendo', alarma: '' },
+    { id: 'c', agente: 'ollama', estado: 'corriendo', alarma: 'silencio' },
+    { id: 'd', agente: 'hermes', estado: 'listo', alarma: '' },
+  ]
+  const r = resumenDe(tarjetas)
+  expect(r.activos).toBe(3)
+  expect(r.alarmas).toBe(2)
+  expect(r.porAgente).toEqual({ opencode: 2, ollama: 1 })
+  expect(r.conAlarma).toEqual(['a', 'c'])
+  expect(resumenDe([])).toEqual({ activos: 0, alarmas: 0, porAgente: {}, conAlarma: [] })
 })

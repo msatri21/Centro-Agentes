@@ -22,6 +22,8 @@ export type Trabajo = {
   salida?: string
   /** Skills que siguió el agente en este trabajo */
   skills?: string[]
+  /** Última vez que llegó texto del agente (ms epoch) */
+  ultimaActividad?: number
 }
 
 export type Subtarea = {

@@ -704,7 +704,7 @@ async function intentar(
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined }
+  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, ultimaActividad: t0 }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
   await marcar($, input.subtarea, { estado: 'en curso', quien })
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
@@ -723,7 +723,9 @@ async function intentar(
     stdin = input.tarea
   } else if (c.trabajador === 'opencode') {
     // --standalone: con el servicio compartido de OpenCode, la carpeta de una copia aislada queda abierta y no se puede borrar.
-    argv = ['opencode', 'run', '--standalone', '--format', 'json', ...(c.modelo ? ['-m', c.modelo] : []), input.tarea]
+    // La tarea va por stdin: como argumento, el shim .cmd de Windows la corta en el primer salto de línea y el agente trabaja sin instrucciones.
+    argv = ['opencode', 'run', '--standalone', '--format', 'json', ...(c.modelo ? ['-m', c.modelo] : [])]
+    stdin = input.tarea
   } else if (c.trabajador === 'hermes') {
     // "proveedor/modelo": el proveedor es el de config.yaml (ollama-local = tu Ollama con sesión iniciada, sin clave).
     const corte = c.modelo.indexOf('/')
@@ -752,7 +754,15 @@ async function intentar(
   let s: Salida
   let ok = false
   try {
-    const r = await ejecutar($, argv, { cwd: input.cwd, stdin, timeoutMs }, out => (crudo = out), cortar => cortadores.set(id, cortar))
+    // La marca de actividad se escribe como mucho una vez por segundo: la salida llega a trozos y no hace falta más precisión.
+    let marcado = t0
+    const r = await ejecutar($, argv, { cwd: input.cwd, stdin, timeoutMs }, out => {
+      crudo = out
+      const ahora = Date.now()
+      if (ahora - marcado < 1000) return
+      marcado = ahora
+      update($, trabajos, l => (l ?? []).map(t => (t.id === id ? { ...t, ultimaActividad: ahora } : t))).catch(() => {})
+    }, cortar => cortadores.set(id, cortar))
     s =
       c.trabajador === 'ollama' ? leerOllama(r.stdout, r.stderr)
       : c.trabajador === 'opencode' ? leerOpencode(r.stdout)

@@ -81,3 +81,70 @@ export function estadoAgente(d, nombre) {
   const lineas = ultimo ? String(ultimo.salida ?? '').split(/\r?\n/).map(l => l.trimEnd()).filter(Boolean).slice(-3) : []
   return { activo: !!activo, falla, hecho, apartado, nota, ultimo, lineas, skills: !!ultimo?.skills?.length, modelo: ultimo ? modeloDe(ultimo) : '' }
 }
+
+// Las tres alarmas de una card: el trabajo lleva callado, o espera que el jefe conteste.
+export const ALARMAS = ['silencio', 'pregunta', 'permiso']
+
+// Cuántos trabajos ya terminados se guardan como card. Los que están corriendo entran siempre.
+const LIMITE_TERMINADOS = 20
+
+// Las últimas líneas no vacías de la salida de un trabajo.
+const ultimasLineas = salida => String(salida ?? '').split(/\r?\n/).map(l => l.trimEnd()).filter(Boolean).slice(-3)
+
+// Una card por trabajo (encargo), en orden cronológico: los corriendo siempre, y de los terminados solo los 20 más recientes.
+// Cada card trae su alarma: '' si nada; 'pregunta' o 'permiso' si el jefe tiene algo pendiente de ese trabajo; 'silencio' si lleva demasiado callado.
+export function tarjetasDe(d) {
+  const ahora = d.ahora ?? Date.now()
+  const espera = d.esperaSilencioMs ?? 60_000
+  const trabajos = d.trabajos ?? []
+  const pendientes = d.pendientes ?? []
+  const titulos = new Map((d.plan?.subtareas ?? []).map(s => [s.n, s.titulo]))
+  const corriendo = trabajos.filter(t => t.estado === 'corriendo')
+  const terminados = trabajos
+    .filter(t => t.estado === 'listo' || t.estado === 'error')
+    .sort((a, b) => b.inicio - a.inicio)
+    .slice(0, LIMITE_TERMINADOS)
+  return [...corriendo, ...terminados]
+    .sort((a, b) => a.inicio - b.inicio)
+    .map(t => {
+      const activa = t.estado === 'corriendo'
+      const pendiente = pendientes.find(p => p.id === t.id)
+      const ultima = t.ultimaActividad ?? t.inicio
+      const alarma = !activa ? '' : pendiente ? pendiente.tipo : ahora - ultima > espera ? 'silencio' : ''
+      return {
+        id: t.id,
+        agente: agenteDe(t),
+        modelo: modeloDe(t),
+        subtarea: t.subtarea,
+        titulo: titulos.get(t.subtarea) ?? '',
+        estado: t.estado,
+        alarma,
+        segundos: activa ? Math.max(0, Math.round((ahora - t.inicio) / 1000)) : Math.round((t.ms ?? 0) / 1000),
+        tokensIn: t.tokensIn,
+        tokensOut: t.tokensOut,
+        lineas: ultimasLineas(t.salida),
+        puntaje: t.puntaje,
+        skills: !!t.skills?.length,
+      }
+    })
+}
+
+// El resumen de las cards: cuántas van activas, cuántas avisan, el reparto por agente y qué ids tienen alarma.
+export function resumenDe(tarjetas) {
+  const lista = tarjetas ?? []
+  const porAgente = {}
+  const conAlarma = []
+  let activos = 0
+  let alarmas = 0
+  for (const c of lista) {
+    if (c.estado === 'corriendo') {
+      activos++
+      porAgente[c.agente] = (porAgente[c.agente] ?? 0) + 1
+    }
+    if (c.alarma) {
+      alarmas++
+      conAlarma.push(c.id)
+    }
+  }
+  return { activos, alarmas, porAgente, conAlarma }
+}
