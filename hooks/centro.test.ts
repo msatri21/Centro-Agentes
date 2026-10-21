@@ -75,6 +75,175 @@ test('una tarea con skills no va a Ollama y el agente recibe la instrucción de 
   expect(`${lanzado.argv.join(' ')} ${lanzado.input ?? ''}`).toContain('design-md')
 })
 
+test('con la skill ponytail el encargo lleva el mapa del código de la carpeta de trabajo; sin ella, no', async ($, on) => {
+  base(on)
+  on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: String(e.path).includes('ponytail-map.js') }))
+  const vistos: { argv: string[]; input?: string; cwd?: string }[] = []
+  // El mapa lo genera un script de ponytail con process.run; el agente se lanza con process.spawn.
+  on('process.run', async (_$: any, e: any) => {
+    if (e.argv.some((a: string) => a.includes('ponytail-map.js'))) {
+      vistos.push({ argv: e.argv, cwd: e.init?.cwd })
+      return { value: { exitCode: 0, stdout: 'Codebase map (what already exists)\nweb/: crearGrafo, enviarRespuesta\n', stderr: '', isStdoutTruncated: false } }
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }
+  })
+  on('process.spawn', async function* (_$: any, e: any) {
+    vistos.push({ argv: e.argv, input: e.input })
+    yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
+    return { value: { code: 0, signal: null } }
+  })
+  const con = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón', cwd: 'C:/proyecto', skills: ['ponytail'] } }))
+  expect(con.exito).toBe(true)
+  const mapa = vistos.find(v => v.argv.some(a => a.includes('ponytail-map.js')))
+  expect(mapa?.argv[0]).toBe('node')
+  expect(mapa?.cwd).toBe('C:/proyecto')
+  const lanzado = vistos[vistos.length - 1]
+  expect(lanzado.input).toContain('añade un botón')
+  expect(lanzado.input).toContain('Codebase map')
+  expect(lanzado.input).toContain('crearGrafo')
+  // Otra skill, o ninguna: el mapa no se pide ni se añade.
+  vistos.length = 0
+  const sin = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'diseño', tarea: 'haz la portada', cwd: 'C:/proyecto', skills: ['design-md'] } }))
+  expect(sin.exito).toBe(true)
+  expect(vistos.some(v => v.argv.some(a => a.includes('ponytail-map.js')))).toBe(false)
+  expect(vistos[vistos.length - 1].input).not.toContain('Codebase map')
+})
+
+import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
+
+test('clasificarTarea: código, auditoría de un cambio, auditoría de un repo o texto; ante la duda, código', () => {
+  const clase = (e: any) => clasificarTarea(e).clase
+  // Escritura: por la categoría, por los archivos o el vocabulario, y por cómo se pide (aislar, verificar, archivos).
+  expect(clase({ categoria: 'codigo', tarea: 'añade un botón' })).toBe('escritura')
+  expect(clase({ categoria: 'general', tarea: 'Corrígelo en src/cart.js' })).toBe('escritura')
+  expect(clase({ categoria: 'x', tarea: 'haz algo', archivos: ['a.js'] })).toBe('escritura')
+  expect(clase({ categoria: 'x', tarea: 'haz algo', verificar: 'npm test' })).toBe('escritura')
+  expect(clase({ categoria: 'x', tarea: 'haz algo', aislar: true })).toBe('escritura')
+  expect(clase({ categoria: 'docs', tarea: 'documenta la función calcularTotal' })).toBe('escritura')
+  expect(clase({ categoria: 'x', tarea: 'usa `formatNumber` para mostrarlo' })).toBe('escritura')
+  // Revisar y corregir escribe código: no es solo una auditoría.
+  expect(clase({ categoria: 'revision', tarea: 'revisa y corrige los errores de src/a.js' })).toBe('escritura')
+  // Auditoría de un cambio y de un repo entero.
+  expect(clase({ categoria: 'revision', tarea: 'revisa el último commit de src/cart.js' })).toBe('auditoria')
+  expect(clase({ categoria: 'auditoria', tarea: 'audita este PR' })).toBe('auditoria')
+  expect(clase({ categoria: 'auditoria', tarea: 'audita todo el repositorio y dime qué sobra' })).toBe('auditoria-repo')
+  expect(clase({ categoria: 'analisis', tarea: 'code review de todo el proyecto' })).toBe('auditoria-repo')
+  // Texto: sin ninguna señal de código.
+  expect(clase({ categoria: 'texto', tarea: 'traduce este párrafo al inglés' })).toBe('texto')
+  expect(clase({ categoria: 'diseño', tarea: 'haz la portada' })).toBe('texto')
+  expect(clase({ categoria: 'revision', tarea: 'revisa el informe de ventas' })).toBe('texto')
+  expect(clase({ categoria: 'investigacion', tarea: 'busca precios de hosting' })).toBe('texto')
+  // Qué skill lleva cada clase, y cuáles llevan el mapa del código.
+  expect(skillsAutomaticas('escritura')).toEqual(['ponytail'])
+  expect(skillsAutomaticas('auditoria')).toEqual(['ponytail-review'])
+  expect(skillsAutomaticas('auditoria-repo')).toEqual(['ponytail-audit'])
+  expect(skillsAutomaticas('texto')).toEqual([])
+  expect(CON_MAPA).toEqual(['ponytail', 'ponytail-audit'])
+  // Una petición vaga solo es código si pide cambios y la carpeta tiene código.
+  const vaga = clasificarTarea({ categoria: 'general', tarea: 'Agrega la posibilidad de aplicar un cupón de descuento al carrito.' })
+  expect(vaga.clase).toBe('texto')
+  expect(vaga.pideCambios).toBe(true)
+  expect(conCarpeta(vaga, true).clase).toBe('escritura')
+  expect(conCarpeta(vaga, false).clase).toBe('texto')
+  expect(conCarpeta(clasificarTarea({ categoria: 'texto', tarea: 'Redacta un correo de bienvenida' }), true).clase).toBe('texto')
+})
+
+// Un centro con ponytail, ponytail-review y ponytail-audit instaladas y el script del mapa; devuelve lo que ve el agente.
+const centroConPonytail = (on: any, { carpetaConCodigo = true } = {}) => {
+  base(on)
+  on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: /SKILL\.md$|ponytail-map\.js$/.test(String(e.path)) }))
+  const mapas: string[] = []
+  const lanzados: { argv: string[]; input?: string }[] = []
+  on('process.run', async (_$: any, e: any) => {
+    if (e.argv.some((a: string) => a.includes('ponytail-map.js'))) {
+      mapas.push(e.init?.cwd)
+      // Una carpeta sin código deja el mapa vacío.
+      return { value: { exitCode: 0, stdout: carpetaConCodigo ? 'Codebase map (what already exists)\nweb/: crearGrafo\n' : '', stderr: '', isStdoutTruncated: false } }
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }
+  })
+  on('process.spawn', async function* (_$: any, e: any) {
+    lanzados.push({ argv: e.argv, input: e.input })
+    yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
+    return { value: { code: 0, signal: null } }
+  })
+  const visto = () => { const l = lanzados[lanzados.length - 1]; return `${l.argv.join(' ')} ${l.input ?? ''}` }
+  return { mapas, lanzados, visto }
+}
+
+test('el centro añade solo ponytail a las tareas de código, con el mapa, aunque Claude no lo pida', async ($, on) => {
+  const c = centroConPonytail(on)
+  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' } }))
+  expect(d.exito).toBe(true)
+  expect(c.visto()).toContain('Usa estas skills')
+  expect(c.visto()).toContain('ponytail: lee')
+  expect(c.visto()).toContain('Codebase map')
+  expect(c.mapas).toEqual(['C:/proyecto'])
+  // Y al devolver el resultado le recuerda al jefe con qué auditar el cambio.
+  expect(d.auditar_con).toBe('ponytail-review')
+  expect(d.aviso_auditoria).toContain('ponytail-review')
+  // El resultado dice qué decidió el centro y por qué, para detectar falsos positivos.
+  expect(d.clasificacion.clase).toBe('escritura')
+  expect(d.clasificacion.motivos.length).toBeGreaterThan(0)
+  expect(d.clasificacion.skills_anadidas).toEqual(['ponytail'])
+  expect(d.clasificacion.apagada_por_encargo).toBeUndefined()
+})
+
+test('el centro añade ponytail-review o ponytail-audit a las auditorías, sin mapa de ponytail-review ni skill de escritura', async ($, on) => {
+  const c = centroConPonytail(on)
+  const cambio = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'revision', tarea: 'revisa el último commit de src/cart.js', cwd: 'C:/proyecto' } }))
+  expect(cambio.exito).toBe(true)
+  expect(c.visto()).toContain('ponytail-review: lee')
+  expect(c.visto()).not.toContain('ponytail: lee')
+  expect(c.mapas).toEqual([])
+  expect(cambio.auditar_con).toBeUndefined()
+  const repo = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'auditoria', tarea: 'audita todo el repositorio', cwd: 'C:/proyecto' } }))
+  expect(repo.exito).toBe(true)
+  expect(c.visto()).toContain('ponytail-audit: lee')
+  expect(c.mapas).toEqual(['C:/proyecto'])
+})
+
+test('sin skills automáticas: tareas de texto, el interruptor del encargo, el ajuste y los agentes que no leen skills', async ($, on) => {
+  const c = centroConPonytail(on)
+  const texto = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'texto', tarea: 'traduce este párrafo al inglés', cwd: 'C:/proyecto' } }))
+  expect(texto.exito).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+  const apagada = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto', sin_skills_automaticas: true } }))
+  expect(apagada.exito).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+  expect(apagada.auditar_con).toBe('ponytail-review')
+  expect(apagada.clasificacion.skills_anadidas).toEqual([])
+  expect(apagada.clasificacion.apagada_por_encargo).toBe(true)
+  expect(texto.clasificacion.clase).toBe('texto')
+  expect(texto.clasificacion.skills_anadidas).toEqual([])
+  // Un agente que no lee skills (Aider) no cambia de agente ni recibe la instrucción.
+  const aider = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'aider', categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' } }))
+  expect(aider.trabajador.startsWith('aider')).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+})
+
+test('una petición vaga que pide cambios cuenta como código si la carpeta tiene código, y no si no lo tiene', async ($, on) => {
+  const c = centroConPonytail(on)
+  const vaga = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'general', tarea: 'Agrega la posibilidad de aplicar un cupón de descuento al carrito.', cwd: 'C:/proyecto' } }))
+  expect(vaga.exito).toBe(true)
+  expect(c.visto()).toContain('ponytail: lee')
+  expect(c.visto()).toContain('Codebase map')
+  // Una tarea de texto, aunque esté en una carpeta con código, sigue siendo texto: no pide cambios.
+  const resumen = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'analisis', tarea: 'Resume las diferencias entre los dos planes de precios', cwd: 'C:/proyecto' } }))
+  expect(resumen.exito).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+})
+
+test('una petición vaga en una carpeta sin código no lleva ponytail', async ($, on) => {
+  const c = centroConPonytail(on, { carpetaConCodigo: false })
+  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'general', tarea: 'Agrega una sección de preguntas frecuentes al documento', cwd: 'C:/documentos' } }))
+  expect(d.exito).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+  expect(d.auditar_con).toBeUndefined()
+})
+
 test('compara versiones para saber si hay que autoactualizar', async () => {
   expect(esMasNueva('0.3.1', '0.3.0')).toBe(true)
   expect(esMasNueva('0.10.0', '0.9.9')).toBe(true)
@@ -564,6 +733,43 @@ test('/mst con tarea responde al momento y manda la tarea al jefe sin quedarse e
   await new Promise(res => setTimeout(res, 500))
 })
 
+import { textoAvisoPonytail, PONYTAIL } from './ponytailAviso'
+
+test('el aviso de ponytail dice qué se descarga, de dónde, dónde se escribe y que Claude espere el sí del usuario', () => {
+  const t = textoAvisoPonytail(['ponytail', 'ponytail-review', 'ponytail-audit', 'mapa'], 'C:/plugin/mcp/instalar-ponytail.mjs')
+  expect(t).toContain('raw.githubusercontent.com')
+  expect(t).toContain('DietrichGebert/ponytail')
+  expect(t).toContain(PONYTAIL.commit.slice(0, 7))
+  expect(t).toContain('~/.claude/skills/ponytail-audit/')
+  expect(t).toContain('~/.centro-agentes/ponytail/')
+  expect(t).toContain('skills/ponytail/SKILL.md  (3496 bytes)')
+  expect(t).toContain('--instalar')
+  expect(t).toContain('espera su sí')
+  // Solo lista lo que falta.
+  const solo = textoAvisoPonytail(['mapa'], 's.mjs')
+  expect(solo).toContain('hooks/ponytail-map.js')
+  expect(solo).not.toContain('skills/ponytail/SKILL.md')
+  expect(solo).not.toContain('~/.claude/skills')
+})
+
+test('/mst avisa una sola vez de que falta ponytail', async ($, on) => {
+  base(on)
+  on('session.usage', async () => ({ value: { context: { percent: 0, tokens: 0, window: 200000 } } }))
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.read', async () => ({ value: 'clave' }))
+  on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
+  on('fs.exists', async () => ({ value: false }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
+  procesos(on)
+  const primera: any = await $.command.run({ command: 'mst', args: '' })
+  expect(primera.text).toContain('Falta ponytail')
+  expect(primera.text).toContain('instalar-ponytail.mjs')
+  // Solo una vez.
+  const segunda: any = await $.command.run({ command: 'mst', args: '' })
+  expect(segunda.text).not.toContain('Falta ponytail')
+  await new Promise(res => setTimeout(res, 300))
+})
+
 import { leerCodex } from './register'
 
 test('codex: lee su respuesta y tokens, y se lanza con su cuenta o con Ollama, con la tarea por stdin', async ($, on) => {
@@ -673,7 +879,7 @@ test('cerrojos: los archivos de otro agente cuentan como suyos aunque ya haya te
   expect(c.deOtros('/otra', b.id, b.desde)).toEqual([])
 })
 
-import { estadoAgente, eventosEntre, faseDe, resumenDe, tarjetasDe, gruposDe, faseDeGrupo, rejilla, colocarGrupos, FASES_PLAN } from '../web/grafo-logica.js'
+import { estadoAgente, eventosEntre, faseDe, resumenDe, tarjetasDe, gruposDe, faseDeGrupo, rejilla, colocarGrupos, unirChats, FASES_PLAN } from '../web/grafo-logica.js'
 import { graficaAhorro, graficaNotas, graficaTiempo, graficaTokens } from './graficas'
 import { paginaCentro } from './vista'
 
@@ -754,6 +960,10 @@ test('las cards: una por trabajo, en orden cronológico, y el modelo con : y / s
   expect(c.tokensOut).toBe(5)
   expect(c.puntaje).toBe(8)
   expect(c.titulo).toBe('')
+  // La card lleva lo que decidió el centro (clase, motivos, skills añadidas); sin clasificación, nada.
+  expect(c.clasificacion).toBeUndefined()
+  const clasif = { clase: 'escritura', motivos: ['categoría de código'], anadidas: ['ponytail'] }
+  expect(tarjetasDe({ ahora: 30_000, trabajos: [trab('d', 'hermes:m', 1, 'listo', { inicio: 1000, ms: 500, clasificacion: clasif })] } as any)[0].clasificacion).toEqual(clasif)
 })
 
 test('las cards: de los trabajos terminados solo salen los 20 más recientes, y los que están corriendo siempre entran', () => {
@@ -798,6 +1008,32 @@ test('las cards: la pregunta o el permiso pendientes ponen su alarma, y mandan s
   expect(tarjetas.find(t => t.id === 'a')?.alarma).toBe('pregunta')
   expect(tarjetas.find(t => t.id === 'b')?.alarma).toBe('permiso')
   expect(tarjetas.find(t => t.id === 'c')?.alarma).toBe('')
+})
+
+test('unirChats: junta los chats en un solo grafo, con el nombre del chat en cada plan y los ids como chat|id', () => {
+  const sub = (n: number, titulo: string, estado = 'pendiente') => ({ n, titulo, estado })
+  const trabajo = (id: string, plan: string | undefined, extra: any = {}) => ({ id, trabajador: 'opencode:m', categoria: 'x', tarea: 't', estado: 'corriendo', inicio: 1000, ultimaActividad: 1000, plan, ...extra })
+  const a = { id: 'c1', nombre: 'Tienda', en: 10, datos: { plan: { objetivo: 'Carrito', subtareas: [sub(1, 'Botón'), sub(2, 'Cupón')] }, planes: [{ objetivo: 'Login', subtareas: [sub(1, 'Formulario', 'hecha')] }], trabajos: [trabajo('t1', 'Carrito', { subtarea: 2 }), trabajo('t2', undefined)], pendientes: [{ id: 't1', consulta: 'q1', agente: 'opencode', tipo: 'pregunta', texto: '¿?' }], agentes: [{ nombre: 'opencode', ok: true }] } }
+  const b = { id: 'c2', nombre: 'Blog', en: 20, datos: { plan: { objetivo: 'Carrito', subtareas: [sub(1, 'Otra cosa')] }, planes: [], trabajos: [trabajo('t1', 'Carrito', { subtarea: 1 })], pendientes: [], agentes: [{ nombre: 'hermes', ok: true }] } }
+  const d: any = unirChats([a, b], 5000)
+  // Dos chats con el mismo objetivo no se mezclan: cada plan lleva el nombre de su chat.
+  expect(d.planes.map((p: any) => p.objetivo)).toEqual(['Tienda · Carrito', 'Tienda · Login', 'Tienda · (sin plan)', 'Blog · Carrito'])
+  expect(d.trabajos.map((t: any) => [t.id, t.plan])).toEqual([['c1|t1', 'Tienda · Carrito'], ['c1|t2', 'Tienda · (sin plan)'], ['c2|t1', 'Blog · Carrito']])
+  expect(d.pendientes[0]).toMatchObject({ id: 'c1|t1', consulta: 'c1|q1' })
+  expect(d.plan).toBeNull()
+  expect(d.ahora).toBe(5000)
+  // Los agentes salen del chat con la actividad más reciente.
+  expect(d.agentes).toEqual([{ nombre: 'hermes', ok: true }])
+  // Y el grafo de siempre los reparte en un grupo por plan, cada uno con sus cards y su alarma de pregunta.
+  const grupos = gruposDe(d)
+  expect(grupos.map((g: any) => g.id).sort()).toEqual(['Blog · Carrito', 'Tienda · (sin plan)', 'Tienda · Carrito', 'Tienda · Login'])
+  const carrito = grupos.find((g: any) => g.id === 'Tienda · Carrito')
+  expect(carrito.tarjetas.map((t: any) => t.id)).toEqual(['c1|t1'])
+  expect(carrito.tarjetas[0].alarma).toBe('pregunta')
+  // Los títulos salen del plan de cada grupo, aunque dos chats numeren distinto sus subtareas.
+  expect(carrito.tarjetas[0].titulo).toBe('Cupón')
+  expect(grupos.find((g: any) => g.id === 'Blog · Carrito').tarjetas[0].titulo).toBe('Otra cosa')
+  expect(unirChats([], 1).trabajos).toEqual([])
 })
 
 test('las cards: el resumen cuenta activos, alarmas, el reparto por agente y los ids con alarma', () => {

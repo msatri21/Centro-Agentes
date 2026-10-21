@@ -127,6 +127,7 @@ export function tarjetasDe(d) {
         lineas: ultimasLineas(t.salida),
         puntaje: t.puntaje,
         skills: !!t.skills?.length,
+        clasificacion: t.clasificacion,
       }
     })
 }
@@ -280,6 +281,9 @@ export function gruposDe(d) {
       grupo.trabajos.push(t)
     }
   }
+
+  // En la vista de todos los chats no hay un plan actual común: el grupo "(sin plan)" general no pinta nada si está vacío.
+  if (grupoSinPlan && d.omitirSinPlanVacio && !grupoSinPlan.trabajos.length) gruposMap.delete('(sin plan)')
 
   // Calcular campos derivados por grupo
   const grupos = []
@@ -517,4 +521,30 @@ export function colocarGrupos(grupos, opciones = {}) {
     posiciones: posicionesOut,
     caja: { x0, y0, x1, y1 },
   }
+}
+
+// La vista común: junta los datos de varios chats en una sola lectura para dibujarlos en el mismo grafo.
+// Cada plan lleva delante el nombre de su chat; los ids de trabajos y consultas se pasan a "<chat>|<id>" para saber a qué chat va una respuesta.
+export function unirChats(chats, ahora) {
+  const planes = []
+  const trabajos = []
+  const pendientes = []
+  const recientes = [...chats].sort((a, b) => (b.en ?? 0) - (a.en ?? 0))
+  for (const c of chats) {
+    const d = c.datos ?? {}
+    const con = o => `${c.nombre} · ${o}`
+    const pre = id => `${c.id}|${id}`
+    const todosLosPlanes = [...(d.plan?.objetivo ? [d.plan] : []), ...(d.planes ?? []).filter(p => p?.objetivo)]
+    for (const p of todosLosPlanes) planes.push({ ...p, objetivo: con(normalizarObjetivo(p.objetivo)) })
+    let sinPlan = false
+    for (const t of d.trabajos ?? []) {
+      const objetivo = normalizarObjetivo(t.plan)
+      if (!objetivo) sinPlan = true
+      trabajos.push({ ...t, id: pre(t.id), plan: con(objetivo || '(sin plan)') })
+    }
+    if (sinPlan) planes.push({ objetivo: con('(sin plan)'), subtareas: [] })
+    for (const p of d.pendientes ?? []) pendientes.push({ ...p, id: pre(p.id), consulta: pre(p.consulta) })
+  }
+  const base = recientes[0]?.datos ?? {}
+  return { jefe: 'Claude', ahora, plan: null, omitirSinPlanVacio: true, planes, trabajos, pendientes, agentes: base.agentes ?? [], modelos: base.modelos, esperaSilencioMs: base.esperaSilencioMs ?? 60000 }
 }

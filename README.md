@@ -27,6 +27,21 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 | Codex | `npm i -g @openai/codex` y `codex login` con tu cuenta de ChatGPT | Cupo gratis limitado de tu cuenta; si no hay sesión o se acaba, usa tu Ollama |
 | Claude headless | ya viene con Claude Code | Solo si los gratis rinden claramente peor |
 
+## Skills opcionales: ponytail
+
+El centro puede darles a los agentes que programan la skill [ponytail](https://github.com/DietrichGebert/ponytail) (MIT): pide el cambio más pequeño pero completo, que reutilicen lo que ya existe y que dejen una línea con lo que omitieron. No viene incluida; si la instalas, el centro la usa:
+
+- **Instalación guiada.** Si falta, `/mst` avisa una sola vez con la lista exacta de lo que se descargaría y dónde. El plugin no descarga nada por su cuenta: dile a Claude "instala ponytail" (te enseña la lista y espera tu sí) o ejecuta tú `node mcp/instalar-ponytail.mjs --instalar` (sin `--instalar` solo muestra el plan).
+  - **Se descarga** (solo de `raw.githubusercontent.com`, de `DietrichGebert/ponytail`, commit fijo `09c434a`, licencia MIT, 20 566 bytes en total): `skills/ponytail/SKILL.md`, `skills/ponytail-review/SKILL.md`, `skills/ponytail-audit/SKILL.md`, `hooks/ponytail-map.js` y `LICENSE`.
+  - **Se escribe** en `~/.claude/skills/ponytail/`, `~/.claude/skills/ponytail-review/` y `~/.claude/skills/ponytail-audit/` (cada una con `SKILL.md`, `LICENSE` y `ORIGEN.md`) y en `~/.centro-agentes/ponytail/` (`ponytail-map.js`, `LICENSE` y `ORIGEN.md`). `ponytail-map.js` es un script local, sin red ni modelo, que lista las funciones y clases que ya hay en una carpeta.
+  - **Garantías:** cada archivo se verifica (tamaño y SHA-1 de git, los que da GitHub para ese commit) antes de escribir nada, y si uno no coincide no se escribe ninguno. Lo descargado no se ejecuta. No se sobrescribe lo que ya exista (salvo con `--reemplazar`). Con `--solo-manual` se añade `disable-model-invocation: true` al encabezado de `ponytail`, para que Claude no la active solo en tus sesiones; el centro la sigue usando.
+  - **A mano**, si lo prefieres: copia esos mismos archivos del repositorio a esas mismas carpetas.
+- **El centro las añade solo**, según la clase de tarea, sin depender de que Claude se acuerde (ajuste `ponytailAutomatico`, activado por defecto): `ponytail` a toda tarea que escribe o cambia código, `ponytail-review` a las auditorías de un cambio y `ponytail-audit` a las de un repositorio entero. Solo las que estén instaladas, y solo a los agentes que leen skills (OpenCode, Codex y Hermes; Ollama y Aider quedan como están).
+- **Cómo decide si es código:** mira la categoría, si la tarea nombra archivos de código o usa vocabulario de programación, y si el encargo declara `archivos`, `aislar` o `verificar`. Es amplio a propósito: ante la duda cuenta como código. Una tarea que audita sin pedir cambios es una auditoría (de un repo entero si dice "todo el repositorio" o su categoría es `auditoria-repo`); "revisa y corrige" es escritura.
+- Con `ponytail` y `ponytail-audit` el encargo lleva además el mapa del código de la carpeta donde trabajará el agente (sin el script, sale sin mapa). `ponytail-review` no lo lleva: revisa un cambio concreto.
+- El resultado de una tarea de código trae `auditar_con` y `aviso_auditoria`, para que el jefe la audite con `ponytail-review`. Para no añadir las skills a un encargo concreto: `sin_skills_automaticas: true`.
+- Para afinar el clasificador, cada trabajo guarda lo que decidió el centro: la clase (`escritura`, `auditoria`, `auditoria-repo` o `texto`), los motivos y las skills que añadió. Se ve en el resultado de `delegar` (`clasificacion`) y en el nodo agrandado de la web (Clase, Skills y Por qué). Así un falso positivo se detecta comparando la clase con la tarea.
+
 ## Comandos
 
 - `/mst [tarea]` — panel + web; con tarea, el jefe la reparte.
@@ -82,7 +97,7 @@ Los agentes trabajan en modo autónomo (`--yolo`), pero pueden pararse a pregunt
 
 ## Web
 
-`http://127.0.0.1:47321` (solo local, con clave). Un centro por chat, más la página **todos los chats**. Es la misma página con Claude o con OpenCode de jefe:
+`http://127.0.0.1:47321` (solo local, con clave). Un centro por chat, más la página **todos los chats**. Desde ella (o desde el enlace "todos en un grafo" de cada chat) se abre un solo grafo con los planes de todos los chats activos en las últimas 24 h: cada cuadrado lleva el nombre de su chat, y las preguntas, permisos y el botón Cancelar llegan al chat de cada agente. Es la misma página con Claude o con OpenCode de jefe:
 
 - **El grafo grande**, en vivo con los datos reales: **Claude, el jefe, en el centro** y, alrededor, **un cuadrado punteado por plan** con los subagentes que trabajan en él. Sobre el borde de cada cuadrado va la línea de tiempo del plan (Planeación, Reparto, En proceso, Verificación, Auditoría, Juntar, Informe) y debajo del título se lee la fase, con el progreso de las subtareas en "En proceso". Cada subagente es un nodo pequeño con el nombre del agente y un punto de estado (trabajando, terminó en verde, falló en rojo); al hacer clic se agranda con el modelo, el tiempo, la nota y la última línea. Los nodos y los grupos se acomodan solos; el lienzo se mueve con el ratón y hace zoom con la rueda (**Ajustar** vuelve al encuadre). Los planes anteriores quedan atenuados y se reactivan si Claude vuelve a planificar con el mismo objetivo. Las partículas son lo que pasa de verdad (un encargo que sale, un resultado, una nota). Se actualiza cada 2 s sin recargar, así las animaciones no se cortan.
 - **Alarmas en los nodos:** el nodo se agranda solo, el borde pulsa y aparece una insignia: `SILENCIO` (el agente lleva más de 60 s sin escribir), `PREGUNTA` o `PERMISO` (el agente espera tu respuesta o una autorización). El contador de arriba suma los agentes activos y las alarmas. Los agentes corren en modo autónomo (`--yolo`): solo preguntan cuando de verdad lo necesitan.

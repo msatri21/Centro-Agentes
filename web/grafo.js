@@ -62,12 +62,22 @@ const MARGEN = 14
 const HUECO = 10
 
 // Enviar a la web lo que el usuario decide: contestar una consulta o cortar un agente (la clave y el chat van en location.search).
+// En la vista de todos los chats los ids vienen como "<chat>|<id>": la orden va al chat al que pertenecen.
+function destino(id) {
+  const i = String(id).indexOf('|')
+  if (i < 0) return { id, search: location.search }
+  const p = new URLSearchParams(location.search)
+  p.set('s', id.slice(0, i))
+  return { id: id.slice(i + 1), search: '?' + p }
+}
 export async function enviarRespuesta(consulta, decision, texto) {
-  const r = await fetch('/accion' + location.search, { method: 'POST', body: JSON.stringify({ tipo: 'responder', id: consulta, decision, texto }) })
+  const d = destino(consulta)
+  const r = await fetch('/accion' + d.search, { method: 'POST', body: JSON.stringify({ tipo: 'responder', id: d.id, decision, texto }) })
   return r.status
 }
 export async function cancelarTrabajo(id) {
-  const r = await fetch('/accion' + location.search, { method: 'POST', body: JSON.stringify({ tipo: 'cancelar', id }) })
+  const d = destino(id)
+  const r = await fetch('/accion' + d.search, { method: 'POST', body: JSON.stringify({ tipo: 'cancelar', id: d.id }) })
   return r.status
 }
 
@@ -75,7 +85,7 @@ export function crearGrafo(montaje) {
   const sinMovimiento = matchMedia('(prefers-reduced-motion: reduce)').matches
   montaje.innerHTML = `<div class="lienzo" id="g-lienzo"><svg role="img" aria-label="Grafo animado del Centro de agentes MST: Claude en el centro y, alrededor, un cuadrado por plan con los subagentes que trabajan en él"></svg>
 <div class="g-rotulo g-izq">Fig 1 · cómo se hablan los agentes</div><div class="g-rotulo g-der" id="g-vivo">EN REPOSO</div>
-<div class="g-controles"><button type="button" data-zoom="mas" aria-label="Acercar">+</button><button type="button" data-zoom="menos" aria-label="Alejar">−</button><button type="button" data-zoom="ajustar">Ajustar</button><a class="g-tablero" href="/tablero.html${location.search}" target="_blank">Tablero</a></div>
+<div class="g-controles"><button type="button" data-zoom="mas" aria-label="Acercar">+</button><button type="button" data-zoom="menos" aria-label="Alejar">−</button><button type="button" data-zoom="ajustar">Ajustar</button>${new URLSearchParams(location.search).has('s') ? `<a class="g-tablero" href="/tablero.html${location.search}" target="_blank">Tablero</a>` : ''}</div>
 <div id="g-alerta" role="status" aria-live="assertive" style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden"></div></div>
 <div id="g-lista" class="g-lista"></div>
 <section class="paso" aria-live="polite"><div><p class="rotulo">Paso actual</p><h2><i id="g-num">REPOSO</i><span id="g-titulo"></span></h2></div>
@@ -314,6 +324,12 @@ export function crearGrafo(montaje) {
     if (t.puntaje !== undefined) fila('Nota', `${t.puntaje}/10`)
     if (t.tokensIn !== undefined) fila('Tokens', `${miles(t.tokensIn)}→${miles(t.tokensOut ?? 0)}`)
     if (t.subtarea !== undefined) fila('Subtarea', `#${t.subtarea}${t.titulo ? ' · ' + corto(t.titulo, 28) : ''}`)
+    // Lo que decidió el centro (para detectar falsos positivos): la clase, las skills que añadió y por qué.
+    if (t.clasificacion) {
+      fila('Clase', t.clasificacion.apagada ? `${t.clasificacion.clase} (skills apagadas)` : t.clasificacion.clase)
+      fila('Skills', t.clasificacion.anadidas?.length ? t.clasificacion.anadidas.join(', ') : 'ninguna')
+      if (t.clasificacion.motivos?.length) cuerpo.append(html('div', 'fo-salida', corto('Por qué: ' + t.clasificacion.motivos.join(', '), 90)))
+    }
     const ultima = t.lineas?.length ? t.lineas[t.lineas.length - 1] : ''
     if (ultima) cuerpo.append(html('div', 'fo-salida', corto(ultima, 60)))
     return { cuerpo, filas: cuerpo.childElementCount }
@@ -326,9 +342,9 @@ export function crearGrafo(montaje) {
     if (t.alarma === 'silencio') return { tipo: 'silencio', w: 250, h: 140 }
     if (abiertos.has(t.id)) {
       // Cada dato ocupa una fila; el modelo, la subtarea y la última línea de salida pueden dar una segunda línea.
-      const filas = 2 + (t.puntaje !== undefined ? 1 : 0) + (t.tokensIn !== undefined ? 1 : 0) + (t.subtarea !== undefined ? 1 : 0)
+      const filas = 2 + (t.puntaje !== undefined ? 1 : 0) + (t.tokensIn !== undefined ? 1 : 0) + (t.subtarea !== undefined ? 1 : 0) + (t.clasificacion ? 2 : 0)
       const subLargo = t.subtarea !== undefined && `#${t.subtarea}${t.titulo ? ' · ' + corto(t.titulo, 28) : ''}`.length > 21
-      return { tipo: 'detalles', w: 250, h: 50 + 25 * filas + ((t.modelo || '').length > 21 ? 18 : 0) + (subLargo ? 18 : 0) + (t.lineas?.length ? 40 : 0) }
+      return { tipo: 'detalles', w: 250, h: 50 + 25 * filas + ((t.modelo || '').length > 21 ? 18 : 0) + (subLargo ? 18 : 0) + (t.lineas?.length ? 40 : 0) + (t.clasificacion?.motivos?.length ? 40 : 0) }
     }
     return { tipo: 'cerrado', w: NODO.w, h: NODO.h }
   }

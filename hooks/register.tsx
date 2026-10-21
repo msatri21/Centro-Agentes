@@ -3,10 +3,12 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, tablero, VINO } from './figura'
-import { paginaCentro } from './vista'
+import { paginaCentro, paginaTodosGrafo } from './vista'
+import { textoAvisoPonytail } from './ponytailAviso'
 import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
 import { consultar, preferir, recomendar, registrar } from './cerebro'
 import type { Cerebro } from './cerebro'
+import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
@@ -44,6 +46,7 @@ type Opciones = {
   proxy?: string
   certificadoCA?: string
   esperaInicialSeg?: number
+  ponytailAutomatico?: boolean
   abrirAlIniciar?: boolean
   modoJefe?: boolean
 }
@@ -146,6 +149,8 @@ const SALUD_MS = 3 * 60_000
 const salud = new Map<Trabajador, { ok: boolean; en: number }>()
 let red: Record<string, string> = {}
 let esperaInicialMs = 90_000
+// Las skills de ponytail que el centro añade solo, según la clase de tarea (ajuste ponytailAutomatico).
+let skillsAuto = true
 
 async function hayRed($: EngineInterface, t: Trabajador): Promise<boolean> {
   const previa = salud.get(t)
@@ -622,6 +627,8 @@ async function lanzarServidor($: EngineInterface) {
     await $.process
       .run(['powershell', '-NoProfile', '-Command', `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*servidor.js*${PUERTO_WEB}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`], { timeoutMs: 15_000 })
       .catch(() => undefined)
+  // La vista común de todos los chats es una página fija que el servidor lee junto a la carpeta de chats.
+  await $.fs.write(`${dir}/todos.html`, paginaTodosGrafo(mia)).catch(() => undefined)
   const argv = ['node', `${$.plugin.root}/web/servidor.js`, String(PUERTO_WEB), `${dir}/clave.txt`, `${dir}/chats`, mia]
   void (async () => {
     try {
@@ -809,13 +816,13 @@ const todosLosCandidatos = (m: Modelos): Candidato[] =>
 async function intentar(
   $: EngineInterface,
   c: Candidato,
-  input: { categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[] },
+  input: { categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]; clasificacion?: Trabajo['clasificacion'] },
   timeoutMs: number,
 ): Promise<Intento> {
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
+  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, clasificacion: input.clasificacion, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
   await marcar($, input.subtarea, { estado: 'en curso', quien })
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
@@ -995,8 +1002,36 @@ async function instruccionSkills($: EngineInterface, skills: string[]): Promise<
   return `\n\nUsa estas skills: antes de empezar, lee el SKILL.md de cada una y sigue sus instrucciones.\n${lineas.join('\n')}`
 }
 
+// Con la skill ponytail, el encargo lleva también el mapa del código de su carpeta de trabajo: qué funciones y clases hay ya, para reutilizarlas
+// en vez de escribir otras. Lo genera un script de ponytail (local, sin red ni modelo) que vive en ~/.centro-agentes/ponytail; si no está, el encargo sale sin mapa.
+async function mapaDelCodigo($: EngineInterface, cwd: string): Promise<string> {
+  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  if (!casa) return ''
+  const guion = `${casa}/.centro-agentes/ponytail/ponytail-map.js`
+  if (!(await $.fs.exists(guion).catch(() => false))) return ''
+  const r = await $.process.run(['node', guion], { cwd, timeoutMs: 5000 }).catch(() => undefined)
+  const mapa = r && r.exitCode === 0 ? r.stdout.trim() : ''
+  return mapa ? '\n\n' + mapa : ''
+}
+
+// El aviso de que falta ponytail, una sola vez: lo que se descargaría y dónde. El plugin no descarga nada (lo hace mcp/instalar-ponytail.mjs si el usuario acepta).
+const AVISO_PONYTAIL_KEY = 'ponytailAvisado'
+async function avisoPonytail($: EngineInterface): Promise<string> {
+  if (!skillsAuto || (await $.store.get(AVISO_PONYTAIL_KEY).catch(() => undefined))) return ''
+  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  if (!casa) return ''
+  const faltan: string[] = []
+  for (const n of ['ponytail', 'ponytail-review', 'ponytail-audit']) if (!(await rutaSkill($, n))) faltan.push(n)
+  if (!(await $.fs.exists(`${casa}/.centro-agentes/ponytail/ponytail-map.js`).catch(() => false))) faltan.push('mapa')
+  if (!faltan.length) return ''
+  await $.store.set(AVISO_PONYTAIL_KEY, true)
+  return '\n\n' + textoAvisoPonytail(faltan, `${$.plugin.root}/mcp/instalar-ponytail.mjs`)
+}
+
 type Encargo = {
   trabajador?: Trabajador | 'auto'; modelo?: string; categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]
+  /** No añadir solas las skills de ponytail a este encargo (el centro las pone según la clase de tarea) */
+  sin_skills_automaticas?: boolean
   /** Trabajar en una copia aislada (git worktree) del repo de cwd, en su propia rama */
   aislar?: boolean
   /** Comando que comprueba el resultado (p. ej. npm test), ejecutado en la carpeta donde trabajó el agente */
@@ -1066,6 +1101,16 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   if (pedido && !modelos[pedido]) return { error: `Trabajador desconocido: ${pedido}` }
   // Una tarea con skills necesita un agente que lea archivos: Ollama solo es un modelo, sin herramientas.
   const conSkills = (input.skills ?? []).filter(Boolean)
+  // Skills automáticas: el centro decide por la clase de tarea (escribir código, auditar un cambio, auditar un repo o texto) y no depende de que
+  // Claude se acuerde. Solo las instaladas; y solo a los agentes que leen skills (Ollama y Aider quedan como están).
+  let clasificada = skillsAuto ? clasificarTarea({ categoria, tarea: input.tarea, archivos: input.archivos, aislar: input.aislar, verificar: input.verificar }) : undefined
+  // Una petición vaga que pide cambios en una carpeta con código también es código (el mapa del código no sale vacío).
+  if (clasificada && clasificada.clase === 'texto' && clasificada.pideCambios && input.cwd) clasificada = conCarpeta(clasificada, (await mapaDelCodigo($, input.cwd)) !== '')
+  const claseTarea = clasificada?.clase ?? 'texto'
+  // El interruptor del encargo apaga lo que se añade al agente, no el recordatorio de con qué auditar el resultado.
+  const clase = input.sin_skills_automaticas ? 'texto' : claseTarea
+  const automaticas: string[] = []
+  for (const n of skillsAutomaticas(clase)) if (!conSkills.includes(n) && (await rutaSkill($, n))) automaticas.push(n)
   let todos = todosLosCandidatos(modelos).filter(c => !conSkills.length || (c.trabajador !== 'ollama' && c.trabajador !== 'aider'))
   // Con copia aislada o verificación se esperan cambios en archivos, y Ollama solo devuelve texto.
   if (input.aislar || input.verificar?.trim()) todos = todos.filter(c => c.trabajador !== 'ollama')
@@ -1101,11 +1146,14 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   // Copia aislada: varios agentes pueden editar el mismo repo a la vez sin pisarse.
   const copia = input.aislar && input.cwd ? await crearCopia($, input.cwd, `s${input.subtarea ?? 'x'}-${Date.now().toString(36)}`) : undefined
   if (copia && 'carpeta' in copia) input = { ...input, cwd: copia.carpeta }
+  // La skill ponytail va con el mapa del código de la carpeta donde trabajará el agente.
+  if (conSkills.includes('ponytail') && input.cwd) input = { ...input, tarea: input.tarea + (await mapaDelCodigo($, input.cwd)) }
 
   // Si un modelo falla (sin sesión, sin cuota, caído), se pasa solo al siguiente de la cola.
   const cambios: string[] = []
   let r: Intento | undefined
   let elegido = cola[0]
+  let anadidas: string[] = []
   for (const c of cola) {
     if (cambios.length > MAX_CAMBIOS) break
     const k = clave(c.trabajador, c.modelo)
@@ -1114,7 +1162,12 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     elegido = c
     ocupados.set(k, (ocupados.get(k) ?? 0) + 1)
     try {
-      r = await intentar($, c, { ...input, categoria }, timeoutMs)
+      const leeSkills = c.trabajador !== 'ollama' && c.trabajador !== 'aider'
+      const extra = leeSkills && automaticas.length ? (await instruccionSkills($, automaticas)) + (input.cwd && automaticas.some(n => CON_MAPA.includes(n)) ? await mapaDelCodigo($, input.cwd) : '') : ''
+      // Lo que el centro decidió y por qué, para estudiar los falsos positivos: solo cuenta lo que este agente recibió de verdad.
+      anadidas = extra ? automaticas : []
+      const clasificacion = clasificada ? { clase: claseTarea, motivos: clasificada.motivos, anadidas, ...(input.sin_skills_automaticas ? { apagada: true } : {}) } : undefined
+      r = await intentar($, c, { ...input, categoria, clasificacion, ...(extra ? { tarea: input.tarea + extra, skills: [...conSkills, ...automaticas] } : {}) }, timeoutMs)
     } finally {
       ocupados.set(k, (ocupados.get(k) ?? 1) - 1)
     }
@@ -1146,6 +1199,7 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   const quienFue = clave(elegido.trabajador, elegido.modelo)
   const aislado = copia && 'carpeta' in copia ? await cerrarCopia($, copia, `mst: subtarea ${input.subtarea ?? '-'} (${quienFue})`) : copia
   const verificacion = r.ok && input.verificar?.trim() ? await verificarEn($, input.cwd, input.verificar.trim()) : undefined
+  const revisor = claseTarea === 'escritura' && r.ok ? await rutaSkill($, 'ponytail-review') : undefined
 
   return {
     id: r.id,
@@ -1161,6 +1215,9 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     aviso: verificacion
       ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
       : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
+    // Para detectar falsos positivos: la clase que decidió el centro, sus motivos y las skills que añadió solo.
+    ...(clasificada ? { clasificacion: { clase: claseTarea, motivos: clasificada.motivos, skills_anadidas: anadidas, ...(input.sin_skills_automaticas ? { apagada_por_encargo: true } : {}) } } : {}),
+    ...(revisor ? { auditar_con: 'ponytail-review', aviso_auditoria: `Es un cambio de código: audítalo con la skill ponytail-review (lee ${revisor}); revisa los archivos que cambió y quién los usa.` } : {}),
   }
 }
 
@@ -1215,6 +1272,7 @@ export const register: Register = (on, options) => {
   const tema = String(opt.ntfyTema ?? '').trim()
   temaNtfy = temaNtfyValido(tema) ? tema : ''
   esperaInicialMs = Math.min(600, Math.max(15, Number(opt.esperaInicialSeg ?? 90))) * 1000
+  skillsAuto = opt.ponytailAutomatico !== false
 
   on('session.start', async ($, e, next) => {
     // Cada chat tiene su centro: su id nombra su carpeta. Se recupera lo guardado y se sigue guardando cada 2 s.
@@ -1293,6 +1351,7 @@ export const register: Register = (on, options) => {
           verificar: { type: 'string', description: 'Comando que comprueba el resultado (p. ej. npm test); el centro lo ejecuta donde trabajó el agente y te da su salida' },
           archivos: { type: 'array', items: { type: 'string' }, description: 'Carpeta compartida (sin aislar): los archivos o carpetas que este agente puede tocar. Los que tocan cosas distintas trabajan a la vez en la misma rama; los que chocan esperan turno. Sin esto se reserva todo el repo y espera a los demás' },
           skills: { type: 'array', items: { type: 'string' }, description: 'Skills que el agente debe seguir (p. ej. design-md, vercel:nextjs). Usa buscar_skills para encontrarlas.' },
+          sin_skills_automaticas: { type: 'boolean', description: 'true para que el centro NO añada solo las skills de ponytail (ponytail al escribir código, ponytail-review al auditar un cambio, ponytail-audit al auditar un repo). Por defecto las añade si están instaladas.' },
         },
         required: ['categoria', 'tarea'],
       },
@@ -1320,6 +1379,7 @@ export const register: Register = (on, options) => {
                 verificar: { type: 'string', description: 'Comando que comprueba el resultado (p. ej. npm test); el centro lo ejecuta donde trabajó el agente y te da su salida' },
                 archivos: { type: 'array', items: { type: 'string' }, description: 'Carpeta compartida (sin aislar): los archivos o carpetas que este agente puede tocar. Los que tocan cosas distintas trabajan a la vez en la misma rama; los que chocan esperan turno. Sin esto se reserva todo el repo y espera a los demás' },
                 skills: { type: 'array', items: { type: 'string' }, description: 'Skills que el agente debe seguir (p. ej. design-md, vercel:nextjs). Usa buscar_skills para encontrarlas.' },
+                sin_skills_automaticas: { type: 'boolean', description: 'true para que el centro NO añada solo las skills de ponytail (ponytail al escribir código, ponytail-review al auditar un cambio, ponytail-audit al auditar un repo). Por defecto las añade si están instaladas.' },
               },
               required: ['tarea', 'categoria'],
             },
@@ -1413,12 +1473,13 @@ ${protocolo(modelos)}`
     // Se da tiempo a que el servidor local empiece a escuchar.
     $.clock.after(1500, () => void abrirNavegador($))
     const url = await urlWeb($)
-    if (!e.args.trim()) return { text: `${TITULO}: ${url}\nEscribe /mst <tarea> para ponerlo a trabajar.` }
+    const aviso = await avisoPonytail($)
+    if (!e.args.trim()) return { text: `${TITULO}: ${url}\nEscribe /mst <tarea> para ponerlo a trabajar.${aviso}` }
     await update($, plan, () => null)
     // Sin await: el envío espera a que la sesión quede libre, y eso solo pasa cuando este comando ha respondido.
     void $.prompt.submit({ text: `${protocolo(modelos, url)}\n\nTAREA:\n${e.args}` }).catch(() => undefined)
     // Lo primero que ve el usuario es el enlace; el jefe lo repite y le hace sus preguntas.
-    return { text: `${TITULO}: ${url}\nTarea enviada al jefe: antes de planificar te hará unas preguntas.` }
+    return { text: `${TITULO}: ${url}\nTarea enviada al jefe: antes de planificar te hará unas preguntas.${aviso}` }
   })
 
   on('command.run', { command: 'centro' }, async ($, e) => {

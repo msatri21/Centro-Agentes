@@ -9,13 +9,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { paginaCentro } from '../hooks/vista.ts'
+import { paginaCentro, paginaTodosGrafo } from '../hooks/vista.ts'
 
 const AQUI = path.dirname(fileURLToPath(import.meta.url))
 const CASA = path.join(os.homedir(), '.centro-agentes')
 const ID = 'demo-bucle'
 const PUERTO = 47399
 const DIR = path.join(CASA, 'chats', ID)
+// Un segundo chat fijo, para ver la vista común de todos los chats (/grafo-todos).
+const ID2 = 'demo-bucle-2'
+const DIR2 = path.join(CASA, 'chats', ID2)
 const ARCHIVO_CLAVE = path.join(CASA, 'clave.txt')
 // Sin clave la web responde 403: se crea una de usar y tirar solo si no existe ninguna.
 fs.mkdirSync(CASA, { recursive: true })
@@ -81,6 +84,10 @@ function estadoEn(t, respondidas) {
       // Un agente en silencio lleva más de un minuto sin escribir; los demás acaban de hablar.
       ultimaActividad: callado ? ahora - 75_000 : ahora - 1500,
       plan: OBJETIVO,
+      // Un trabajo sí y otro no es de código, para ver cómo se muestra lo que decidió el centro.
+      clasificacion: h.sub % 2
+        ? { clase: 'escritura', motivos: ['categoría de código', 'vocabulario de código'], anadidas: ['ponytail'] }
+        : { clase: 'texto', motivos: [], anadidas: [] },
     }
   })
   const subtareas = SUBS.map(s => {
@@ -123,21 +130,42 @@ function escribir(t) {
   })
   fs.mkdirSync(DIR, { recursive: true })
   fs.writeFileSync(path.join(DIR, 'centro.html'), html)
+  escribirSegundo(ahora)
   // El índice "todos los chats" lee esto para mostrar el progreso.
   fs.writeFileSync(path.join(DIR, 'estado.json'), JSON.stringify({ plan, planes, trabajos, encargos: [], nombre: 'demo-bucle' }))
 }
 
+// El segundo chat: un plan pequeño con dos agentes trabajando, siempre igual.
+function escribirSegundo(ahora) {
+  const sub = (n, titulo, estado) => ({ n, titulo, estado })
+  const plan = { objetivo: 'Migrar el blog a Astro', subtareas: [sub(1, 'Plantillas', 'en curso'), sub(2, 'Feed RSS', 'en curso'), sub(3, 'Despliegue', 'pendiente')] }
+  const trab = (id, quien, subtarea, extra = {}) => ({ id, trabajador: quien, categoria: 'demo', tarea: plan.subtareas[subtarea - 1].titulo, estado: 'corriendo', inicio: ahora - 25_000, subtarea, salida: 'trabajando…', ultimaActividad: ahora - 1500, plan: plan.objetivo, ...extra })
+  const trabajos = [
+    trab('x1', 'opencode:opencode/deepseek-v4.1-flash-free', 1, { clasificacion: { clase: 'escritura', motivos: ['categoría de código', 'nombra archivos de código'], anadidas: ['ponytail'] } }),
+    trab('x2', 'hermes:nous/poolside/laguna-s-2.1:free', 2, { clasificacion: { clase: 'texto', motivos: [], anadidas: [] } }),
+  ]
+  const html = paginaCentro({
+    clave, chat: 'demo-bucle-2 · otro chat', jefe: 'Claude', plan, planes: [], trabajos, agentes: AGENTES, modelos: MODELOS, pendientes: [],
+    rendimiento: [], ahorro: 0.4, cancelables: [], relanzables: [], version: 'demo', ahora,
+  })
+  fs.mkdirSync(DIR2, { recursive: true })
+  fs.writeFileSync(path.join(DIR2, 'centro.html'), html)
+}
+
+// La página de la vista común la escribe el plugin; aquí se escribe a mano, junto a la carpeta de chats.
+fs.writeFileSync(path.join(CASA, 'todos.html'), paginaTodosGrafo('demo'))
 // El servidor de esta carpeta, aparte del que ya tengas en el 47321. Si el puerto ya está ocupado, sale solo (servidor.js termina con 3).
 const servidor = spawn(process.execPath, [path.join(AQUI, '..', 'web', 'servidor.js'), String(PUERTO), ARCHIVO_CLAVE, path.join(CASA, 'chats'), 'demo'], { stdio: 'ignore' })
 const salir = () => {
   servidor.kill()
   fs.rmSync(DIR, { recursive: true, force: true })
+  fs.rmSync(DIR2, { recursive: true, force: true })
   process.exit(0)
 }
 process.on('SIGINT', salir)
 process.on('SIGTERM', salir)
 
 const inicio = Date.now()
-console.log(`demo-bucle en marcha (Ctrl+C para parar): http://127.0.0.1:${PUERTO}/?t=${clave}&s=${ID}`)
+console.log(`demo-bucle en marcha (Ctrl+C para parar):\n  un chat: http://127.0.0.1:${PUERTO}/?t=${clave}&s=${ID}\n  todos los chats en un grafo: http://127.0.0.1:${PUERTO}/grafo-todos?t=${clave}`)
 setInterval(() => escribir(((Date.now() - inicio) / 1000) % CICLO), PASO_MS)
 escribir(0)

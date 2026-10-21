@@ -24,6 +24,8 @@ export type Trabajo = {
   salida?: string
   /** Skills que siguió el agente en este trabajo */
   skills?: string[]
+  /** Cómo clasificó el centro la tarea y qué skills le añadió solo (para estudiar los falsos positivos) */
+  clasificacion?: { clase: string; motivos: string[]; anadidas: string[]; apagada?: boolean }
   /** Última vez que llegó texto del agente (ms epoch) */
   ultimaActividad?: number
   /** Objetivo del plan al que pertenece este trabajo (agrupa los nodos del grafo) */
