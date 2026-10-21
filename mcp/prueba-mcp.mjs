@@ -1,4 +1,4 @@
-// Prueba rápida del servidor MCP sin lanzar agentes: saludo, herramientas, plan con dependencias y que un agente no vea herramientas.
+// Prueba rápida del servidor MCP sin lanzar agentes: saludo, herramientas, plan con dependencias y que un agente solo vea preguntar y pedir_permiso.
 // Uso: node mcp/prueba-mcp.mjs
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -42,6 +42,6 @@ jefe.cerrar()
 
 const agente = cliente({ CENTRO_TRABAJADOR: '1' })
 await agente.pedir('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'agente', version: '1' } })
-assert.deepEqual((await agente.pedir('tools/list')).result.tools, [])
+assert.deepEqual((await agente.pedir('tools/list')).result.tools.map(t => t.name), ['preguntar', 'pedir_permiso'])
 agente.cerrar()
 console.log('ok: servidor MCP del centro')

@@ -1,6 +1,6 @@
 {
   "name": "centro-agentes",
-  "version": "0.8.1",
+  "version": "0.12.1",
   "description": "Centro de agentes MST: Claude como jefe reparte subtareas entre OpenCode, Ollama, Hermes, Aider y Claude headless, las verifica y lo muestra en vivo.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -13,8 +13,8 @@
     "opencodeModels": {
       "type": "string",
       "title": "Modelos de OpenCode",
-      "description": "proveedor/modelo separados por coma, en orden de preferencia. ollama/... usa tu Ollama (gratis, sin clave; proveedor en ~/.config/opencode/opencode.jsonc). Los opencode/...-free de OpenCode Zen necesitan una clave",
-      "default": "ollama/gpt-oss:120b-cloud,ollama/beam:cloud,ollama/gemma4:31b-cloud,ollama/nemotron-3-super:cloud,ollama/gpt-oss:20b-cloud"
+      "description": "proveedor/modelo separados por coma, en orden de preferencia. Por defecto, los modelos gratuitos propios de OpenCode (opencode/...-free), sin Ollama. Si quieres Ollama, añade ollama/<modelo> (necesita el proveedor ollama en ~/.config/opencode/opencode.jsonc)",
+      "default": "opencode/deepseek-v4.1-flash-free,opencode/glm-5.3-flash-free,opencode/minimax-m3.1-flash-free,opencode/nemotron-3-ultra-free,opencode/big-pickle"
     },
     "hermesModels": {
       "type": "string",

@@ -21,7 +21,7 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 | Agente | Instalación | Notas |
 |---|---|---|
 | Ollama | [ollama.com](https://ollama.com) y `ollama signin` | Los modelos `:cloud` del plan Free son gratis |
-| OpenCode | `npm i -g opencode-ai` y el proveedor `ollama` en `~/.config/opencode/opencode.jsonc` (ver abajo) | Usa tu Ollama, sin clave |
+| OpenCode | `npm i -g opencode-ai` | Usa sus propios modelos gratuitos (`opencode/...-free`), sin clave y sin Ollama. Ollama es opcional (ver el final) |
 | Hermes Agent | en `~/.hermes` (proveedor `ollama-local` en su `config.yaml`) | Usa tu Ollama, sin clave |
 | Aider | `uv tool install aider-chat` en `~/.aider` | Usa tu Ollama, sin clave |
 | Codex | `npm i -g @openai/codex` y `codex login` con tu cuenta de ChatGPT | Cupo gratis limitado de tu cuenta; si no hay sesión o se acaba, usa tu Ollama |
@@ -48,11 +48,38 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 
 En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, proxy y certificado de empresa, presupuesto de tokens de Claude por chat, y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.
 
+## Preguntas y permisos de los agentes
+
+Los agentes trabajan en modo autónomo (`--yolo`), pero pueden pararse a preguntarte algo o a pedirte permiso sin gastar tokens de Claude:
+
+- Cada agente trae dos herramientas MCP, `preguntar` y `pedir_permiso` (las sirve `mcp/centro-mcp.mjs`, la entrada `centro-agentes` de la config de OpenCode de la sección de abajo). El centro le pasa su identidad por entorno (`CENTRO_CHAT_DIR`, `CENTRO_TRABAJO`) y le añade a su encargo cuándo usarlas.
+- La consulta se escribe en `consultas.jsonl` del chat y aparece en la web en **Esperan tu respuesta**, con la card del agente marcada como PREGUNTA o PERMISO. Contestas con los botones (o escribiendo) y la respuesta llega al agente por `respuestas.jsonl`. En pantallas grandes se contesta dentro del propio nodo agrandado del grafo; en el móvil, donde el grafo se esconde, queda el panel **Esperan tu respuesta**.
+- **Permitir siempre en esta petición** aprueba esa categoría de permiso (`comando`, `instalar`, `red`, `escribir-fuera`, `otro`) para el resto del chat. Lo `destructivo` siempre se pregunta.
+- Mientras una consulta espera, el centro no corta al agente por tardar ni por callar. Si pasan 15 min sin respuesta, un permiso se da por denegado y el agente sigue por lo más seguro.
+- **OpenCode:** usa la entrada `centro-agentes` de su config (la de la sección de abajo).
+- **Codex:** no hace falta configurar nada: el centro le pasa su servidor MCP en cada ejecución (`-c mcp_servers.centro...`), con la identidad reenviada y el tiempo de espera de herramientas ampliado a 20 min (por defecto son 60 s).
+- **Hermes:** añade a su `config.yaml` (la que muestra `hermes config path`) esta entrada. Hermes no hereda el entorno, por eso cada variable va declarada, y `timeout` sube de 120 s a 20 min. Fuera del centro las herramientas existen pero avisan de que no están dentro del centro.
+  ```yaml
+  mcp_servers:
+    centro-agente:
+      command: node
+      args: ["<ruta>/centro-agentes/mcp/centro-mcp.mjs"]
+      timeout: 1200
+      env:
+        CENTRO_TRABAJADOR: "1"
+        CENTRO_CHAT_DIR: "${CENTRO_CHAT_DIR}"
+        CENTRO_TRABAJO: "${CENTRO_TRABAJO}"
+        CENTRO_ESPERA_MS: "${CENTRO_ESPERA_MS}"
+  ```
+- Aider no usa MCP: solo cuenta la alarma de silencio.
+- Pruébalo sin gastar nada: `node mcp/prueba-consultas.mjs` (de punta a punta) o `node mcp/demo-bucle.mjs` (la web con consultas que se pueden contestar). Con agentes de verdad (OpenCode con modelos gratuitos): `node mcp/prueba-en-vivo.mjs` lanza tandas de cinco agentes que preguntan y piden permiso, y tú contestas en la web; se para con Ctrl+C y borra lo que creó.
+
 ## Web
 
 `http://127.0.0.1:47321` (solo local, con clave). Un centro por chat, más la página **todos los chats**. Es la misma página con Claude o con OpenCode de jefe:
 
-- **El grafo grande**, en vivo con los datos reales: tú, el jefe, los 6 agentes con la salida real de su terminal, verificar, auditoría, juntar e informe. Las partículas son lo que pasa de verdad (un encargo que sale, un resultado, una nota, un modelo que falla y pasa a otro). Se actualiza cada 2 s sin recargar, así las animaciones no se cortan. Pasa el ratón por un nodo para ver su detalle.
+- **El grafo grande**, en vivo con los datos reales: **Claude, el jefe, en el centro** y, alrededor, **un cuadrado punteado por plan** con los subagentes que trabajan en él. Sobre el borde de cada cuadrado va la línea de tiempo del plan (Planeación, Reparto, En proceso, Verificación, Auditoría, Juntar, Informe) y debajo del título se lee la fase, con el progreso de las subtareas en "En proceso". Cada subagente es un nodo pequeño con el nombre del agente y un punto de estado (trabajando, terminó en verde, falló en rojo); al hacer clic se agranda con el modelo, el tiempo, la nota y la última línea. Los nodos y los grupos se acomodan solos; el lienzo se mueve con el ratón y hace zoom con la rueda (**Ajustar** vuelve al encuadre). Los planes anteriores quedan atenuados y se reactivan si Claude vuelve a planificar con el mismo objetivo. Las partículas son lo que pasa de verdad (un encargo que sale, un resultado, una nota). Se actualiza cada 2 s sin recargar, así las animaciones no se cortan.
+- **Alarmas en los nodos:** el nodo se agranda solo, el borde pulsa y aparece una insignia: `SILENCIO` (el agente lleva más de 60 s sin escribir), `PREGUNTA` o `PERMISO` (el agente espera tu respuesta o una autorización). El contador de arriba suma los agentes activos y las alarmas. Los agentes corren en modo autónomo (`--yolo`): solo preguntan cuando de verdad lo necesitan.
 - **Gráficas del estilo anatomy** debajo: tokens por agente, rendimiento por modelo, línea de tiempo de los trabajos, notas del jefe y ahorro acumulado. Con Claude de jefe, además, la figura isométrica y la tarjeta de detalles.
 - Subtareas, historial, botones de **Cancelar** y **Relanzar** (también con OpenCode de jefe: el servidor MCP lee las órdenes de la web y se las cuenta al jefe en su siguiente llamada, en `avisos_web`), y el aviso al terminar.
 - En pantallas estrechas (móvil) el grafo se esconde y sale una fila por agente con su estado, modelo y última línea.
@@ -85,20 +112,20 @@ El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mi
        "type": "local",
        "command": ["node", "<ruta>/centro-agentes/mcp/centro-mcp.mjs"],
        "enabled": true,
-       "timeout": 900000
+       "timeout": 1200000
      }
    }
    ```
 
-   `timeout` es en milisegundos y cubre también la ejecución: repartir y esperar a los agentes tarda minutos.
-2. Copia `opencode/agents/jefe.md` y `opencode/commands/mst.md` de este repo a `~/.config/opencode/agents/` y `~/.config/opencode/commands/`: el agente `jefe` (modo `primary`, modelo `ollama/gpt-oss:120b-cloud`) lleva el protocolo, y `/mst` le pasa la tarea. Pon también `"model": "ollama/gpt-oss:120b-cloud"` en la config para no depender de OpenCode Zen.
+   `timeout` es en milisegundos y cubre también la ejecución: repartir y esperar a los agentes tarda minutos, y una consulta de un agente puede esperar hasta 15 min al usuario (por eso son 20 min).
+2. Copia `opencode/agents/jefe.md` y `opencode/commands/mst.md` de este repo a `~/.config/opencode/agents/` y `~/.config/opencode/commands/`: el agente `jefe` (modo `primary`, modelo `opencode/deepseek-v4.1-flash-free`, uno de los gratuitos de OpenCode) lleva el protocolo, y `/mst` le pasa la tarea.
 3. Opcional, en `~/.centro-agentes/opencode-jefe.json`: `{ "ntfyTema": "...", "conClaude": false, "timeoutMin": 8 }`.
 
 Uso: `opencode` en la carpeta del proyecto, cambia al agente **jefe** (tecla Tab) y escribe `/mst <tarea>`. La web es la misma (`http://127.0.0.1:47321`) y el chat aparece en **todos los chats** como `OpenCode jefe`. Con OpenCode como jefe, Claude headless no se usa salvo que pongas `"conClaude": true`, y las skills se ignoran.
 
-## OpenCode con Ollama (gratis, sin clave)
+## OpenCode con Ollama (opcional)
 
-En `~/.config/opencode/opencode.jsonc`:
+Por defecto OpenCode usa sus propios modelos gratuitos y no necesita nada de esto. Si además quieres los modelos de Ollama, añade `ollama/<modelo>` a los modelos de OpenCode en los ajustes del plugin y, en `~/.config/opencode/opencode.jsonc`:
 
 ```jsonc
 {

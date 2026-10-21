@@ -272,7 +272,7 @@ test('delegar_varios lanza las tareas a la vez y reparte modelos distintos', asy
   const quienes = r.resultados.map((x: any) => x.trabajador)
   expect(r.resultados.every((x: any) => x.exito)).toBe(true)
   expect(new Set(quienes).size).toBe(2)
-  expect(quienes[0]).toBe('opencode:ollama/gpt-oss:120b-cloud')
+  expect(quienes[0]).toBe('opencode:opencode/deepseek-v4.1-flash-free')
 })
 
 test('la terminal de un agente muestra su texto legible y sus últimas líneas', async () => {
@@ -406,6 +406,27 @@ test('aider: lee la respuesta sin ruido y sus tokens, y el centro lo lanza sin g
   expect(d.trabajador).toBe('aider:ollama_chat/gpt-oss:120b-cloud')
   expect(argvs[0]).toContain('--no-git')
   expect(argvs[0].slice(1, 5)).toEqual(['--model', 'ollama_chat/gpt-oss:120b-cloud', '--message', 'crea hola.txt\n\nResponde siempre en español.'])
+})
+
+test('opencode: la tarea va por stdin completa, con sus saltos de línea, y no en la línea de comandos', async ($, on) => {
+  base(on)
+  const vistos: { argv: string[]; input?: string; env?: Record<string, string> }[] = []
+  on('process.spawn', async function* (_$: any, e: any) {
+    vistos.push({ argv: e.argv, input: e.input, env: e.env })
+    yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
+    return { value: { code: 0, signal: null } }
+  })
+  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'opencode', categoria: 'codigo', tarea: 'línea uno\nlínea dos' } }))
+  expect(d.exito).toBe(true)
+  expect(vistos[0].argv[0]).toBe('opencode')
+  expect(vistos[0].argv.some(a => a.includes('línea'))).toBe(false)
+  expect(vistos[0].input).toContain('línea uno\nlínea dos')
+  // Y el agente sabe quién es (para sus herramientas preguntar y pedir_permiso) y cuándo usarlas.
+  expect(vistos[0].input).toContain('pedir_permiso')
+  expect(vistos[0].env?.CENTRO_TRABAJADOR).toBe('1')
+  expect(vistos[0].env?.CENTRO_TRABAJO).toBe(d.id)
+  expect(vistos[0].env?.CENTRO_CHAT_DIR).toContain('/chats/')
+  expect(vistos[0].env?.CENTRO_ESPERA_MS).toBe('900000')
 })
 
 test('rendimiento por modelo, informe en Markdown, tema de ntfy y estado de agentes', async () => {
@@ -561,7 +582,14 @@ test('codex: lee su respuesta y tokens, y se lanza con su cuenta o con Ollama, c
   const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'codex', categoria: 'codigo', tarea: 'crea hola.py' } }))
   expect(d.exito).toBe(true)
   expect(d.trabajador).toBe('codex:chatgpt')
-  expect(vistos[0].argv).toEqual(['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check'])
+  expect(vistos[0].argv.slice(0, 6)).toEqual(['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check'])
+  // Codex recibe su propio servidor MCP por la línea de comandos, con la identidad reenviada y un tiempo de espera largo.
+  const lineaCodex = vistos[0].argv.join(' ')
+  expect(lineaCodex).toContain('mcp_servers.centro.command="node"')
+  expect(lineaCodex).toContain('centro-mcp.mjs')
+  expect(lineaCodex).toContain('env_vars=["CENTRO_TRABAJADOR","CENTRO_CHAT_DIR","CENTRO_TRABAJO","CENTRO_ESPERA_MS"]')
+  expect(lineaCodex).toContain('tool_timeout_sec=1200')
+  expect(vistos[0].input).toContain('pedir_permiso')
   expect(vistos[0].input).toContain('crea hola.py')
   const o = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'codex', modelo: 'ollama/gpt-oss:120b-cloud', categoria: 'codigo', tarea: 'x' } }))
   expect(o.trabajador).toBe('codex:ollama/gpt-oss:120b-cloud')
@@ -641,7 +669,7 @@ test('cerrojos: los archivos de otro agente cuentan como suyos aunque ya haya te
   expect(c.deOtros('/otra', b.id, b.desde)).toEqual([])
 })
 
-import { estadoAgente, eventosEntre, faseDe } from '../web/grafo-logica.js'
+import { estadoAgente, eventosEntre, faseDe, resumenDe, tarjetasDe, gruposDe, faseDeGrupo, rejilla, colocarGrupos, FASES_PLAN } from '../web/grafo-logica.js'
 import { graficaAhorro, graficaNotas, graficaTiempo, graficaTokens } from './graficas'
 import { paginaCentro } from './vista'
 
@@ -698,4 +726,448 @@ test('las gráficas nuevas dibujan con datos y se quedan en blanco con mensaje s
   expect(html).toContain('Cancelar x')
   expect(html).not.toContain('</script><b>x')
   expect(html.match(/<\/script>/g)?.length).toBe(2)
+})
+
+test('las cards: una por trabajo, en orden cronológico, y el modelo con : y / separado bien del agente', () => {
+  const d: any = {
+    ahora: 30_000,
+    plan: { subtareas: [{ n: 1, titulo: 'primera', estado: 'en curso' }, { n: 2, titulo: 'segunda', estado: 'pendiente' }] },
+    trabajos: [
+      trab('b', 'opencode:qwen3:8b/instruct', 2, 'corriendo', { inicio: 5000 }),
+      trab('a', 'ollama:llama3', 1, 'corriendo', { inicio: 1000 }),
+    ],
+  }
+  const tarjetas = tarjetasDe(d)
+  expect(tarjetas.map(t => t.id)).toEqual(['a', 'b'])
+  expect(tarjetas[0]).toMatchObject({ id: 'a', agente: 'ollama', modelo: 'llama3', subtarea: 1, titulo: 'primera', estado: 'corriendo', alarma: '', segundos: 29, skills: false })
+  expect(tarjetas[1]).toMatchObject({ id: 'b', agente: 'opencode', modelo: 'qwen3:8b/instruct', subtarea: 2, titulo: 'segunda', segundos: 25 })
+  const fin: any = { ahora: 30_000, plan: { subtareas: [] }, trabajos: [trab('c', 'hermes:m', 9, 'listo', { inicio: 1000, ms: 6500, salida: 'uno\n\ndos   \ntres\ncuatro', skills: ['x'], tokensIn: 10, tokensOut: 5, puntaje: 8 })] }
+  const c = tarjetasDe(fin)[0]
+  expect(c.segundos).toBe(7)
+  expect(c.lineas).toEqual(['dos', 'tres', 'cuatro'])
+  expect(c.skills).toBe(true)
+  expect(c.tokensIn).toBe(10)
+  expect(c.tokensOut).toBe(5)
+  expect(c.puntaje).toBe(8)
+  expect(c.titulo).toBe('')
+})
+
+test('las cards: de los trabajos terminados solo salen los 20 más recientes, y los que están corriendo siempre entran', () => {
+  const terminados = Array.from({ length: 30 }, (_, i) => trab(`t${i}`, 'ollama:m', 1, 'listo', { inicio: i * 1000, ms: 500 }))
+  const d: any = { ahora: 60_000_000, trabajos: [...terminados, trab('viva', 'hermes:m', 2, 'corriendo', { inicio: 50_000_000 })] }
+  const tarjetas = tarjetasDe(d)
+  expect(tarjetas.length).toBe(21)
+  expect(tarjetas.filter(t => t.estado === 'corriendo').map(t => t.id)).toEqual(['viva'])
+  const ids = tarjetas.filter(t => t.estado === 'listo').map(t => t.id)
+  expect(ids.length).toBe(20)
+  expect(ids).toContain('t10')
+  expect(ids).toContain('t29')
+  expect(ids).not.toContain('t9')
+  expect(tarjetas.map(t => t.id)).toEqual([...ids, 'viva'])
+})
+
+test('las cards: alarma de silencio pasado el umbral y sin alarma si el trabajo acaba de hablar', () => {
+  const callado: any = { ahora: 120_000, esperaSilencioMs: 60_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000, ultimaActividad: 1000 })] }
+  expect(tarjetasDe(callado)[0].alarma).toBe('silencio')
+  // Y cuenta cuánto lleva callado (no cuánto lleva trabajando): 119 s desde su última actividad, y 0 si ya terminó.
+  expect(tarjetasDe(callado)[0].callado).toBe(119)
+  expect(tarjetasDe({ ahora: 120_000, trabajos: [trab('a', 'opencode:m', 1, 'listo', { inicio: 1000, ms: 900 })] } as any)[0].callado).toBe(0)
+  const fresco: any = { ahora: 120_000, esperaSilencioMs: 60_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000, ultimaActividad: 100_000 })] }
+  expect(tarjetasDe(fresco)[0].alarma).toBe('')
+  const porDefecto: any = { ahora: 120_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000 })] }
+  expect(tarjetasDe(porDefecto)[0].alarma).toBe('silencio')
+  const terminado: any = { ahora: 120_000, esperaSilencioMs: 60_000, trabajos: [trab('a', 'opencode:m', 1, 'listo', { inicio: 1000, ms: 900 })] }
+  expect(tarjetasDe(terminado)[0].alarma).toBe('')
+})
+
+test('las cards: la pregunta o el permiso pendientes ponen su alarma, y mandan sobre el silencio', () => {
+  const d: any = {
+    ahora: 100_000,
+    pendientes: [{ id: 'a', tipo: 'pregunta', texto: '¿sigo?' }, { id: 'b', tipo: 'permiso', texto: '¿puedo tocar esto?' }],
+    trabajos: [
+      trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000, ultimaActividad: 1000 }),
+      trab('b', 'ollama:m', 2, 'corriendo', { inicio: 1000, ultimaActividad: 1000 }),
+      trab('c', 'hermes:m', 3, 'listo', { inicio: 1000, ms: 900 }),
+    ],
+  }
+  const tarjetas = tarjetasDe(d)
+  expect(tarjetas.find(t => t.id === 'a')?.alarma).toBe('pregunta')
+  expect(tarjetas.find(t => t.id === 'b')?.alarma).toBe('permiso')
+  expect(tarjetas.find(t => t.id === 'c')?.alarma).toBe('')
+})
+
+test('las cards: el resumen cuenta activos, alarmas, el reparto por agente y los ids con alarma', () => {
+  const tarjetas: any = [
+    { id: 'a', agente: 'opencode', estado: 'corriendo', alarma: 'pregunta' },
+    { id: 'b', agente: 'opencode', estado: 'corriendo', alarma: '' },
+    { id: 'c', agente: 'ollama', estado: 'corriendo', alarma: 'silencio' },
+    { id: 'd', agente: 'hermes', estado: 'listo', alarma: '' },
+  ]
+  const r = resumenDe(tarjetas)
+  expect(r.activos).toBe(3)
+  expect(r.alarmas).toBe(2)
+  expect(r.porAgente).toEqual({ opencode: 2, ollama: 1 })
+  expect(r.conAlarma).toEqual(['a', 'c'])
+  expect(resumenDe([])).toEqual({ activos: 0, alarmas: 0, porAgente: {}, conAlarma: [] })
+})
+
+import { CATEGORIAS, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE, abiertas, leerLineas, permitidaSiempre, respuestaDe, resultadoParaAgente, type Consulta } from './consultas'
+
+test('consultas: leerLineas se queda solo con las líneas que son un objeto JSON', () => {
+  const jsonl = [JSON.stringify({ id: 'a' }), '', '   ', 'esto no es json', '[1, 2]', '"texto"', JSON.stringify({ id: 'b' })].join('\n')
+  expect(leerLineas<{ id: string }>(jsonl).map(o => o.id)).toEqual(['a', 'b'])
+  expect(leerLineas(jsonl).length).toBe(2)
+  expect(leerLineas('').length).toBe(0)
+})
+
+test('consultas: abiertas solo devuelve lo que no tiene respuesta, ordenado, y quita el permiso ya concedido', () => {
+  const consultas = [
+    { id: 'p1', trabajo: 't1', tipo: 'permiso', texto: '¿borro todo?', categoria: 'destructivo', en: 1000 },
+    { id: 'p2', trabajo: 't2', tipo: 'permiso', texto: '¿instalo el paquete?', categoria: 'instalar', en: 2000 },
+    { id: 'q1', trabajo: 't3', tipo: 'pregunta', texto: '¿sigo?', en: 3000 },
+    { id: 'q2', trabajo: 't4', tipo: 'pregunta', texto: '¿qué uso?', categoria: 'instalar', en: 4000 },
+    { id: 'p3', trabajo: 't5', tipo: 'permiso', texto: '¿copio el archivo?', categoria: 'instalar', en: 5000 },
+    { id: 'p1', trabajo: 't6', tipo: 'pregunta', texto: 'repetida', en: 6000 },
+  ].map(o => JSON.stringify(o)).join('\n')
+  const respuestas = [
+    JSON.stringify({ id: 'q1', decision: 'texto', texto: 'sí', en: 3100 }),
+    JSON.stringify({ id: 'p3', decision: 'aprobar', en: 5100 }),
+  ].join('\n')
+
+  // q1 y p3 ya tienen respuesta; p2 está permitido; p1 (destructivo) y q2 (pregunta) se quedan.
+  const pend = abiertas(consultas, respuestas, '["instalar"]')
+  expect(pend.map(c => c.id)).toEqual(['p1', 'q2'])
+  expect(pend[0].texto).toBe('¿borro todo?')
+  expect(pend.map(c => c.en)).toEqual([1000, 4000])
+  // Sin el archivo de permisos, el permiso de instalar vuelve a preguntar.
+  expect(abiertas(consultas, respuestas).map(c => c.id)).toEqual(['p1', 'p2', 'q2'])
+  // Lo destructivo no se concede nunca, aunque el usuario lo haya puesto.
+  expect(abiertas(consultas, respuestas, '["instalar","destructivo"]').map(c => c.id)).toEqual(['p1', 'q2'])
+})
+
+test('consultas: gana la primera respuesta y los permisos solo valen con un array JSON', () => {
+  const respuestas = [
+    JSON.stringify({ id: 'x', decision: 'texto', texto: 'primera', en: 1 }),
+    JSON.stringify({ id: 'x', decision: 'aprobar', en: 2 }),
+  ].join('\n')
+  expect(respuestaDe(respuestas, 'x')?.texto).toBe('primera')
+  expect(respuestaDe(respuestas, 'y')).toBe(undefined)
+  expect(permitidaSiempre('["instalar","red"]', 'instalar')).toBe(true)
+  expect(permitidaSiempre('["instalar"]', 'red')).toBe(false)
+  expect(permitidaSiempre('{roto', 'instalar')).toBe(false)
+  expect(permitidaSiempre('', 'instalar')).toBe(false)
+  expect(permitidaSiempre('[]', 'instalar')).toBe(false)
+  expect(permitidaSiempre('{"a":1}', 'instalar')).toBe(false)
+  expect(permitidaSiempre('["instalar"]', undefined)).toBe(false)
+  expect(permitidaSiempre('["destructivo"]', 'destructivo')).toBe(false)
+})
+
+test('consultas: lo que se le devuelve al agente según lo que respondió el usuario', () => {
+  const permiso: Consulta = { id: 'p', trabajo: 't', tipo: 'permiso', texto: '¿borro?', categoria: 'destructivo', en: 1 }
+  const pregunta: Consulta = { id: 'q', trabajo: 't', tipo: 'pregunta', texto: '¿sigo?', en: 1 }
+  expect(resultadoParaAgente(permiso, { id: 'p', decision: 'aprobar', en: 2 }, false)).toBe('APROBADO por el usuario. Puedes continuar.')
+  expect(resultadoParaAgente(permiso, { id: 'p', decision: 'siempre', en: 2 }, false)).toBe('APROBADO por el usuario. Puedes continuar.')
+  expect(resultadoParaAgente(permiso, { id: 'p', decision: 'denegar', en: 2 }, false)).toBe('DENEGADO por el usuario. No lo hagas: busca otra forma o termina explicando qué quedó sin hacer.')
+  expect(resultadoParaAgente(permiso, { id: 'p', decision: 'denegar', texto: 'es importante', en: 2 }, false)).toBe('DENEGADO por el usuario. No lo hagas: busca otra forma o termina explicando qué quedó sin hacer.\nMotivo del usuario: es importante')
+  expect(resultadoParaAgente(pregunta, { id: 'q', decision: 'texto', texto: 'usa la otra ruta', en: 2 }, false)).toBe('RESPUESTA DEL USUARIO: usa la otra ruta')
+  expect(resultadoParaAgente(pregunta, { id: 'q', decision: 'aprobar', en: 2 }, false)).toBe('RESPUESTA DEL USUARIO: sí.')
+  expect(resultadoParaAgente(pregunta, { id: 'q', decision: 'denegar', en: 2 }, false)).toBe('RESPUESTA DEL USUARIO: no.')
+  expect(resultadoParaAgente(permiso, undefined, true)).toBe('SIN RESPUESTA a tiempo: se da por DENEGADO. No lo hagas: sigue por lo más seguro o termina explicando qué quedó sin hacer.')
+  expect(resultadoParaAgente(pregunta, undefined, true)).toBe('SIN RESPUESTA a tiempo. Sigue por lo más seguro, anota tu suposición en tu resultado final y continúa.')
+  expect(resultadoParaAgente(pregunta, undefined, false)).toBe('Esperando respuesta del usuario.')
+})
+
+test('consultas: el protocolo del agente explica las herramientas y las categorías', () => {
+  expect(PROTOCOLO_AGENTE).toContain('preguntar')
+  expect(PROTOCOLO_AGENTE).toContain('pedir_permiso')
+  for (const c of CATEGORIAS) expect(PROTOCOLO_AGENTE).toContain(c)
+  expect(CATEGORIAS).toEqual(['comando', 'instalar', 'red', 'escribir-fuera', 'destructivo', 'otro'])
+  expect(ESPERA_RESPUESTA_MS).toBe(900_000)
+  expect(PROTOCOLO_AGENTE.includes('\n')).toBe(false)
+})
+
+// ===== NUEVO: tests para grafo-logica.js (gruposDe, faseDeGrupo, rejilla, colocarGrupos) =====
+
+const trabN = (id: string, quien: string, sub: number, estado: string, extra: object = {}) => ({
+  id,
+  trabajador: quien,
+  categoria: 'c',
+  tarea: 'x',
+  estado,
+  inicio: 1000,
+  subtarea: sub,
+  ...extra,
+}) as any
+
+test('gruposDe: un grupo por plan; los trabajos con plan van a su grupo y los que no lo traen al actual; plan anterior con mismo objetivo no se duplica; anteriores sin trabajos corriendo atenuados, actual siempre activo; orden: actual, activos, atenuados por ultima; tarjetas con alarma', () => {
+  const ahora = 100_000
+  const d = {
+    ahora,
+    plan: { objetivo: 'Objetivo A', subtareas: [{ n: 1, titulo: 't1', estado: 'en curso' }, { n: 2, titulo: 't2', estado: 'pendiente' }] },
+    planes: [
+      { objetivo: 'Objetivo B', subtareas: [{ n: 1, titulo: 't1', estado: 'hecha' }] },
+      { objetivo: 'Objetivo A', subtareas: [{ n: 1, titulo: 't1', estado: 'pendiente' }] }, // mismo objetivo que actual -> no duplica
+    ],
+    trabajos: [
+      trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 90_000, ultimaActividad: 10_000, plan: 'Objetivo A' }), // callado hace 90 s
+      trabN('t2', 'ollama:m', 2, 'listo', { inicio: 80_000, ms: 5000, plan: 'Objetivo A', puntaje: 8 }),
+      trabN('t3', 'hermes:m', 1, 'listo', { inicio: 70_000, ms: 3000, plan: 'Objetivo B' }),
+      trabN('t4', 'aider:m', 3, 'corriendo', { inicio: 60_000, plan: 'Objetivo C' }), // plan nuevo solo en trabajo
+      trabN('t5', 'claude:m', 1, 'listo', { inicio: 50_000, ms: 2000 }), // sin plan -> va al actual
+    ],
+    esperaSilencioMs: 60_000,
+    pendientes: [],
+  }
+
+  const grupos = gruposDe(d)
+
+  // 3 grupos: Objetivo A (actual), Objetivo B (anterior con trabajo), Objetivo C (solo en trabajo)
+  expect(grupos.length).toBe(3)
+
+  // Grupo 0: actual
+  const gA = grupos[0]
+  expect(gA.id).toBe('Objetivo A')
+  expect(gA.actual).toBe(true)
+  expect(gA.activo).toBe(true)
+  expect(gA.subtareas.length).toBe(2)
+  expect(gA.trabajos.length).toBe(3) // t1, t2, t5
+  expect(gA.tarjetas.length).toBe(3)
+  expect(gA.hechas).toBe(0)
+  expect(gA.total).toBe(2)
+  expect(gA.corriendo).toBe(1)
+  expect(gA.fase.nombre).toBe('En proceso') // hay corriendo > 6s
+
+  // Grupo 1: Objetivo B (tiene trabajo listo, no corriendo -> atenuado)
+  const gB = grupos.find(g => g.id === 'Objetivo B')!
+  expect(gB.id).toBe('Objetivo B')
+  expect(gB.actual).toBe(false)
+  expect(gB.activo).toBe(false)
+  expect(gB.trabajos.length).toBe(1)
+  expect(gB.hechas).toBe(1)
+  expect(gB.total).toBe(1)
+
+  // Grupo 2: Objetivo C (tiene trabajo corriendo -> activo)
+  const gC = grupos.find(g => g.id === 'Objetivo C')!
+  expect(gC.id).toBe('Objetivo C')
+  expect(gC.actual).toBe(false)
+  expect(gC.activo).toBe(true)
+  expect(gC.trabajos.length).toBe(1)
+  expect(gC.subtareas.length).toBe(0) // no se conocen subtareas
+
+  // Orden: actual (A), luego activos (C), luego atenuados (B) por ultima desc
+  expect(grupos.map(g => g.id)).toEqual(['Objetivo A', 'Objetivo C', 'Objetivo B'])
+
+  // Cada grupo trae tarjetas con alarma
+  expect(gA.tarjetas.some(c => c.alarma)).toBe(true) // t1 corriendo con silencio
+  expect(gB.tarjetas.every(c => !c.alarma)).toBe(true) // terminados sin alarma
+})
+
+test('gruposDe: sin plan actual, trabajos sin plan van a grupo (sin plan)', () => {
+  const ahora = 100_000
+  const d = {
+    ahora,
+    plan: null,
+    planes: [],
+    trabajos: [
+      trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 90_000 }),
+      trabN('t2', 'ollama:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 7 }),
+    ],
+    esperaSilencioMs: 60_000,
+    pendientes: [],
+  }
+
+  const grupos = gruposDe(d)
+  expect(grupos.length).toBe(1)
+  expect(grupos[0].id).toBe('(sin plan)')
+  expect(grupos[0].actual).toBe(false)
+  expect(grupos[0].activo).toBe(true) // tiene trabajo corriendo
+  expect(grupos[0].trabajos.length).toBe(2)
+})
+
+test('faseDeGrupo: los 7 casos y progreso hechas/total', () => {
+  const ahora = 100_000
+  const baseGrupo = (subtareas, trabajos) => ({
+    subtareas,
+    trabajos,
+    hechas: subtareas.filter(s => s.estado === 'hecha').length,
+    total: subtareas.length,
+  })
+
+  // 1. Planeación: sin trabajos
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'pendiente' }], []), ahora)).toEqual({ indice: 0, nombre: 'Planeación' })
+
+  // 2. Reparto: un trabajo corriendo recién lanzado (< 6s, ninguno terminado)
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 99_000 })]), ahora)).toEqual({ indice: 1, nombre: 'Reparto' })
+
+  // 3. En proceso: trabajo corriendo desde hace 20s
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 80_000 })]), ahora)).toEqual({ indice: 2, nombre: 'En proceso' })
+
+  // 4. Verificación: todos listos sin nota
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000 })]), ahora)).toEqual({ indice: 3, nombre: 'Verificación' })
+
+  // 5. Auditoría: mezcla listos con y sin nota
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }, { n: 2, estado: 'en curso' }], [
+    trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
+    trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000 }),
+  ]), ahora)).toEqual({ indice: 4, nombre: 'Auditoría' })
+
+  // 6. Juntar: solo quedan subtareas sin trabajos (nadie las delegó)
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'pendiente' }], [
+    trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
+  ]), ahora)).toEqual({ indice: 5, nombre: 'Juntar' })
+
+  // 7. En proceso: subtarea con trabajos no está hecha (falló o sacó poca nota)
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'en curso' }], [
+    trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
+    trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000, puntaje: 3 }),
+  ]), ahora)).toEqual({ indice: 2, nombre: 'En proceso' })
+
+  // 8. Informe: todas hechas
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'hecha' }], [
+    trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
+    trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000, puntaje: 9 }),
+  ]), ahora)).toEqual({ indice: 6, nombre: 'Informe' })
+
+  // Progreso
+  const g = baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'pendiente' }, { n: 3, estado: 'en curso' }], [])
+  expect(faseDeGrupo(g, ahora).indice).toBe(0) // Planeación (sin trabajos)
+  expect(g.hechas).toBe(1)
+  expect(g.total).toBe(3)
+})
+
+test('rejilla: 1 item, 2 items en 2 columnas, 5 items en 3 columnas con alturas distintas, vacía; sin solapes', () => {
+  // 1 item
+  const r1 = rejilla([{ w: 100, h: 50 }])
+  expect(r1.posiciones.length).toBe(1)
+  expect(r1.posiciones[0]).toEqual({ x: 16, y: 72 }) // margen + cabecera + margen
+  expect(r1.w).toBeGreaterThanOrEqual(240) // anchoMinimo
+  expect(r1.h).toBe(56 + 16 + 50 + 16)
+
+  // 2 items en 2 columnas
+  const r2 = rejilla([{ w: 100, h: 50 }, { w: 120, h: 60 }], { columnas: 2, cabecera: 0, margen: 10, hueco: 10 })
+  expect(r2.posiciones.length).toBe(2)
+  expect(r2.posiciones[0]).toEqual({ x: 10, y: 10 })
+  expect(r2.posiciones[1]).toEqual({ x: 120, y: 10 }) // 10 + 100 + 10
+  // Sin solape
+  expect(r2.posiciones[0].x + 100).toBeLessThanOrEqual(r2.posiciones[1].x)
+
+  // 5 items en 3 columnas con alturas distintas
+  const items = [
+    { w: 100, h: 50 },
+    { w: 80, h: 70 },
+    { w: 120, h: 40 },
+    { w: 90, h: 60 },
+    { w: 110, h: 55 },
+  ]
+  const r3 = rejilla(items, { columnas: 3, cabecera: 0, margen: 10, hueco: 10 })
+  expect(r3.posiciones.length).toBe(5)
+  // Filas: 0,1,2 en fila 0; 3,4 en fila 1
+  // Altura fila 0 = max(50, 70, 40) = 70
+  // Altura fila 1 = max(60, 55) = 60
+  expect(r3.posiciones[0]).toEqual({ x: 10, y: 10 })
+  expect(r3.posiciones[1]).toEqual({ x: 120, y: 10 }) // 10 + 100 + 10
+  expect(r3.posiciones[2]).toEqual({ x: 240, y: 10 }) // 120 + 110 (la columna 2 mide lo que su caja mayor, 110) + 10
+  expect(r3.posiciones[3]).toEqual({ x: 10, y: 90 }) // 10 + 70 + 10
+  expect(r3.posiciones[4]).toEqual({ x: 120, y: 90 })
+
+  // Vacía
+  const r0 = rejilla([])
+  expect(r0.posiciones).toEqual([])
+  expect(r0.w).toBe(240)
+  expect(r0.h).toBe(56 + 16)
+})
+
+test('colocarGrupos: con 1, 2, 3 y 6 grupos no se solapan, ninguno toca el círculo de Claude, ninguno en sector norte, activo más cerca que atenuado, determinista', () => {
+  const radio = 110
+  const margenCaja = 60
+
+  // Helper para verificar
+  const verificar = (grupos) => {
+    const res = colocarGrupos(grupos, { radio })
+    const { posiciones, caja } = res
+
+    // Mismo número de posiciones
+    expect(posiciones.length).toBe(grupos.length)
+
+    // Determinista: segunda llamada igual
+    const res2 = colocarGrupos(grupos, { radio })
+    expect(res2.posiciones.map(p => ({ id: p.id, x: Math.round(p.x), y: Math.round(p.y) }))).toEqual(
+      posiciones.map(p => ({ id: p.id, x: Math.round(p.x), y: Math.round(p.y) }))
+    )
+
+    // Caja contiene el círculo de Claude
+    expect(caja.x0).toBeLessThanOrEqual(-radio - margenCaja)
+    expect(caja.y0).toBeLessThanOrEqual(-radio - margenCaja)
+    expect(caja.x1).toBeGreaterThanOrEqual(radio + margenCaja)
+    expect(caja.y1).toBeGreaterThanOrEqual(radio + margenCaja)
+
+    // Ningún grupo toca el círculo (distancia del rectángulo al centro > radio)
+    for (const p of posiciones) {
+      const g = grupos.find(x => x.id === p.id)
+      const w = g.w, h = g.h
+      // Distancia del rectángulo al origen
+      const dx = Math.max(Math.abs(p.x) - w / 2, 0)
+      const dy = Math.max(Math.abs(p.y) - h / 2, 0)
+      const distRect = Math.sqrt(dx * dx + dy * dy)
+      expect(distRect).toBeGreaterThan(radio)
+
+      // No en sector norte (±40° alrededor de -90° = 270°)
+      const ang = Math.atan2(p.y, p.x) * 180 / Math.PI
+      const diffNorte = Math.abs((ang + 90 + 180) % 360 - 180)
+      expect(diffNorte).toBeGreaterThanOrEqual(40)
+    }
+
+    // Sin solapes entre grupos (con separación 24)
+    for (let i = 0; i < posiciones.length; i++) {
+      for (let j = i + 1; j < posiciones.length; j++) {
+        const a = posiciones[i], b = posiciones[j]
+        const ga = grupos.find(x => x.id === a.id)
+        const gb = grupos.find(x => x.id === b.id)
+        const ax0 = a.x - ga.w / 2 - 24, ay0 = a.y - ga.h / 2 - 24
+        const ax1 = a.x + ga.w / 2 + 24, ay1 = a.y + ga.h / 2 + 24
+        const bx0 = b.x - gb.w / 2 - 24, by0 = b.y - gb.h / 2 - 24
+        const bx1 = b.x + gb.w / 2 + 24, by1 = b.y + gb.h / 2 + 24
+        expect(ax0 < bx1 && ax1 > bx0 && ay0 < by1 && ay1 > by0).toBe(false)
+      }
+    }
+
+    return res
+  }
+
+  // 1 grupo
+  verificar([{ id: 'A', w: 200, h: 150, activo: true }])
+
+  // 2 grupos
+  verificar([
+    { id: 'A', w: 200, h: 150, activo: true },
+    { id: 'B', w: 180, h: 140, activo: false },
+  ])
+
+  // 3 grupos
+  verificar([
+    { id: 'A', w: 200, h: 150, activo: true },
+    { id: 'B', w: 180, h: 140, activo: true },
+    { id: 'C', w: 160, h: 130, activo: false },
+  ])
+
+  // 6 grupos de distintos tamaños
+  verificar([
+    { id: 'A', w: 200, h: 150, activo: true },
+    { id: 'B', w: 180, h: 140, activo: true },
+    { id: 'C', w: 220, h: 160, activo: true },
+    { id: 'D', w: 150, h: 120, activo: false },
+    { id: 'E', w: 170, h: 130, activo: false },
+    { id: 'F', w: 190, h: 145, activo: false },
+  ])
+
+  // Activo más cerca que atenuado (comparar distancias al centro)
+  const resMixto = verificar([
+    { id: 'Activo1', w: 200, h: 150, activo: true },
+    { id: 'Activo2', w: 200, h: 150, activo: true },
+    { id: 'Atenuado1', w: 200, h: 150, activo: false },
+    { id: 'Atenuado2', w: 200, h: 150, activo: false },
+  ])
+  const distActivos = resMixto.posiciones.filter(p => p.id.startsWith('Activo')).map(p => Math.sqrt(p.x * p.x + p.y * p.y))
+  const distAtenuados = resMixto.posiciones.filter(p => p.id.startsWith('Atenuado')).map(p => Math.sqrt(p.x * p.x + p.y * p.y))
+  expect(Math.min(...distActivos)).toBeLessThan(Math.max(...distAtenuados))
 })

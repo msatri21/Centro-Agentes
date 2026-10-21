@@ -653,4 +653,5 @@ async function leer() {
 }
 document.getElementById('volver').href = `/${location.search}`
 pintarBarra()
-leer().then(() => { if (!guardado.vista) { guardado.vista = vista; centrar() } else aplicarVista() })
+// Se encuadra cuando las piezas ya tienen medida (si no, el primer encuadre sale diminuto).
+leer().then(() => requestAnimationFrame(() => { if (!guardado.vista) { guardado.vista = vista; centrar() } else aplicarVista() }))

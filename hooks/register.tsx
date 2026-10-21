@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, tablero, VINO } from './figura'
 import { paginaCentro } from './vista'
+import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
@@ -24,6 +25,8 @@ const TRABAJADORES: readonly Trabajador[] = ['ollama', 'opencode', 'hermes', 'ai
 let seq = 0
 const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, [] as Trabajo[])
 const plan = atom({ plugin: 'centro-agentes', key: 'plan' } as const, null as Plan | null)
+// Los planes anteriores del chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
+const planes = atom({ plugin: 'centro-agentes', key: 'planes' } as const, [] as Plan[])
 
 
 type Opciones = {
@@ -147,6 +150,7 @@ async function hayRed($: EngineInterface, t: Trabajador): Promise<boolean> {
 
 // Hermes vive en tu carpeta de usuario (fuera de AppData, que Windows redirige para la app de Claude).
 // Ruta completa: una app abierta antes de instalarlo no tiene aún su carpeta en el PATH.
+// Según cómo se instaló, vive en ~\.hermes o en AppData\Local\hermes: se usa la que exista.
 async function hermesExe($: EngineInterface) {
   const casa = await $.env.get('USERPROFILE').catch(() => undefined)
   return casa ? `${casa}\\.hermes\\bin\\hermes.exe` : 'hermes'
@@ -162,18 +166,59 @@ async function entornoHermes($: EngineInterface): Promise<Record<string, string>
   return casa ? { HERMES_HOME: `${casa}\\.hermes` } : {}
 }
 
+// Codex lee su servidor MCP de la línea de comandos (-c), así que no hace falta tocar su configuración: el centro le da su propio
+// servidor de preguntar y pedir_permiso, le reenvía la identidad del trabajo y le amplía el tiempo de espera (60 s por defecto).
+function mcpCodex($: EngineInterface): string[] {
+  const guion = `${$.plugin.root}/mcp/centro-mcp.mjs`.split(String.fromCharCode(92)).join('/')
+  return [
+    '-c', 'mcp_servers.centro.command="node"',
+    '-c', `mcp_servers.centro.args=["${guion}"]`,
+    '-c', 'mcp_servers.centro.env_vars=["CENTRO_TRABAJADOR","CENTRO_CHAT_DIR","CENTRO_TRABAJO","CENTRO_ESPERA_MS"]',
+    '-c', 'mcp_servers.centro.tool_timeout_sec=1200',
+  ]
+}
+
+// ¿Hay una pregunta o un permiso de este trabajo esperando al usuario? Mientras lo hay, no se corta al agente por tardar ni por callar.
+async function esperaUsuario($: EngineInterface, trabajoId?: string) {
+  if (!trabajoId) return false
+  try {
+    const dir = await carpetaChat($)
+    const [consultas, respuestas] = await Promise.all([$.fs.read(`${dir}/consultas.jsonl`), $.fs.read(`${dir}/respuestas.jsonl`).catch(() => '')])
+    return abiertas(consultas, respuestas).some(c => c.trabajo === trabajoId)
+  } catch {
+    return false
+  }
+}
+
+// Las preguntas y los permisos abiertos de los agentes que siguen trabajando, listos para mostrarlos en la web.
+async function pendientesDe($: EngineInterface, lista: Trabajo[]) {
+  try {
+    const dir = await carpetaChat($)
+    const leer = (nombre: string) => $.fs.read(`${dir}/${nombre}`).catch(() => '')
+    const [consultas, respuestas, permisos] = await Promise.all([leer('consultas.jsonl'), leer('respuestas.jsonl'), leer('permisos.json')])
+    const vivos = new Map(lista.filter(t => t.estado === 'corriendo').map(t => [t.id, t]))
+    return abiertas(consultas, respuestas, permisos)
+      .filter(c => vivos.has(c.trabajo))
+      .map(c => ({ id: c.trabajo, consulta: c.id, agente: vivos.get(c.trabajo)!.trabajador.split(':')[0], tipo: c.tipo, texto: c.texto, detalle: c.detalle, categoria: c.categoria, opciones: c.opciones, en: c.en }))
+  } catch {
+    return []
+  }
+}
+
 type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean }
 
 // Lanza el proceso y lee su salida a trozos, para que el panel muestre en vivo lo que escribe cada agente.
 async function correrEnVivo(
   $: EngineInterface,
   argv: string[],
-  init: { cwd?: string; stdin?: string; timeoutMs: number },
+  init: { cwd?: string; stdin?: string; timeoutMs: number; trabajoId?: string },
   alTrozo: (stdout: string) => void,
   alCortar: (cortar: (por: string) => void) => void = () => {},
 ): Promise<Corrida> {
   // PWD: OpenCode toma su carpeta de ahí y no del cwd del proceso.
-  const env = { ...red, ...(await entornoHermes($)), OLLAMA_API_BASE: 'http://127.0.0.1:11434', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(init.cwd ? { PWD: init.cwd } : {}) }
+  // CENTRO_*: así el agente sabe a qué chat y a qué trabajo pertenece (sus herramientas preguntar y pedir_permiso escriben ahí).
+  const identidad = init.trabajoId ? { CENTRO_TRABAJADOR: '1', CENTRO_CHAT_DIR: await carpetaChat($), CENTRO_TRABAJO: init.trabajoId, CENTRO_ESPERA_MS: String(ESPERA_RESPUESTA_MS) } : {}
+  const env = { ...red, ...(await entornoHermes($)), OLLAMA_API_BASE: 'http://127.0.0.1:11434', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(init.cwd ? { PWD: init.cwd } : {}), ...identidad }
   const flujo = $.process.spawn({ argv, cwd: init.cwd, input: init.stdin, env: Object.keys(env).length ? env : undefined })
   let stdout = ''
   let stderr = ''
@@ -184,9 +229,27 @@ async function correrEnVivo(
     void flujo.return(undefined as never)
   }
   alCortar(cortar)
-  const reloj = $.clock.after(init.timeoutMs, () => cortar('pasó el tiempo máximo'))
+  // Si el agente espera una respuesta del usuario, el reloj no corre: se vuelve a armar en vez de cortarlo.
+  let terminado = false
+  let reloj: { cancel(): void } = { cancel() {} }
+  const armarReloj = () => {
+    reloj = $.clock.after(init.timeoutMs, async () => {
+      if (terminado || motivo) return
+      if (await esperaUsuario($, init.trabajoId)) armarReloj()
+      else if (!terminado) cortar('pasó el tiempo máximo')
+    })
+  }
+  armarReloj()
   // Si no escribe nada en un rato, suele ser la red o el proxy colgando la conexión: se corta para probar otro.
-  let callado: { cancel(): void } | undefined = $.clock.after(esperaInicialMs, () => cortar(`sin respuesta en ${esperaInicialMs / 1000} s (¿red o proxy bloqueado?)`))
+  let callado: { cancel(): void } | undefined
+  const armarCallado = () => {
+    callado = $.clock.after(esperaInicialMs, async () => {
+      if (terminado || motivo) return
+      if (await esperaUsuario($, init.trabajoId)) armarCallado()
+      else if (!terminado) cortar(`sin respuesta en ${esperaInicialMs / 1000} s (¿red o proxy bloqueado?)`)
+    })
+  }
+  armarCallado()
   try {
     for await (const { stream, text } of flujo) {
       callado?.cancel()
@@ -202,6 +265,7 @@ async function correrEnVivo(
       }
     }
   } finally {
+    terminado = true
     reloj.cancel()
     callado?.cancel()
   }
@@ -212,7 +276,7 @@ async function correrEnVivo(
 async function ejecutar(
   $: EngineInterface,
   argv: string[],
-  init: { cwd?: string; stdin?: string; timeoutMs: number },
+  init: { cwd?: string; stdin?: string; timeoutMs: number; trabajoId?: string },
   alTrozo: (stdout: string) => void = () => {},
   alCortar?: (cortar: (por: string) => void) => void,
 ): Promise<Corrida> {
@@ -454,12 +518,12 @@ async function carpetaChat($: EngineInterface) {
   return `${await carpetaWeb($)}/chats/${SID}`
 }
 
-type Guardado = { plan: Plan | null; trabajos: Trabajo[]; encargos: [number, Encargo][]; nombre?: string }
+type Guardado = { plan: Plan | null; planes?: Plan[]; trabajos: Trabajo[]; encargos: [number, Encargo][]; nombre?: string }
 let ultimoGuardado = ''
 
 // Guarda plan, trabajos y encargos del chat cuando cambian (se llama cada 2 s).
 async function guardarEstado($: EngineInterface) {
-  const estado: Guardado = { plan: (await read($, plan)) ?? null, trabajos: (await read($, trabajos)) ?? [], encargos: [...encargos], nombre: nombreChat }
+  const estado: Guardado = { plan: (await read($, plan)) ?? null, planes: (await read($, planes)) ?? [], trabajos: (await read($, trabajos)) ?? [], encargos: [...encargos], nombre: nombreChat }
   // La salida en vivo cambia a cada momento y no hace falta para recuperar el centro.
   const texto = JSON.stringify({ ...estado, trabajos: estado.trabajos.map(t => ({ ...t, salida: t.estado === 'corriendo' ? undefined : t.salida })) })
   if (texto === ultimoGuardado) return
@@ -475,6 +539,7 @@ export function recuperar(g: Guardado): Guardado & { interrumpidos: number } {
   return {
     plan: g.plan ? { ...g.plan, subtareas: g.plan.subtareas.map(s => (s.estado === 'en curso' && subs.has(s.n) ? { ...s, estado: 'pendiente' as const } : s)) } : null,
     trabajos: g.trabajos.map(t => (t.estado === 'corriendo' ? { ...t, estado: 'error' as const, salida: '[interrumpido: el chat se cerró mientras trabajaba]' } : t)),
+    planes: g.planes ?? [],
     encargos: g.encargos,
     interrumpidos: corriendo.length,
   }
@@ -494,6 +559,7 @@ async function restaurarEstado($: EngineInterface) {
   if ((await read($, plan)) || ((await read($, trabajos)) ?? []).length) return
   const r = recuperar(g)
   await update($, plan, () => r.plan)
+  await update($, planes, () => r.planes ?? [])
   await update($, trabajos, () => r.trabajos)
   for (const [n, e] of r.encargos) encargos.set(n, e)
   if (r.interrumpidos) $.ui.toast(`${TITULO}: recuperado. ${r.interrumpidos} trabajo(s) quedaron interrumpidos; relánzalos desde la web o con /mst.`)
@@ -637,6 +703,7 @@ async function escribirWeb($: EngineInterface) {
     chat,
     jefe: 'Claude',
     plan: (await read($, plan)) ?? null,
+    planes: (await read($, planes)) ?? [],
     trabajos: lista,
     agentes: contexto ? estadoAgentes(contexto.modelos, Date.now(), tokensClaude(lista)) : [],
     modelos: contexto?.modelos ?? {},
@@ -644,6 +711,7 @@ async function escribirWeb($: EngineInterface) {
     ahorro,
     cancelables: controles.cancelables,
     relanzables: controles.relanzables,
+    pendientes: await pendientesDe($, lista),
     version: await versionDelPlugin($),
     extra: a.figuraSvg + a.tableroSvg,
     columnasExtra: `${(640 / alto(a.figuraSvg)).toFixed(3)}fr ${(640 / alto(a.tableroSvg)).toFixed(3)}fr`,
@@ -721,7 +789,7 @@ async function intentar(
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined }
+  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
   await marcar($, input.subtarea, { estado: 'en curso', quien })
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
@@ -740,13 +808,21 @@ async function intentar(
     stdin = input.tarea
   } else if (c.trabajador === 'opencode') {
     // --standalone: con el servicio compartido de OpenCode, la carpeta de una copia aislada queda abierta y no se puede borrar.
-    argv = ['opencode', 'run', '--standalone', '--format', 'json', ...(c.modelo ? ['-m', c.modelo] : []), input.tarea]
+    // La tarea va por stdin: como argumento, el shim .cmd de Windows la corta en el primer salto de línea y el agente trabaja sin instrucciones.
+    argv = ['opencode', 'run', '--standalone', '--format', 'json', ...(c.modelo ? ['-m', c.modelo] : [])]
+    // Con las herramientas preguntar y pedir_permiso (las trae el servidor MCP del centro), el agente sabe cuándo usarlas.
+    stdin = `${input.tarea}
+
+${PROTOCOLO_AGENTE}`
   } else if (c.trabajador === 'hermes') {
     // "proveedor/modelo": el proveedor es el de config.yaml (ollama-local = tu Ollama con sesión iniciada, sin clave).
     const corte = c.modelo.indexOf('/')
     const [proveedor, modelo] = corte > 0 ? [c.modelo.slice(0, corte), c.modelo.slice(corte + 1)] : ['auto', c.modelo]
     argv = [await hermesExe($), 'chat', '--oneshot', '--query-file', '-', '--format', 'stream-json', '--yolo', '--provider', proveedor, '-m', modelo]
-    stdin = input.tarea
+    // Las herramientas preguntar y pedir_permiso las trae la entrada centro-agente de mcp_servers en su config.yaml (ver el README).
+    stdin = `${input.tarea}
+
+${PROTOCOLO_AGENTE}`
   } else if (c.trabajador === 'aider') {
     // --no-git: no hace commits en tu repo; --yes-always: no se queda esperando confirmaciones.
     // Aider solo edita los archivos que recibe en la línea de comandos: se le pasan los que nombra la tarea y existen.
@@ -757,8 +833,10 @@ async function intentar(
     // --json: un evento por línea. danger-full-access: en Windows su sandbox le impide escribir y ejecutar;
     // trabaja en su carpeta (o en su copia aislada), como los demás agentes. La tarea va por stdin.
     const local = c.modelo.startsWith('ollama/') ? ['--oss', '--local-provider', 'ollama', '-m', c.modelo.slice('ollama/'.length)] : c.modelo && c.modelo !== 'chatgpt' ? ['-m', c.modelo] : []
-    argv = ['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check', ...local]
-    stdin = input.tarea
+    argv = ['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check', ...mcpCodex($), ...local]
+    stdin = `${input.tarea}
+
+${PROTOCOLO_AGENTE}`
   } else {
     // La tarea va por stdin: como argumento, el shim .cmd de Windows la corta en el primer salto de línea.
     // acceptEdits: sin él, claude -p no puede escribir archivos y el encargo se pierde (tests y comandos los corre el centro con "verificar").
@@ -769,7 +847,15 @@ async function intentar(
   let s: Salida
   let ok = false
   try {
-    const r = await ejecutar($, argv, { cwd: input.cwd, stdin, timeoutMs }, out => (crudo = out), cortar => cortadores.set(id, cortar))
+    // La marca de actividad se escribe como mucho una vez por segundo: la salida llega a trozos y no hace falta más precisión.
+    let marcado = t0
+    const r = await ejecutar($, argv, { cwd: input.cwd, stdin, timeoutMs, trabajoId: id }, out => {
+      crudo = out
+      const ahora = Date.now()
+      if (ahora - marcado < 1000) return
+      marcado = ahora
+      update($, trabajos, l => (l ?? []).map(t => (t.id === id ? { ...t, ultimaActividad: ahora } : t))).catch(() => {})
+    }, cortar => cortadores.set(id, cortar))
     s =
       c.trabajador === 'ollama' ? leerOllama(r.stdout, r.stderr)
       : c.trabajador === 'opencode' ? leerOpencode(r.stdout)
@@ -1085,8 +1171,8 @@ export const register: Register = (on, options) => {
   const modelos: Modelos = {
     // Los :cloud que entran en el plan Free de Ollama (probados con sesión iniciada); llama3.2:3b es local y queda de respaldo.
     ollama: lista(opt.ollamaModels, ['gpt-oss:120b-cloud', 'beam:cloud', 'gemma4:31b-cloud', 'nemotron-3-super:cloud', 'gpt-oss:20b-cloud', 'llama3.2:3b']),
-    // OpenCode sobre tu Ollama (proveedor "ollama" en ~/.config/opencode/opencode.jsonc): gratis, sin clave que caduque.
-    opencode: lista(opt.opencodeModels, ['ollama/gpt-oss:120b-cloud', 'ollama/beam:cloud', 'ollama/gemma4:31b-cloud', 'ollama/nemotron-3-super:cloud', 'ollama/gpt-oss:20b-cloud']),
+    // Los modelos gratuitos propios de OpenCode (probados con herramientas MCP): sin Ollama y sin clave.
+    opencode: lista(opt.opencodeModels, ['opencode/deepseek-v4.1-flash-free', 'opencode/glm-5.3-flash-free', 'opencode/minimax-m3.1-flash-free', 'opencode/nemotron-3-ultra-free', 'opencode/big-pickle']),
     // proveedor/modelo de Hermes; ollama-local está en ~/.hermes/config.yaml y apunta a tu Ollama (gratis, sin clave).
     hermes: lista(opt.hermesModels, ['ollama-local/gpt-oss:120b-cloud', 'ollama-local/beam:cloud', 'ollama-local/gemma4:31b-cloud', 'ollama-local/gpt-oss:20b-cloud']),
     // Aider llama a Ollama con el prefijo ollama_chat/ (el de chat, que respeta el formato de edición).
@@ -1358,6 +1444,11 @@ ${protocolo(modelos)}`
         objetivo: corto(String(objetivo), 120),
         subtareas: titulos.map((titulo, i) => ({ n: i + 1, titulo: corto(String(titulo), 80), estado: 'pendiente', ...(dep.has(i + 1) ? { espera: dep.get(i + 1) } : {}) })),
       }
+      // El plan que se deja pasa al historial (salvo que sea el mismo objetivo: sigue siendo el mismo grupo) y, si el nuevo
+      // objetivo ya estaba en el historial, sale de él: el grupo se reactiva con los trabajos que ya tenía.
+      const anterior = await read($, plan)
+      const mismo = (a: string, b: string) => a.trim() === b.trim()
+      await update($, planes, l => [...(l ?? []).filter(p => !mismo(p.objetivo, nuevo.objetivo) && !(anterior && mismo(p.objetivo, anterior.objetivo))), ...(anterior && !mismo(anterior.objetivo, nuevo.objetivo) ? [anterior] : [])].slice(-6))
       await update($, plan, () => nuevo)
       void $.ui.open({ id: PANE, title: TITULO })
       return res({
