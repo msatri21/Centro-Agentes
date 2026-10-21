@@ -161,7 +161,7 @@ export function crearGrafo(montaje) {
   texto(jefe, 0, 50, 'verifica · rehace', 'jefe-desc', 'middle')
   info(jefe, 'JEFE', 'No hace el trabajo: lo divide en subtareas, las reparte en paralelo, comprueba cada resultado con una nota del 1 al 10 y manda rehacer lo que saca menos de 6.')
   const contador = texto(capaJefe, 0, JEFE_R + 62, '0', 'contador-agentes', 'middle')
-  const contadorTexto = texto(capaJefe, 0, JEFE_R + 84, 'agentes activos', 'rol', 'middle')
+  const contadorTexto = texto(capaJefe, 0, JEFE_R + 84, 'agentes activos', 'contador-texto', 'middle')
   const avisoCambio = texto(capaJefe, 0, JEFE_R + 106, '', 'aviso-falla', 'middle')
 
   // ---- grupos y nodos (se crean cuando aparecen y se actualizan sin recrearlos) ----
@@ -475,7 +475,7 @@ export function crearGrafo(montaje) {
       // Con espacio, cada punto lleva el nombre de su fase; si el cuadrado es estrecho, solo se lee en el tooltip y en la segunda línea.
       dom.etiquetas.forEach((e, i) => {
         e.setAttribute('x', xa + paso * i)
-        e.style.display = paso >= 64 ? '' : 'none'
+        e.style.display = paso >= 92 || i === gr.fase.indice ? '' : 'none'
         e.setAttribute('class', `etq-fase${i === gr.fase.indice ? ' actual' : ''}`)
       })
       dom.vacio.style.display = items.length ? 'none' : ''
@@ -543,7 +543,7 @@ export function crearGrafo(montaje) {
     jefeNombre.textContent = d.jefe ?? 'Claude'
     contador.textContent = String(resumen.activos)
     contadorTexto.textContent = `${resumen.activos === 1 ? 'agente activo' : 'agentes activos'}${resumen.alarmas ? ` · ⚠ ${resumen.alarmas} ${resumen.alarmas === 1 ? 'alarma' : 'alarmas'}` : ''}`
-    contadorTexto.setAttribute('class', `rol${resumen.alarmas ? ' con-alarma' : ''}`)
+    contadorTexto.setAttribute('class', `contador-texto${resumen.alarmas ? ' con-alarma' : ''}`)
     jefe.classList.toggle('activo', resumen.activos > 0)
     rotuloVivo.textContent = !grupos.length ? 'EN REPOSO' : listo ? '✓ TODO LISTO' : `${resumen.activos} TRABAJANDO · ${d.jefe ?? 'Claude'} DE JEFE${resumen.alarmas ? ` · ${resumen.alarmas} ${resumen.alarmas === 1 ? 'ALARMA' : 'ALARMAS'}` : ''}`
 

@@ -78,6 +78,8 @@ const tareas = k => [
   { subtarea: 4, categoria: 'prueba-silencio', archivos: [`listo-${k}.txt`], tarea: `Ejecuta en la terminal exactamente este comando y espera a que termine (tarda más de un minuto): ping -n 75 127.0.0.1 > nul   Después crea listo-${k}.txt con la palabra listo.` },
   { subtarea: 5, categoria: 'prueba-simple', archivos: [`notas-${k}.md`], tarea: `Crea notas-${k}.md con 3 viñetas sobre por qué conviene probar antes de entregar.` },
 ]
+// Tres objetivos que se alternan: cada uno es un cuadrado del grafo; al repetirse, su cuadrado se reactiva.
+const OBJETIVOS = ['Calculadora con tests', 'Pantalla de inicio de sesión', 'Informe de ventas']
 const titulos = ['Saludo con una pregunta', 'Instalar pm2 con permiso', 'Borrar una carpeta con permiso', 'Un comando largo (silencio)', 'Notas sin molestar']
 
 try {
@@ -85,7 +87,7 @@ try {
   let id = ''
   log('Prueba en vivo preparada. Ábrela cuando quieras en tu navegador:')
   for (let k = 1; k <= TANDAS && !parando; k++) {
-    const plan = await herramienta('planificar', { objetivo: `Prueba en vivo, tanda ${k}: cinco agentes reales`, subtareas: titulos })
+    const plan = await herramienta('planificar', { objetivo: OBJETIVOS[(k - 1) % OBJETIVOS.length], subtareas: titulos })
     if (!id) {
       id = new URL(plan.web ?? 'http://x/').searchParams.get('s') ?? ''
       console.log('')

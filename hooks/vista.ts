@@ -116,7 +116,8 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 .punto-fase.pasada{fill:#8a8a8a}.punto-fase.futura{fill:#2c2c2c;stroke:#3e3e3e}
 .punto-fase.actual{fill:var(--vino);stroke:#f5f5f5;stroke-width:1.6}
 .contador-agentes{font:700 30px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}
-.con-alarma{fill:#d9a441}
+.contador-texto{font:14px ui-monospace,Consolas,monospace;fill:#f5f5f5}
+.contador-texto.con-alarma{fill:#d9a441}
 /* Los subagentes: nodos pequeños que se agrandan con un clic o cuando piden algo */
 .nodo.sub{cursor:pointer}
 .nodo.sub rect{fill:#141414;stroke:#3e3e3e;stroke-width:1.2}
