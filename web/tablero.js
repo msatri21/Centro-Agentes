@@ -4,7 +4,7 @@
 // Doble clic en una terminal o una tarea abre su detalle en vivo. Arrastrando el punto de una terminal hasta una tarea se unen,
 // y entonces puedes escribirle a esa terminal qué quieres que haga de esa tarea.
 // Los datos son los mismos del chat (se leen de la página normal cada 2 s).
-import { AGENTES, FASES, agenteDe, estadoAgente, eventosEntre, faseDe } from './grafo-logica.js'
+import { AGENTES, FASES, agenteDe, estadoAgente, eventosEntre, faseDe, modeloDe } from './grafo-logica.js'
 
 const NOMBRES = { opencode: 'OpenCode', ollama: 'Ollama', hermes: 'Hermes', aider: 'Aider', codex: 'Codex', claude: 'Claude headless' }
 const lienzo = document.getElementById('lienzo')
@@ -69,8 +69,17 @@ function aplicarAjustes() {
 const guardarAjustes = () => { try { localStorage.setItem(CLAVE_AJUSTES, JSON.stringify(ajustes)) } catch {} }
 aplicarAjustes()
 
-let guardado = { vista: null, pos: {}, terminales: [], enlaces: [], mensajes: [], modelo: {} }
+let guardado = { vista: null, pos: {}, terminales: [], enlaces: [], mensajes: [] }
 try { guardado = { ...guardado, ...JSON.parse(localStorage.getItem(CLAVE_GUARDADO) ?? '{}') } } catch {}
+// Cada terminal es { id, a: agente, m: modelo ('' = el centro elige) }; se pueden abrir varias del mismo agente.
+guardado.terminales = guardado.terminales.map(t => (typeof t === 'string' ? { id: t, a: t, m: guardado.modelo?.[t] ?? '' } : t))
+guardado.enlaces = guardado.enlaces.map(l => (l.t ? l : { t: l.a, n: l.n }))
+const terminalDe = id => guardado.terminales.find(t => t.id === id)
+const nuevoId = a => { let i = 1; while (guardado.terminales.some(t => t.id === `${a}-${i}`)) i++; return `${a}-${i}` }
+// Lo que hizo esta terminal: los trabajos de su agente (y de su modelo, si lo fijó).
+const datosDe = (d, t) => ({ ...d, trabajos: d.trabajos.filter(x => agenteDe(x) === t.a && (!t.m || modeloDe(x) === t.m)) })
+// Las partículas hablan de agentes: van a la primera terminal de ese agente.
+const termDe = agente => `term-${guardado.terminales.find(t => t.a === agente)?.id}`
 const guardar = () => { try { localStorage.setItem(CLAVE_GUARDADO, JSON.stringify(guardado)) } catch {} }
 
 // Los modelos de cada agente: los que informa el centro y, si no llegan, unos de respaldo (Claude siempre trae haiku, sonnet y opus).
@@ -250,11 +259,11 @@ function particulasDe(eventos) {
     if (ev.tipo === 'plan') [0, 0.3, 0.6].forEach(r => despues(r, () => particula({ de: 'yo', a: 'jefe' }, GRIS, 1.1)))
     if (ev.tipo === 'encargo' && ev.subtarea !== undefined) {
       particula({ de: 'jefe', a: `tarea-${ev.subtarea}` }, GRIS, 1.1)
-      despues(1.1, () => particula({ de: `tarea-${ev.subtarea}`, a: `term-${ev.agente}` }, GRIS, 1.1))
+      despues(1.1, () => particula({ de: `tarea-${ev.subtarea}`, a: termDe(ev.agente) }, GRIS, 1.1))
     }
-    if (ev.tipo === 'cambio') particula({ de: `term-${ev.de}`, a: `term-${ev.agente}` }, ACENTO, 1.4, 6)
+    if (ev.tipo === 'cambio') particula({ de: termDe(ev.de), a: termDe(ev.agente) }, ACENTO, 1.4, 6)
     if (ev.tipo === 'resultado') {
-      particula({ de: `term-${ev.agente}`, a: 'pipe-verificar' }, ev.ok ? GRIS : ACENTO, 1.3)
+      particula({ de: termDe(ev.agente), a: 'pipe-verificar' }, ev.ok ? GRIS : ACENTO, 1.3)
       if (ev.ok) despues(1.3, () => particula({ de: 'pipe-verificar', a: 'pipe-auditoria' }, GRIS, 0.9))
     }
     if (ev.tipo === 'nota') particula({ de: 'pipe-auditoria', a: 'jefe', subir: true }, ACENTO, 1.3, 5.5)
@@ -279,7 +288,7 @@ function empezarEnlace(ev, origen) {
     if (destino && destino !== origen && destino.tipo !== origen.tipo && ['tarea', 'terminal'].includes(destino.tipo)) {
       const tarea = origen.tipo === 'tarea' ? origen : destino
       const term = origen.tipo === 'terminal' ? origen : destino
-      if (!guardado.enlaces.some(l => l.a === term.agente && l.n === tarea.n)) guardado.enlaces.push({ a: term.agente, n: tarea.n })
+      if (!guardado.enlaces.some(l => l.t === term.tid && l.n === tarea.n)) guardado.enlaces.push({ t: term.tid, n: tarea.n })
       guardar()
       sincronizar()
       term.enviarCaja?.querySelector('input')?.focus()
@@ -332,11 +341,11 @@ function pintarFijas(d, fase) {
   piezas.get('pipe-informe').el.classList.toggle('activo', fase.indice === 7)
 }
 function pintarTerminal(tar, d) {
-  const e = estadoAgente(d, tar.agente)
+  const e = estadoAgente(datosDe(d, terminalDe(tar.tid)), tar.agente)
   tar.el.className = `pieza terminal-t${e.activo ? ' activo' : ''}${e.falla ? ' falla' : ''}${e.apartado ? ' apartado' : ''}${e.hecho && !e.activo ? ' hecha' : ''}`
   tar.estado.textContent = e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'
   const lista = modelosDe(tar.agente)
-  const actual = guardado.modelo[tar.agente] ?? ''
+  const actual = terminalDe(tar.tid).m
   const huella = lista.join('|') + '#' + actual
   if (tar.huellaModelos !== huella) {
     tar.huellaModelos = huella
@@ -356,7 +365,7 @@ function pintarTerminal(tar, d) {
     tar.vivo.append(b)
   }
   tar.enlazadas.replaceChildren()
-  const mias = guardado.enlaces.filter(l => l.a === tar.agente)
+  const mias = guardado.enlaces.filter(l => l.t === tar.tid)
   const subs = d.plan?.subtareas ?? []
   for (const l of mias) {
     const chip = el('span', 'chip')
@@ -373,12 +382,18 @@ function pintarTerminal(tar, d) {
   input.disabled = !mias.length
   tar.enviarCaja.querySelector('button').disabled = !mias.length
 }
-function crearTerminal(a, i) {
-  const tar = conCabecera(crearPieza(`term-${a}`, 'terminal', 'terminal-t', [1180 + (i % 2) * 380, Math.floor(i / 2) * 390 - 230]), NOMBRES[a])
+function crearTerminal(t, i) {
+  const a = t.a
+  const tar = conCabecera(crearPieza(`term-${t.id}`, 'terminal', 'terminal-t', [1180 + (i % 3) * 380, Math.floor(i / 3) * 390 - 230]), NOMBRES[a])
   tar.agente = a
+  tar.tid = t.id
+  const cerrar = el('button', 'cerrar', '✕')
+  cerrar.title = 'Cerrar esta terminal'
+  cerrar.onclick = () => quitarTerminal(t.id)
+  tar.cab.append(cerrar)
   tar.selModelo = el('select', 'modelo')
   tar.selModelo.title = 'Modelo con el que trabaja esta terminal'
-  tar.selModelo.onchange = () => { if (tar.selModelo.value) guardado.modelo[a] = tar.selModelo.value; else delete guardado.modelo[a]; guardar(); sincronizar() }
+  tar.selModelo.onchange = () => { terminalDe(t.id).m = tar.selModelo.value; guardar(); sincronizar() }
   tar.vivo = el('div', 'vivo')
   tar.enlazadas = el('div', 'enlazadas')
   tar.enviarCaja = el('form', 'enviar')
@@ -391,15 +406,15 @@ function crearTerminal(a, i) {
   tar.enviarCaja.addEventListener('submit', async ev => {
     ev.preventDefault()
     const texto = input.value.trim()
-    const mias = guardado.enlaces.filter(l => l.a === a)
+    const mias = guardado.enlaces.filter(l => l.t === t.id)
     if (!texto || !mias.length) return
     input.value = ''
     ir.textContent = 'enviado ✓'
-    await enviar({ tipo: 'encargar', agente: a, n: mias[mias.length - 1].n, texto, ...(guardado.modelo[a] ? { modelo: guardado.modelo[a] } : {}) })
+    await enviar({ tipo: 'encargar', agente: a, n: mias[mias.length - 1].n, texto, ...(terminalDe(t.id).m ? { modelo: terminalDe(t.id).m } : {}) })
     setTimeout(() => { ir.textContent = 'Enviar' }, 2500)
   })
   tar.cuerpo.append(tar.selModelo, tar.vivo, tar.enlazadas, tar.enviarCaja)
-  tar.el.addEventListener('dblclick', ev => { if (!ev.target.closest('input,button,.puerto')) abrirDetalle({ tipo: 'terminal', clave: a }) })
+  tar.el.addEventListener('dblclick', ev => { if (!ev.target.closest('input,button,.puerto')) abrirDetalle({ tipo: 'terminal', clave: t.id }) })
   conPuerto(tar, 'arriba')
   return tar
 }
@@ -547,11 +562,13 @@ function pintarDetalle() {
     detalle.replaceChildren()
     const ahora = d.ahora ?? Date.now()
     if (abierto.tipo === 'terminal') {
-      const a = abierto.clave
-      const e = estadoAgente(d, a)
-      detalle.append(cabecera(`Terminal · ${NOMBRES[a]}`, e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'))
-      const suyos = d.trabajos.filter(t => agenteDe(t) === a)
-      const actual = suyos.filter(t => t.estado === 'corriendo').pop()
+      const t = terminalDe(abierto.clave)
+      if (!t) { cerrarDetalle(); return }
+      const a = t.a
+      const e = estadoAgente(datosDe(d, t), a)
+      detalle.append(cabecera(`Terminal · ${NOMBRES[a]}${t.m ? ` · ${t.m}` : ''}`, e.apartado ? '○ apartado' : e.activo ? '● trabajando' : e.falla ? '✗ falló' : e.hecho ? '✓ terminó' : 'en espera'))
+      const suyos = datosDe(d, t).trabajos
+      const actual = suyos.filter(x => x.estado === 'corriendo').pop()
       detalle.append(el('div', 'rotulo', 'Qué está ejecutando'))
       if (actual) {
         const s = (d.plan?.subtareas ?? []).find(o => o.n === actual.subtarea)
@@ -579,17 +596,17 @@ setInterval(() => { if (abierto?.tipo === 'yo' && refs && ultimo) refrescarYo(ul
 let huellaBarra = ''
 function pintarBarra() {
   // Solo se redibuja si cambió algo: si no, un clic podría caer justo cuando los botones se reemplazan.
-  const huella = guardado.terminales.join(',') + modoEjemplo
+  const huella = guardado.terminales.map(t => t.id).join(',') + modoEjemplo
   if (huella === huellaBarra) return
   huellaBarra = huella
   barra.replaceChildren()
   const crear = (texto, fn, clase = '') => { const b = el('button', clase, texto); b.onclick = ev => fn(ev); barra.appendChild(b) }
   for (const a of AGENTES) {
-    const abierta = guardado.terminales.includes(a)
-    crear(`${abierta ? '✓' : '+'} ${NOMBRES[a]}`, ev => (abierta ? alternarTerminal(a) : abrirMenu(ev.currentTarget, a)), abierta ? 'abierto' : '')
+    const n = guardado.terminales.filter(t => t.a === a).length
+    crear(`+ ${NOMBRES[a]}${n ? ` ×${n}` : ''}`, ev => abrirMenu(ev.currentTarget, a), n ? 'abierto' : '')
   }
   barra.append(el('span', 'sep'))
-  crear('+ Todos', () => { guardado.terminales = [...AGENTES]; guardar(); sincronizar() })
+  crear('+ Todos', () => { for (const a of AGENTES) if (!guardado.terminales.some(t => t.a === a)) guardado.terminales.push({ id: nuevoId(a), a, m: '' }); guardar(); sincronizar() })
   crear(modoEjemplo ? '✓ Ejemplo' : 'Ejemplo', () => { guardado.ejemplo = !guardado.ejemplo; guardar(); ultimo = null; leer() }, modoEjemplo ? 'abierto' : '')
   crear('Reordenar', reordenar)
   crear('Centrar', centrar)
@@ -603,7 +620,7 @@ function abrirMenu(boton, a) {
   cerrarMenu()
   menu = el('div', 'menu-modelos')
   menu.append(el('div', 'rotulo', `${NOMBRES[a]} · elige un modelo`))
-  const elegir = m => { if (m) guardado.modelo[a] = m; else delete guardado.modelo[a]; guardado.terminales = [...guardado.terminales, a]; guardar(); cerrarMenu(); sincronizar() }
+  const elegir = m => { guardado.terminales.push({ id: nuevoId(a), a, m }); guardar(); cerrarMenu(); sincronizar() }
   for (const m of [['', 'Automático (el centro elige)'], ...modelosDe(a).map(x => [x, x])]) {
     const b = el('button', '', m[1])
     b.onclick = () => elegir(m[0])
@@ -614,9 +631,9 @@ function abrirMenu(boton, a) {
   menu.style.left = `${Math.max(8, Math.min(innerWidth - menu.offsetWidth - 8, r.left))}px`
   menu.style.bottom = `${innerHeight - r.top + 8}px`
 }
-function alternarTerminal(a) {
-  guardado.terminales = guardado.terminales.includes(a) ? guardado.terminales.filter(x => x !== a) : [...guardado.terminales, a]
-  if (!guardado.terminales.includes(a)) guardado.enlaces = guardado.enlaces.filter(l => l.a !== a)
+function quitarTerminal(id) {
+  guardado.terminales = guardado.terminales.filter(t => t.id !== id)
+  guardado.enlaces = guardado.enlaces.filter(l => l.t !== id)
   guardar()
   sincronizar()
 }
@@ -645,12 +662,12 @@ function sincronizar() {
   const ids = new Set(subs.map(s => `tarea-${s.n}`))
   for (const id of [...piezas.keys()]) if (id.startsWith('tarea-') && !ids.has(id)) quitar(id)
   subs.forEach((s, i) => pintarTarea(piezas.get(`tarea-${s.n}`) ?? crearTarea(s, i, subs.length), s))
-  for (const id of [...piezas.keys()]) if (id.startsWith('term-') && !guardado.terminales.includes(id.slice(5))) quitar(id)
-  guardado.terminales.forEach((a, i) => pintarTerminal(piezas.get(`term-${a}`) ?? crearTerminal(a, i), d))
+  for (const id of [...piezas.keys()]) if (id.startsWith('term-') && !terminalDe(id.slice(5))) quitar(id)
+  guardado.terminales.forEach((t, i) => pintarTerminal(piezas.get(`term-${t.id}`) ?? crearTerminal(t, i), d))
   // Líneas: Tú ↔ jefe (fija), el jefe con cada tarea, las dependencias, cada tarea con las terminales que la hacen o que unió el usuario,
   // y la tubería (terminales → verificar → auditoría → notas al jefe, y → juntar → informe).
   conexiones = [{ de: 'yo', a: 'jefe', clase: 'fija' }]
-  const manual = new Set(guardado.enlaces.map(l => `${l.n}|${l.a}`))
+  const manual = new Set(guardado.enlaces.map(l => `${l.n}|${l.t}`))
   for (const s of subs) {
     conexiones.push({ de: 'jefe', a: `tarea-${s.n}`, clase: 'jefe' })
     for (const e of s.espera ?? []) conexiones.push({ de: `tarea-${e}`, a: `tarea-${s.n}`, vertical: true, clase: 'dep' })
@@ -658,11 +675,12 @@ function sincronizar() {
     const t = suyos[suyos.length - 1]
     if (t) {
       const agente = agenteDe(t)
-      if (piezas.has(`term-${agente}`) && !manual.has(`${s.n}|${agente}`)) conexiones.push({ de: `tarea-${s.n}`, a: `term-${agente}`, viva: t.estado === 'corriendo' })
+      const term = guardado.terminales.find(x => x.a === agente && (!x.m || x.m === modeloDe(t))) ?? guardado.terminales.find(x => x.a === agente)
+      if (term && piezas.has(`term-${term.id}`) && !manual.has(`${s.n}|${term.id}`)) conexiones.push({ de: `tarea-${s.n}`, a: `term-${term.id}`, viva: t.estado === 'corriendo' })
     }
   }
-  for (const l of guardado.enlaces) if (piezas.has(`tarea-${l.n}`) && piezas.has(`term-${l.a}`)) conexiones.push({ de: `tarea-${l.n}`, a: `term-${l.a}`, clase: 'manual', viva: estadoAgente(d, l.a).activo })
-  for (const a of guardado.terminales) conexiones.push({ de: `term-${a}`, a: 'pipe-verificar', clase: 'bus' })
+  for (const l of guardado.enlaces) if (piezas.has(`tarea-${l.n}`) && piezas.has(`term-${l.t}`)) conexiones.push({ de: `tarea-${l.n}`, a: `term-${l.t}`, clase: 'manual', viva: estadoAgente(datosDe(d, terminalDe(l.t)), terminalDe(l.t).a).activo })
+  for (const t of guardado.terminales) conexiones.push({ de: `term-${t.id}`, a: 'pipe-verificar', clase: 'bus' })
   conexiones.push({ de: 'pipe-verificar', a: 'pipe-auditoria', clase: 'flujo' }, { de: 'pipe-auditoria', a: 'jefe', subir: true, clase: 'notas' }, { de: 'pipe-auditoria', a: 'pipe-juntar', clase: 'flujo' }, { de: 'pipe-juntar', a: 'pipe-informe', vertical: true, clase: 'flujo' })
   trazar()
   pintarBarra()
@@ -683,7 +701,7 @@ async function leer() {
     modoEjemplo = !!datos.ejemplo
     const antes = ultimo
     ultimo = datos
-    if (!antes && !guardado.terminales.length) guardado.terminales = AGENTES.filter(a => estadoAgente(datos, a).ultimo).slice(0, 4)
+    if (!antes && !guardado.terminales.length) guardado.terminales = AGENTES.filter(a => estadoAgente(datos, a).ultimo).slice(0, 4).map(a => ({ id: a, a, m: '' }))
     sincronizar()
     aplicarVista()
     particulasDe(eventosEntre(antes, datos))

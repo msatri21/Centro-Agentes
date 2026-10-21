@@ -133,3 +133,5 @@ button.cancelar:hover{border-color:var(--acento);color:var(--t1)}
 .menu-modelos button:hover{background:var(--panel2);color:var(--acento-claro)}
 select.modelo{width:100%;margin-bottom:8px;background:var(--panel2);border:1px solid var(--borde);color:var(--t1);padding:6px 8px;font:12px ui-monospace,Consolas,monospace}
 select.modelo:focus{outline:none;border-color:var(--acento)}
+.cab .cerrar{background:transparent;border:0;color:var(--t4);cursor:pointer;font:12px ui-monospace,Consolas,monospace;padding:0 0 0 8px}
+.cab .cerrar:hover{color:var(--acento-claro)}
