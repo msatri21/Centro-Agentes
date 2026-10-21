@@ -410,9 +410,9 @@ test('aider: lee la respuesta sin ruido y sus tokens, y el centro lo lanza sin g
 
 test('opencode: la tarea va por stdin completa, con sus saltos de línea, y no en la línea de comandos', async ($, on) => {
   base(on)
-  const vistos: { argv: string[]; input?: string }[] = []
+  const vistos: { argv: string[]; input?: string; env?: Record<string, string> }[] = []
   on('process.spawn', async function* (_$: any, e: any) {
-    vistos.push({ argv: e.argv, input: e.input })
+    vistos.push({ argv: e.argv, input: e.input, env: e.env })
     yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
     return { value: { code: 0, signal: null } }
   })
@@ -421,6 +421,12 @@ test('opencode: la tarea va por stdin completa, con sus saltos de línea, y no e
   expect(vistos[0].argv[0]).toBe('opencode')
   expect(vistos[0].argv.some(a => a.includes('línea'))).toBe(false)
   expect(vistos[0].input).toContain('línea uno\nlínea dos')
+  // Y el agente sabe quién es (para sus herramientas preguntar y pedir_permiso) y cuándo usarlas.
+  expect(vistos[0].input).toContain('pedir_permiso')
+  expect(vistos[0].env?.CENTRO_TRABAJADOR).toBe('1')
+  expect(vistos[0].env?.CENTRO_TRABAJO).toBe(d.id)
+  expect(vistos[0].env?.CENTRO_CHAT_DIR).toContain('/chats/')
+  expect(vistos[0].env?.CENTRO_ESPERA_MS).toBe('900000')
 })
 
 test('rendimiento por modelo, informe en Markdown, tema de ntfy y estado de agentes', async () => {
@@ -793,4 +799,79 @@ test('las cards: el resumen cuenta activos, alarmas, el reparto por agente y los
   expect(r.porAgente).toEqual({ opencode: 2, ollama: 1 })
   expect(r.conAlarma).toEqual(['a', 'c'])
   expect(resumenDe([])).toEqual({ activos: 0, alarmas: 0, porAgente: {}, conAlarma: [] })
+})
+
+import { CATEGORIAS, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE, abiertas, leerLineas, permitidaSiempre, respuestaDe, resultadoParaAgente, type Consulta } from './consultas'
+
+test('consultas: leerLineas se queda solo con las líneas que son un objeto JSON', () => {
+  const jsonl = [JSON.stringify({ id: 'a' }), '', '   ', 'esto no es json', '[1, 2]', '"texto"', JSON.stringify({ id: 'b' })].join('\n')
+  expect(leerLineas<{ id: string }>(jsonl).map(o => o.id)).toEqual(['a', 'b'])
+  expect(leerLineas(jsonl).length).toBe(2)
+  expect(leerLineas('').length).toBe(0)
+})
+
+test('consultas: abiertas solo devuelve lo que no tiene respuesta, ordenado, y quita el permiso ya concedido', () => {
+  const consultas = [
+    { id: 'p1', trabajo: 't1', tipo: 'permiso', texto: '¿borro todo?', categoria: 'destructivo', en: 1000 },
+    { id: 'p2', trabajo: 't2', tipo: 'permiso', texto: '¿instalo el paquete?', categoria: 'instalar', en: 2000 },
+    { id: 'q1', trabajo: 't3', tipo: 'pregunta', texto: '¿sigo?', en: 3000 },
+    { id: 'q2', trabajo: 't4', tipo: 'pregunta', texto: '¿qué uso?', categoria: 'instalar', en: 4000 },
+    { id: 'p3', trabajo: 't5', tipo: 'permiso', texto: '¿copio el archivo?', categoria: 'instalar', en: 5000 },
+    { id: 'p1', trabajo: 't6', tipo: 'pregunta', texto: 'repetida', en: 6000 },
+  ].map(o => JSON.stringify(o)).join('\n')
+  const respuestas = [
+    JSON.stringify({ id: 'q1', decision: 'texto', texto: 'sí', en: 3100 }),
+    JSON.stringify({ id: 'p3', decision: 'aprobar', en: 5100 }),
+  ].join('\n')
+
+  // q1 y p3 ya tienen respuesta; p2 está permitido; p1 (destructivo) y q2 (pregunta) se quedan.
+  const pend = abiertas(consultas, respuestas, '["instalar"]')
+  expect(pend.map(c => c.id)).toEqual(['p1', 'q2'])
+  expect(pend[0].texto).toBe('¿borro todo?')
+  expect(pend.map(c => c.en)).toEqual([1000, 4000])
+  // Sin el archivo de permisos, el permiso de instalar vuelve a preguntar.
+  expect(abiertas(consultas, respuestas).map(c => c.id)).toEqual(['p1', 'p2', 'q2'])
+  // Lo destructivo no se concede nunca, aunque el usuario lo haya puesto.
+  expect(abiertas(consultas, respuestas, '["instalar","destructivo"]').map(c => c.id)).toEqual(['p1', 'q2'])
+})
+
+test('consultas: gana la primera respuesta y los permisos solo valen con un array JSON', () => {
+  const respuestas = [
+    JSON.stringify({ id: 'x', decision: 'texto', texto: 'primera', en: 1 }),
+    JSON.stringify({ id: 'x', decision: 'aprobar', en: 2 }),
+  ].join('\n')
+  expect(respuestaDe(respuestas, 'x')?.texto).toBe('primera')
+  expect(respuestaDe(respuestas, 'y')).toBe(undefined)
+  expect(permitidaSiempre('["instalar","red"]', 'instalar')).toBe(true)
+  expect(permitidaSiempre('["instalar"]', 'red')).toBe(false)
+  expect(permitidaSiempre('{roto', 'instalar')).toBe(false)
+  expect(permitidaSiempre('', 'instalar')).toBe(false)
+  expect(permitidaSiempre('[]', 'instalar')).toBe(false)
+  expect(permitidaSiempre('{"a":1}', 'instalar')).toBe(false)
+  expect(permitidaSiempre('["instalar"]', undefined)).toBe(false)
+  expect(permitidaSiempre('["destructivo"]', 'destructivo')).toBe(false)
+})
+
+test('consultas: lo que se le devuelve al agente según lo que respondió el usuario', () => {
+  const permiso: Consulta = { id: 'p', trabajo: 't', tipo: 'permiso', texto: '¿borro?', categoria: 'destructivo', en: 1 }
+  const pregunta: Consulta = { id: 'q', trabajo: 't', tipo: 'pregunta', texto: '¿sigo?', en: 1 }
+  expect(resultadoParaAgente(permiso, { id: 'p', decision: 'aprobar', en: 2 }, false)).toBe('APROBADO por el usuario. Puedes continuar.')
+  expect(resultadoParaAgente(permiso, { id: 'p', decision: 'siempre', en: 2 }, false)).toBe('APROBADO por el usuario. Puedes continuar.')
+  expect(resultadoParaAgente(permiso, { id: 'p', decision: 'denegar', en: 2 }, false)).toBe('DENEGADO por el usuario. No lo hagas: busca otra forma o termina explicando qué quedó sin hacer.')
+  expect(resultadoParaAgente(permiso, { id: 'p', decision: 'denegar', texto: 'es importante', en: 2 }, false)).toBe('DENEGADO por el usuario. No lo hagas: busca otra forma o termina explicando qué quedó sin hacer.\nMotivo del usuario: es importante')
+  expect(resultadoParaAgente(pregunta, { id: 'q', decision: 'texto', texto: 'usa la otra ruta', en: 2 }, false)).toBe('RESPUESTA DEL USUARIO: usa la otra ruta')
+  expect(resultadoParaAgente(pregunta, { id: 'q', decision: 'aprobar', en: 2 }, false)).toBe('RESPUESTA DEL USUARIO: sí.')
+  expect(resultadoParaAgente(pregunta, { id: 'q', decision: 'denegar', en: 2 }, false)).toBe('RESPUESTA DEL USUARIO: no.')
+  expect(resultadoParaAgente(permiso, undefined, true)).toBe('SIN RESPUESTA a tiempo: se da por DENEGADO. No lo hagas: sigue por lo más seguro o termina explicando qué quedó sin hacer.')
+  expect(resultadoParaAgente(pregunta, undefined, true)).toBe('SIN RESPUESTA a tiempo. Sigue por lo más seguro, anota tu suposición en tu resultado final y continúa.')
+  expect(resultadoParaAgente(pregunta, undefined, false)).toBe('Esperando respuesta del usuario.')
+})
+
+test('consultas: el protocolo del agente explica las herramientas y las categorías', () => {
+  expect(PROTOCOLO_AGENTE).toContain('preguntar')
+  expect(PROTOCOLO_AGENTE).toContain('pedir_permiso')
+  for (const c of CATEGORIAS) expect(PROTOCOLO_AGENTE).toContain(c)
+  expect(CATEGORIAS).toEqual(['comando', 'instalar', 'red', 'escribir-fuera', 'destructivo', 'otro'])
+  expect(ESPERA_RESPUESTA_MS).toBe(900_000)
+  expect(PROTOCOLO_AGENTE.includes('\n')).toBe(false)
 })

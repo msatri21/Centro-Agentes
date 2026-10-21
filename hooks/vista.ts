@@ -26,7 +26,17 @@ export type DatosPagina = {
   columnasExtra?: string
   ahora?: number
   /** Preguntas/permisos pendientes del agente al jefe */
-  pendientes?: { id: string; tipo: 'pregunta' | 'permiso'; texto: string }[]
+  pendientes?: {
+    id: string
+    consulta: string
+    agente: string
+    tipo: 'pregunta' | 'permiso'
+    texto: string
+    detalle?: string
+    categoria?: string
+    opciones?: string[]
+    en?: number
+  }[]
 }
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
@@ -125,6 +135,32 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 #g-tip b{display:block;color:#f5f5f5;font-size:15px;margin-bottom:4px}
 @media (prefers-reduced-motion:reduce){.anillo,.halo,.movil.vibra,.nodo.falla rect,.nodo.card.alarma-silencio rect,.nodo.card.alarma-pregunta rect,.nodo.card.alarma-permiso rect,.card-entra{animation:none!important}.nodo.card{transition:none!important}}
 
+/* Pendientes: consultas de los agentes */
+#pendientes{margin-top:24px}
+.consulta{border:1px solid #2a2a2a;background:#111;padding:16px 18px;margin-bottom:12px;border-radius:4px}
+.consulta.permiso{border-color:#e0505f}
+.consulta.pregunta{border-color:#5b9bd5}
+.consulta .insignia-c{display:flex;align-items:center;gap:8px;margin-bottom:10px;font:11px ui-monospace,Consolas,monospace;text-transform:uppercase;letter-spacing:.08em}
+.consulta .insignia-c .agente{color:#c4485a;font-weight:700}
+.consulta .insignia-c .tipo{padding:2px 8px;border-radius:3px;font-size:10px}
+.consulta.permiso .insignia-c .tipo{background:#3a1216;color:#e0505f}
+.consulta.pregunta .insignia-c .tipo{background:#12263a;color:#5b9bd5}
+.consulta .texto-c{font:600 17px/1.3 'Segoe UI',system-ui,sans-serif;color:#f5f5f5;margin-bottom:6px}
+.consulta .detalle-c{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;margin-bottom:10px}
+.consulta .categoria-c{font:11px ui-monospace,Consolas,monospace;color:#d9a441;margin-bottom:10px}
+.consulta .acciones-c{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.consulta button{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:8px 14px;font:13px ui-monospace,Consolas,monospace;cursor:pointer;border-radius:3px}
+.consulta button:hover{border-color:var(--vino);color:#fff}
+.consulta button:disabled{opacity:.6;cursor:default}
+.consulta .btn-principal{background:#c4485a;border-color:#c4485a;color:#fff}
+.consulta .btn-principal:hover{background:#d65a6c;border-color:#d65a6c}
+.consulta textarea{width:100%;min-height:56px;max-height:140px;background:#0c0c0c;color:#d4d4d4;border:1px solid #3e3e3e;padding:8px 10px;font:13px ui-monospace,Consolas,monospace;border-radius:3px;resize:vertical;margin-top:8px}
+.consulta textarea:focus{outline:none;border-color:var(--vino)}
+.consulta .estado-c{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;margin-top:8px}
+.consulta .nota-c{font:11px ui-monospace,Consolas,monospace;color:#8a8a8a;margin-top:8px}
+.consulta .opciones-c{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+@media (max-width:700px){.consulta{padding:14px 12px}}
+
 /* Gráficas y tablas */
 .rejilla{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(520px,100%),1fr));gap:24px;align-items:start}
 .rejilla svg,.detalles svg{display:block;width:100%;height:auto}
@@ -180,7 +216,17 @@ export function paginaCentro(d: DatosPagina): string {
     agentes: d.agentes,
     modelos: d.modelos,
     listo,
-    pendientes: (d.pendientes ?? []).map(p => ({ id: p.id, tipo: p.tipo, texto: String(p.texto).slice(0, 300) })),
+    pendientes: (d.pendientes ?? []).map(p => ({
+      id: String(p.id),
+      consulta: String(p.consulta),
+      agente: String(p.agente),
+      tipo: p.tipo,
+      texto: String(p.texto).slice(0, 600),
+      detalle: p.detalle ? String(p.detalle).slice(0, 800) : undefined,
+      categoria: p.categoria ? String(p.categoria).slice(0, 30) : undefined,
+      opciones: p.opciones ? p.opciones.slice(0, 6).map(o => String(o).slice(0, 80)) : undefined,
+      en: p.en
+    })),
     esperaSilencioMs: 60000,
   }
   const titulo = `${d.chat} · ${d.jefe} jefe · ${d.plan ? corto(d.plan.objetivo, 40) : 'sin plan'}`
@@ -192,6 +238,7 @@ export function paginaCentro(d: DatosPagina): string {
 <div class="kpis">${kpis.map(([e, v, n], i) => `<div class="kpi"><i>0${i + 1}</i><span>${esc(e)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></div>`).join('')}</div>
 ${listo ? `<div class="listo">✓ Todo listo · ${esc(listo)}</div>` : ''}<div class="botones">${botones}</div></div>
 <div id="grafo-montaje"></div>
+<section id="pendientes" class="cinta" aria-live="polite"></section>
 <div id="v2" class="cinta">
 ${d.extra ? `<h2 class="seccion">Detalles del chat</h2><div class="detalles" style="--cols:${d.columnasExtra ?? '1fr 1fr'}">${d.extra}</div>` : ''}
 <h2 class="seccion">Gráficas</h2><div class="rejilla">${graficas}</div>
@@ -212,6 +259,186 @@ document.addEventListener('click', async ev => {
   b.disabled = true; b.textContent = 'enviando…'
   try { await fetch('/accion' + location.search, { method: 'POST', body: b.dataset.accion }); b.textContent = 'enviado ✓' } catch { b.textContent = 'no se pudo enviar' }
 })
+
+// Pinta las consultas pendientes de los agentes
+const pendientesVistos = new Set()
+function pintarPendientes(lista) {
+  const sec = document.getElementById('pendientes')
+  if (!sec) return
+  const actuales = new Set(lista.map(p => p.consulta))
+  // Eliminar tarjetas que ya no están en la lista
+  for (const el of sec.querySelectorAll('.consulta')) {
+    const cid = el.dataset.consulta
+    if (cid && !actuales.has(cid)) el.remove()
+  }
+  // Título
+  let titulo = sec.querySelector('.pendientes-titulo')
+  if (lista.length > 0) {
+    if (!titulo) {
+      titulo = document.createElement('p')
+      titulo.className = 'pendientes-titulo'
+      titulo.style.cssText = 'font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacing:.1em;text-transform:uppercase;margin:0 0 12px'
+      sec.insertBefore(titulo, sec.firstChild)
+    }
+    titulo.textContent = 'Esperan tu respuesta (' + lista.length + ')'
+  } else if (titulo) {
+    titulo.remove()
+  }
+  // Crear/actualizar tarjetas
+  for (const p of lista) {
+    // Una tarjeta que ya está dibujada no se toca: el usuario puede estar escribiendo en ella.
+    if ([...sec.querySelectorAll('.consulta')].some(e => e.dataset.consulta === p.consulta)) continue
+    const esNueva = true
+    const tarjeta = document.createElement('div')
+    tarjeta.className = 'consulta ' + (p.tipo === 'permiso' ? 'permiso' : 'pregunta')
+    tarjeta.dataset.consulta = p.consulta
+    sec.appendChild(tarjeta)
+    let categoriaDiv = null
+    // Insignia
+    const insignia = document.createElement('div')
+    insignia.className = 'insignia-c'
+    const agenteSpan = document.createElement('span')
+    agenteSpan.className = 'agente'
+    agenteSpan.textContent = p.agente
+    const tipoSpan = document.createElement('span')
+    tipoSpan.className = 'tipo'
+    tipoSpan.textContent = p.tipo === 'permiso' ? 'PERMISO' : 'PREGUNTA'
+    insignia.append(agenteSpan, tipoSpan)
+    // Texto principal
+    const textoDiv = document.createElement('div')
+    textoDiv.className = 'texto-c'
+    textoDiv.textContent = p.texto
+    // Detalle
+    const detalleDiv = document.createElement('div')
+    detalleDiv.className = 'detalle-c'
+    detalleDiv.textContent = p.detalle ?? ''
+    if (!p.detalle) detalleDiv.style.display = 'none'
+    // Acciones
+    const acciones = document.createElement('div')
+    acciones.className = 'acciones-c'
+    if (p.tipo === 'permiso') {
+      const btnAprobar = document.createElement('button')
+      btnAprobar.className = 'btn-principal'
+      btnAprobar.textContent = 'Aprobar'
+      btnAprobar.dataset.decision = 'aprobar'
+      const btnDenegar = document.createElement('button')
+      btnDenegar.textContent = 'Denegar'
+      btnDenegar.dataset.decision = 'denegar'
+      const btnSiempre = document.createElement('button')
+      btnSiempre.className = 'btn-principal'
+      btnSiempre.textContent = 'Permitir siempre en esta petición'
+      btnSiempre.dataset.decision = 'siempre'
+      const cat = p.categoria
+      if (!cat || cat === 'destructivo') {
+        btnSiempre.style.display = 'none'
+        const nota = document.createElement('div')
+        nota.className = 'nota-c'
+        nota.textContent = 'Los comandos destructivos siempre se preguntan.'
+        acciones.append(btnAprobar, btnDenegar, nota)
+      } else {
+        acciones.append(btnAprobar, btnDenegar, btnSiempre)
+      }
+      // Categoría
+      if (cat) {
+        categoriaDiv = document.createElement('div')
+        categoriaDiv.className = 'categoria-c'
+        categoriaDiv.textContent = 'Categoría: ' + cat
+      }
+    } else {
+      // Pregunta: opciones + textarea
+      if (p.opciones && p.opciones.length) {
+        const optsDiv = document.createElement('div')
+        optsDiv.className = 'opciones-c'
+        for (const op of p.opciones) {
+          const btn = document.createElement('button')
+          btn.textContent = op
+          btn.dataset.decision = 'texto'
+          btn.dataset.texto = op
+          optsDiv.appendChild(btn)
+        }
+        acciones.appendChild(optsDiv)
+      }
+      const ta = document.createElement('textarea')
+      ta.placeholder = 'Escribe tu respuesta… (Ctrl+Enter para enviar)'
+      ta.style.marginTop = '8px'
+      const btnEnviar = document.createElement('button')
+      btnEnviar.className = 'btn-principal'
+      btnEnviar.textContent = 'Enviar'
+      btnEnviar.dataset.decision = 'texto'
+      btnEnviar.dataset.textarea = '1'
+      acciones.append(ta, btnEnviar)
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault()
+          btnEnviar.click()
+        }
+      })
+    }
+    // Estado
+    const estado = document.createElement('div')
+    estado.className = 'estado-c'
+    estado.style.display = 'none'
+    // Montar
+    tarjeta.append(insignia, textoDiv, detalleDiv)
+    if (categoriaDiv) tarjeta.append(categoriaDiv)
+    tarjeta.append(acciones, estado)
+    // Los botones solo se conectan una vez: la tarjeta no se vuelve a dibujar.
+    if (esNueva) {
+      tarjeta.addEventListener('click', async ev => {
+        const btn = ev.target.closest('button[data-decision]')
+        if (!btn) return
+        const decision = btn.dataset.decision
+        let texto = ''
+        if (decision === 'texto') {
+          if (btn.dataset.textarea) {
+            const ta = tarjeta.querySelector('textarea')
+            texto = ta?.value?.trim() ?? ''
+            if (!texto) return
+          } else {
+            texto = btn.dataset.texto ?? ''
+          }
+        }
+        const controles = tarjeta.querySelectorAll('button, textarea')
+        controles.forEach(c => { c.disabled = true })
+        estado.style.display = 'block'
+        estado.textContent = 'enviando…'
+        try {
+          const r = await fetch('/accion' + location.search, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tipo: 'responder', id: p.consulta, decision, texto })
+          })
+          if (r.status === 200) {
+            estado.textContent = 'enviado ✓'
+            estado.style.color = '#5b9bd5'
+          } else if (r.status === 409) {
+            estado.textContent = 'ya estaba respondida'
+            estado.style.color = '#d9a441'
+          } else {
+            throw new Error(String(r.status))
+          }
+        } catch {
+          estado.textContent = 'no se pudo enviar'
+          estado.style.color = '#c4485a'
+          controles.forEach(c => { c.disabled = false })
+        }
+      })
+    }
+    // Notificación solo la primera vez que aparece
+    if (esNueva && !pendientesVistos.has(p.consulta)) {
+      pendientesVistos.add(p.consulta)
+      try {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('Un agente espera tu respuesta', { body: p.agente + ': ' + p.texto.slice(0, 120) })
+        }
+      } catch {}
+    }
+  }
+}
+// Llamada inicial
+pintarPendientes(datos.pendientes ?? [])
+if ((datos.pendientes ?? []).length) document.title = '(' + datos.pendientes.length + ') ' + document.title
+
 function avisar(listo) {
   try {
     if (listo && localStorage.getItem('centro-avisado') !== listo) {
@@ -228,8 +455,12 @@ async function vuelta() {
     for (const id of ['v1', 'v2']) document.getElementById(id).innerHTML = doc.getElementById(id).innerHTML
     datos = leer(doc)
     document.title = doc.title
+    // Prefijo de pendientes en el título
+    const n = (datos.pendientes ?? []).length
+    if (n > 0) document.title = '(' + n + ') ' + document.title
     grafo.actualizar(datos)
     avisar(datos.listo)
+    pintarPendientes(datos.pendientes ?? [])
   } catch {}
   setTimeout(vuelta, 2000)
 }

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from '../hooks/nucleo.ts'
 import { paginaCentro } from '../hooks/vista.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
+import { CATEGORIAS, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE, abiertas, permitidaSiempre, respuestaDe, resultadoParaAgente } from '../hooks/consultas.ts'
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8').replace(/^﻿/, '')).version
 const CASA = path.join(os.homedir(), '.centro-agentes')
@@ -23,7 +24,7 @@ const CONFIG = (() => {
 })()
 
 // Los agentes que lanza el centro también cargan este servidor (está en la config global de OpenCode):
-// para ellos no hay herramientas, así un agente no puede volver a repartir trabajo.
+// ellos solo ven preguntar y pedir_permiso, así un agente no puede volver a repartir trabajo.
 const ES_TRABAJADOR = process.env.CENTRO_TRABAJADOR === '1'
 
 const MODELOS = {
@@ -105,7 +106,18 @@ function comandoNode(nombre) {
   return [nombre]
 }
 
-function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SILENCIO_MS } = {}, alTrozo = () => {}, alCortar = () => {}) {
+// Lo que los agentes de este chat preguntan o piden (consultas.jsonl) y lo que el usuario contesta desde la web (respuestas.jsonl).
+const leerDir = nombre => {
+  try {
+    return fs.readFileSync(path.join(DIR, nombre), 'utf8')
+  } catch {
+    return ''
+  }
+}
+// ¿Este trabajo espera una respuesta del usuario? Mientras la espera, no se le corta por tardar ni por callar.
+const esperaUsuario = id => abiertas(leerDir('consultas.jsonl'), leerDir('respuestas.jsonl')).some(c => c.trabajo === id)
+
+function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SILENCIO_MS, esperando = () => false } = {}, alTrozo = () => {}, alCortar = () => {}) {
   return new Promise(resolve => {
     let stdout = ''
     let stderr = ''
@@ -128,12 +140,19 @@ function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SI
       else p.kill('SIGKILL')
     }
     alCortar(matar)
-    const total = setTimeout(() => matar(`tiempo máximo de ${Math.round(timeoutMs / 60_000)} min`), timeoutMs)
-    let silencio = setTimeout(() => matar(`${silencioMs / 1000} s sin escribir nada`), silencioMs)
-    const vivo = () => {
-      clearTimeout(silencio)
-      silencio = setTimeout(() => matar(`${silencioMs / 1000} s sin escribir nada`), silencioMs)
+    // Si el agente espera una respuesta del usuario, los relojes no cortan: se vuelven a armar.
+    let total
+    const armarTotal = () => {
+      total = setTimeout(() => (esperando() ? armarTotal() : matar(`tiempo máximo de ${Math.round(timeoutMs / 60_000)} min`)), timeoutMs)
     }
+    armarTotal()
+    let silencio
+    const armarSilencio = () => {
+      clearTimeout(silencio)
+      silencio = setTimeout(() => (esperando() ? armarSilencio() : matar(`${silencioMs / 1000} s sin escribir nada`)), silencioMs)
+    }
+    armarSilencio()
+    const vivo = armarSilencio
     p.stdout.on('data', d => {
       stdout += d
       vivo()
@@ -220,7 +239,10 @@ async function argvDe(c, tarea, cwd) {
   if (c.trabajador === 'ollama') return { argv: [ejecutable('ollama'), 'run', '--verbose', '--nowordwrap', '--hidethinking', c.modelo], stdin: tarea }
   // --standalone: con el servicio compartido de OpenCode, la carpeta de la copia queda abierta y no se puede borrar.
   if (c.trabajador === 'opencode')
-    return { argv: [ejecutable('opencode'), 'run', '--standalone', '--format', 'json', '-m', c.modelo, tarea] }
+    // La tarea va por stdin, con el protocolo para preguntar y pedir permiso (el servidor MCP del centro trae esas herramientas).
+    return { argv: [ejecutable('opencode'), 'run', '--standalone', '--format', 'json', '-m', c.modelo], stdin: `${tarea}
+
+${PROTOCOLO_AGENTE}` }
   if (c.trabajador === 'hermes') {
     const i = c.modelo.indexOf('/')
     const [prov, modelo] = i > 0 ? [c.modelo.slice(0, i), c.modelo.slice(i + 1)] : ['auto', c.modelo]
@@ -252,13 +274,16 @@ async function intentar(c, input) {
   const { argv, stdin } = await argvDe(c, input.tarea, input.cwd)
   const env = {
     CENTRO_TRABAJADOR: '1',
+    CENTRO_CHAT_DIR: DIR,
+    CENTRO_TRABAJO: id,
+    CENTRO_ESPERA_MS: String(ESPERA_RESPUESTA_MS),
     OLLAMA_API_BASE: 'http://127.0.0.1:11434',
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',
     ...(process.env.HERMES_HOME ? {} : { HERMES_HOME: path.join(os.homedir(), '.hermes') }),
   }
   let ultimo = 0
-  const r = await correr(argv, { cwd: input.cwd, stdin, env }, crudo => {
+  const r = await correr(argv, { cwd: input.cwd, stdin, env, esperando: () => esperaUsuario(id) }, crudo => {
     if (Date.now() - ultimo < 1500) return
     ultimo = Date.now()
     trabajo.salida = vistaDe(c.trabajador, crudo).slice(-1500)
@@ -480,6 +505,9 @@ function pagina() {
     rendimiento: agregarRendimiento(puntajes(), 8), ahorro, version: VERSION,
     cancelables: trabajos.filter(t => t.estado === 'corriendo' && cortadores.has(t.id)).map(t => ({ id: t.id, titulo: `${t.trabajador.split(':')[0]} · ${corto(t.tarea, 30)}` })),
     relanzables: (plan?.subtareas ?? []).filter(x => x.estado !== 'en curso' && encargos.has(x.n)).map(x => ({ n: x.n, titulo: corto(x.titulo, 40) })),
+    pendientes: abiertas(leerDir('consultas.jsonl'), leerDir('respuestas.jsonl'), leerDir('permisos.json'))
+      .filter(c => trabajos.some(t => t.id === c.trabajo && t.estado === 'corriendo'))
+      .map(c => ({ id: c.trabajo, consulta: c.id, agente: trabajos.find(t => t.id === c.trabajo).trabajador.split(':')[0], tipo: c.tipo, texto: c.texto, detalle: c.detalle, categoria: c.categoria, opciones: c.opciones, en: c.en })),
   })
 }
 
@@ -587,7 +615,82 @@ const HERRAMIENTAS = [
 ]
 
 const lista = v => (typeof v === 'string' ? JSON.parse(v) : (v ?? []))
+// ---------- Herramientas de un agente trabajador: preguntar y pedir_permiso ----------
+// El centro que lanza al agente le pasa en el entorno la carpeta de su chat (CENTRO_CHAT_DIR), su trabajo (CENTRO_TRABAJO) y
+// cuánto esperar (CENTRO_ESPERA_MS). La consulta se escribe en consultas.jsonl; la web la muestra y la respuesta del usuario llega a
+// respuestas.jsonl. Claude no interviene: no gasta tokens mientras el usuario piensa.
+const CHAT_DIR = process.env.CENTRO_CHAT_DIR
+const TRABAJO = process.env.CENTRO_TRABAJO
+const ESPERA_MS = Number(process.env.CENTRO_ESPERA_MS) > 0 ? Number(process.env.CENTRO_ESPERA_MS) : ESPERA_RESPUESTA_MS
+const HERRAMIENTAS_AGENTE = [
+  {
+    name: 'preguntar',
+    description: 'Pregunta algo al usuario y espera su respuesta. Úsala cuando te falte una decisión que no puedes deducir del encargo, en vez de adivinar. Espera hasta que el usuario conteste, así que no la uses para cosas triviales.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pregunta: { type: 'string', description: 'La pregunta, clara y corta' },
+        detalle: { type: 'string', description: 'Contexto opcional para decidir' },
+        opciones: { type: 'array', items: { type: 'string' }, description: 'Respuestas posibles, si las hay (el usuario también puede escribir otra)' },
+      },
+      required: ['pregunta'],
+    },
+  },
+  {
+    name: 'pedir_permiso',
+    description: 'Pide permiso al usuario ANTES de hacer algo delicado: comandos destructivos (borrar archivos, formatear, forzar git), instalar software global, usar la red de forma inesperada o escribir fuera de la carpeta de trabajo. Devuelve APROBADO o DENEGADO; si es DENEGADO, no lo hagas.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        accion: { type: 'string', description: 'Qué vas a hacer, en una frase' },
+        detalle: { type: 'string', description: 'El comando o la ruta exactos' },
+        categoria: { type: 'string', enum: CATEGORIAS, description: 'Tipo de acción' },
+      },
+      required: ['accion', 'categoria'],
+    },
+  },
+]
+const leerArchivo = nombre => {
+  try {
+    return fs.readFileSync(path.join(CHAT_DIR, nombre), 'utf8')
+  } catch {
+    return ''
+  }
+}
+const dormir = ms => new Promise(r => setTimeout(r, ms))
+
+async function consultar(nombre, a) {
+  if (!CHAT_DIR || !TRABAJO) return { error: 'Esta herramienta solo funciona dentro del Centro de agentes.' }
+  const tipo = nombre === 'pedir_permiso' ? 'permiso' : 'pregunta'
+  const texto = corto(String(tipo === 'permiso' ? a.accion ?? '' : a.pregunta ?? '').trim(), 600)
+  if (!texto) return { error: tipo === 'permiso' ? 'Falta la acción.' : 'Falta la pregunta.' }
+  const categoria = tipo === 'permiso' ? (CATEGORIAS.includes(a.categoria) ? a.categoria : 'otro') : undefined
+  // Lo que el usuario ya permitió "siempre en esta petición" no se vuelve a preguntar (lo destructivo nunca se permite así).
+  if (tipo === 'permiso' && permitidaSiempre(leerArchivo('permisos.json'), categoria)) return 'APROBADO por el usuario (permitido siempre en esta petición). Puedes continuar.'
+  const c = {
+    id: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    trabajo: TRABAJO,
+    tipo,
+    texto,
+    ...(a.detalle ? { detalle: corto(String(a.detalle), 800) } : {}),
+    ...(categoria ? { categoria } : {}),
+    ...(tipo === 'pregunta' && Array.isArray(a.opciones) && a.opciones.length ? { opciones: a.opciones.slice(0, 6).map(o => corto(String(o), 80)) } : {}),
+    en: Date.now(),
+  }
+  fs.mkdirSync(CHAT_DIR, { recursive: true })
+  fs.appendFileSync(path.join(CHAT_DIR, 'consultas.jsonl'), JSON.stringify(c) + '\n')
+  while (Date.now() - c.en < ESPERA_MS) {
+    const r = respuestaDe(leerArchivo('respuestas.jsonl'), c.id)
+    if (r) return resultadoParaAgente(c, r, false)
+    await dormir(500)
+  }
+  // Sin respuesta a tiempo: se cierra la consulta (la web deja de mostrarla) y el agente sigue por lo más seguro.
+  fs.appendFileSync(path.join(CHAT_DIR, 'respuestas.jsonl'), JSON.stringify({ id: c.id, decision: 'denegar', texto: 'sin respuesta a tiempo', vencida: true, en: Date.now() }) + '\n')
+  return resultadoParaAgente(c, undefined, true)
+}
+
 async function llamar(nombre, a) {
+  if (ES_TRABAJADOR) return nombre === 'preguntar' || nombre === 'pedir_permiso' ? consultar(nombre, a) : { error: `Herramienta desconocida: ${nombre}` }
   if (nombre === 'planificar') {
     const titulos = lista(a.subtareas)
     const dep = leerDependencias(a.dependencias, titulos.length)
@@ -669,11 +772,11 @@ async function atender(m) {
     if (m.method === 'initialize')
       return enviar({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'centro-agentes', version: VERSION } } })
     if (m.method === 'ping') return enviar({ jsonrpc: '2.0', id: m.id, result: {} })
-    if (m.method === 'tools/list') return enviar({ jsonrpc: '2.0', id: m.id, result: { tools: ES_TRABAJADOR ? [] : HERRAMIENTAS } })
+    if (m.method === 'tools/list') return enviar({ jsonrpc: '2.0', id: m.id, result: { tools: ES_TRABAJADOR ? HERRAMIENTAS_AGENTE : HERRAMIENTAS } })
     if (m.method === 'tools/call') {
       let r = await llamar(m.params?.name, m.params?.arguments ?? {})
       if (avisosWeb.length && r && typeof r === 'object' && !Array.isArray(r)) r = { ...r, avisos_web: avisosWeb.splice(0) }
-      return enviar({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: JSON.stringify(r, null, 1) }], isError: !!r?.error } })
+      return enviar({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: typeof r === 'string' ? r : JSON.stringify(r, null, 1) }], isError: !!r?.error } })
     }
     enviar({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: `Método no soportado: ${m.method}` } })
   } catch (e) {

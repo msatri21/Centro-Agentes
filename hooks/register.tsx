@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, tablero, VINO } from './figura'
 import { paginaCentro } from './vista'
+import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
@@ -162,18 +163,47 @@ async function entornoHermes($: EngineInterface): Promise<Record<string, string>
   return casa ? { HERMES_HOME: `${casa}\\.hermes` } : {}
 }
 
+// ¿Hay una pregunta o un permiso de este trabajo esperando al usuario? Mientras lo hay, no se corta al agente por tardar ni por callar.
+async function esperaUsuario($: EngineInterface, trabajoId?: string) {
+  if (!trabajoId) return false
+  try {
+    const dir = await carpetaChat($)
+    const [consultas, respuestas] = await Promise.all([$.fs.read(`${dir}/consultas.jsonl`), $.fs.read(`${dir}/respuestas.jsonl`).catch(() => '')])
+    return abiertas(consultas, respuestas).some(c => c.trabajo === trabajoId)
+  } catch {
+    return false
+  }
+}
+
+// Las preguntas y los permisos abiertos de los agentes que siguen trabajando, listos para mostrarlos en la web.
+async function pendientesDe($: EngineInterface, lista: Trabajo[]) {
+  try {
+    const dir = await carpetaChat($)
+    const leer = (nombre: string) => $.fs.read(`${dir}/${nombre}`).catch(() => '')
+    const [consultas, respuestas, permisos] = await Promise.all([leer('consultas.jsonl'), leer('respuestas.jsonl'), leer('permisos.json')])
+    const vivos = new Map(lista.filter(t => t.estado === 'corriendo').map(t => [t.id, t]))
+    return abiertas(consultas, respuestas, permisos)
+      .filter(c => vivos.has(c.trabajo))
+      .map(c => ({ id: c.trabajo, consulta: c.id, agente: vivos.get(c.trabajo)!.trabajador.split(':')[0], tipo: c.tipo, texto: c.texto, detalle: c.detalle, categoria: c.categoria, opciones: c.opciones, en: c.en }))
+  } catch {
+    return []
+  }
+}
+
 type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean }
 
 // Lanza el proceso y lee su salida a trozos, para que el panel muestre en vivo lo que escribe cada agente.
 async function correrEnVivo(
   $: EngineInterface,
   argv: string[],
-  init: { cwd?: string; stdin?: string; timeoutMs: number },
+  init: { cwd?: string; stdin?: string; timeoutMs: number; trabajoId?: string },
   alTrozo: (stdout: string) => void,
   alCortar: (cortar: (por: string) => void) => void = () => {},
 ): Promise<Corrida> {
   // PWD: OpenCode toma su carpeta de ahí y no del cwd del proceso.
-  const env = { ...red, ...(await entornoHermes($)), OLLAMA_API_BASE: 'http://127.0.0.1:11434', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(init.cwd ? { PWD: init.cwd } : {}) }
+  // CENTRO_*: así el agente sabe a qué chat y a qué trabajo pertenece (sus herramientas preguntar y pedir_permiso escriben ahí).
+  const identidad = init.trabajoId ? { CENTRO_TRABAJADOR: '1', CENTRO_CHAT_DIR: await carpetaChat($), CENTRO_TRABAJO: init.trabajoId, CENTRO_ESPERA_MS: String(ESPERA_RESPUESTA_MS) } : {}
+  const env = { ...red, ...(await entornoHermes($)), OLLAMA_API_BASE: 'http://127.0.0.1:11434', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(init.cwd ? { PWD: init.cwd } : {}), ...identidad }
   const flujo = $.process.spawn({ argv, cwd: init.cwd, input: init.stdin, env: Object.keys(env).length ? env : undefined })
   let stdout = ''
   let stderr = ''
@@ -184,9 +214,27 @@ async function correrEnVivo(
     void flujo.return(undefined as never)
   }
   alCortar(cortar)
-  const reloj = $.clock.after(init.timeoutMs, () => cortar('pasó el tiempo máximo'))
+  // Si el agente espera una respuesta del usuario, el reloj no corre: se vuelve a armar en vez de cortarlo.
+  let terminado = false
+  let reloj: { cancel(): void } = { cancel() {} }
+  const armarReloj = () => {
+    reloj = $.clock.after(init.timeoutMs, async () => {
+      if (terminado || motivo) return
+      if (await esperaUsuario($, init.trabajoId)) armarReloj()
+      else if (!terminado) cortar('pasó el tiempo máximo')
+    })
+  }
+  armarReloj()
   // Si no escribe nada en un rato, suele ser la red o el proxy colgando la conexión: se corta para probar otro.
-  let callado: { cancel(): void } | undefined = $.clock.after(esperaInicialMs, () => cortar(`sin respuesta en ${esperaInicialMs / 1000} s (¿red o proxy bloqueado?)`))
+  let callado: { cancel(): void } | undefined
+  const armarCallado = () => {
+    callado = $.clock.after(esperaInicialMs, async () => {
+      if (terminado || motivo) return
+      if (await esperaUsuario($, init.trabajoId)) armarCallado()
+      else if (!terminado) cortar(`sin respuesta en ${esperaInicialMs / 1000} s (¿red o proxy bloqueado?)`)
+    })
+  }
+  armarCallado()
   try {
     for await (const { stream, text } of flujo) {
       callado?.cancel()
@@ -202,6 +250,7 @@ async function correrEnVivo(
       }
     }
   } finally {
+    terminado = true
     reloj.cancel()
     callado?.cancel()
   }
@@ -212,7 +261,7 @@ async function correrEnVivo(
 async function ejecutar(
   $: EngineInterface,
   argv: string[],
-  init: { cwd?: string; stdin?: string; timeoutMs: number },
+  init: { cwd?: string; stdin?: string; timeoutMs: number; trabajoId?: string },
   alTrozo: (stdout: string) => void = () => {},
   alCortar?: (cortar: (por: string) => void) => void,
 ): Promise<Corrida> {
@@ -627,6 +676,7 @@ async function escribirWeb($: EngineInterface) {
     ahorro,
     cancelables: controles.cancelables,
     relanzables: controles.relanzables,
+    pendientes: await pendientesDe($, lista),
     version: await versionDelPlugin($),
     extra: a.figuraSvg + a.tableroSvg,
     columnasExtra: `${(640 / alto(a.figuraSvg)).toFixed(3)}fr ${(640 / alto(a.tableroSvg)).toFixed(3)}fr`,
@@ -725,7 +775,10 @@ async function intentar(
     // --standalone: con el servicio compartido de OpenCode, la carpeta de una copia aislada queda abierta y no se puede borrar.
     // La tarea va por stdin: como argumento, el shim .cmd de Windows la corta en el primer salto de línea y el agente trabaja sin instrucciones.
     argv = ['opencode', 'run', '--standalone', '--format', 'json', ...(c.modelo ? ['-m', c.modelo] : [])]
-    stdin = input.tarea
+    // Con las herramientas preguntar y pedir_permiso (las trae el servidor MCP del centro), el agente sabe cuándo usarlas.
+    stdin = `${input.tarea}
+
+${PROTOCOLO_AGENTE}`
   } else if (c.trabajador === 'hermes') {
     // "proveedor/modelo": el proveedor es el de config.yaml (ollama-local = tu Ollama con sesión iniciada, sin clave).
     const corte = c.modelo.indexOf('/')
@@ -756,7 +809,7 @@ async function intentar(
   try {
     // La marca de actividad se escribe como mucho una vez por segundo: la salida llega a trozos y no hace falta más precisión.
     let marcado = t0
-    const r = await ejecutar($, argv, { cwd: input.cwd, stdin, timeoutMs }, out => {
+    const r = await ejecutar($, argv, { cwd: input.cwd, stdin, timeoutMs, trabajoId: id }, out => {
       crudo = out
       const ahora = Date.now()
       if (ahora - marcado < 1000) return

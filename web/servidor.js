@@ -1,4 +1,4 @@
-// Servidor local del centro de agentes MST: sirve la página de cada chat y recibe sus botones (Cancelar, Relanzar).
+// Servidor local del centro de agentes MST: sirve la página de cada chat, recibe sus botones (Cancelar, Relanzar) y las respuestas del usuario a las consultas de los agentes.
 // Solo escucha en 127.0.0.1 y exige la clave en cada petición, para que ninguna otra web pueda mandar órdenes.
 // Uso: node servidor.js <puerto> <clave.txt> <carpeta de chats>
 // Cada chat vive en <carpeta de chats>/<id del chat>/ (centro.html y acciones.jsonl), elegido con ?s=<id>.
@@ -66,6 +66,68 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:
 </style></head><body><header><p class="rotulo">/mst · orquestador de agentes · ${filas.length} chats</p><h1>Todos los <b>chats</b></h1></header><main>${cuerpo}</main></body></html>`
 }
 
+// Respuesta del usuario a una consulta de un agente (una pregunta o un permiso): localiza la consulta por su id
+// en consultas.jsonl, guarda UNA línea en respuestas.jsonl y, si eligió "permitir siempre", apunta la categoría
+// en permisos.json. No se registra en acciones.jsonl.
+function responder(res, carpeta, a) {
+  const id = a.id, decision = a.decision, texto = a.texto
+  if (typeof id !== 'string' || !/^[\w-]{1,80}$/.test(id) || !['aprobar', 'denegar', 'siempre', 'texto'].includes(decision)) {
+    res.writeHead(400).end('respuesta inválida')
+    return
+  }
+  if (texto !== undefined && (typeof texto !== 'string' || texto.length > 2000)) {
+    res.writeHead(400).end('texto inválido')
+    return
+  }
+  if (decision === 'texto' && !texto?.trim()) {
+    res.writeHead(400).end('falta el texto')
+    return
+  }
+  fs.readFile(path.join(carpeta, 'consultas.jsonl'), 'utf8', (err, lineas) => {
+    // Vale la primera línea cuyo id coincide (por si el agente volvió a abrir la misma consulta).
+    let consulta = null
+    if (!err) for (const fila of lineas.split('\n')) {
+      try {
+        const c = JSON.parse(fila)
+        if (c && c.id === id) { consulta = c; break }
+      } catch {}
+    }
+    if (!consulta) { res.writeHead(404).end('no hay esa consulta'); return }
+    fs.readFile(path.join(carpeta, 'respuestas.jsonl'), 'utf8', (err, lineas) => {
+      let respondida = false
+      if (!err) for (const fila of lineas.split('\n')) {
+        try { if (JSON.parse(fila)?.id === id) { respondida = true; break } } catch {}
+      }
+      if (respondida) { res.writeHead(409).end('ya estaba respondida'); return }
+      const guardar = () => {
+        fs.appendFile(path.join(carpeta, 'respuestas.jsonl'), JSON.stringify({ id, decision, texto: texto ?? undefined, en: Date.now() }) + '\n', err => {
+          res.writeHead(err ? 500 : 200).end(err ? 'no se pudo guardar' : 'ok')
+        })
+      }
+      if (decision === 'siempre') {
+        // "Permitir siempre" solo vale para permisos con una categoría que exista y no sea destructiva.
+        if (consulta.tipo !== 'permiso' || typeof consulta.categoria !== 'string' || !consulta.categoria || consulta.categoria === 'destructivo') {
+          res.writeHead(400).end('no se puede permitir siempre esto')
+          return
+        }
+        fs.readFile(path.join(carpeta, 'permisos.json'), 'utf8', (err, permisos) => {
+          let lista = []
+          try { lista = JSON.parse(permisos) } catch {}
+          if (!Array.isArray(lista)) lista = []
+          if (!lista.includes(consulta.categoria)) lista.push(consulta.categoria)
+          fs.writeFile(path.join(carpeta, 'permisos.json'), JSON.stringify(lista), err => {
+            if (err) {
+              res.writeHead(500).end('no se pudo guardar')
+              return
+            }
+            guardar()
+          })
+        })
+      } else guardar()
+    })
+  })
+}
+
 const servidor = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   // Sin clave: solo dice su versión, para que una sesión con una versión más nueva lo releve.
@@ -109,7 +171,8 @@ const servidor = http.createServer((req, res) => {
     let cuerpo = ''
     req.on('data', trozo => {
       cuerpo += trozo
-      if (cuerpo.length > 2000) req.destroy()
+      // En 4000 cabe un 'responder' con su texto de hasta 2000; los demás tipos son mucho más cortos.
+      if (cuerpo.length > 4000) req.destroy()
     })
     req.on('end', () => {
       let a
@@ -117,6 +180,11 @@ const servidor = http.createServer((req, res) => {
         a = JSON.parse(cuerpo)
       } catch {
         res.writeHead(400).end('json inválido')
+        return
+      }
+      // El usuario contesta una consulta de un agente (pregunta o permiso): no se registra en acciones.jsonl.
+      if (a.tipo === 'responder') {
+        responder(res, carpeta, a)
         return
       }
       if (!TIPOS.has(a.tipo) || (a.id !== undefined && typeof a.id !== 'string') || (a.n !== undefined && !Number.isInteger(a.n))) {

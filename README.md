@@ -48,6 +48,17 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 
 En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, proxy y certificado de empresa, presupuesto de tokens de Claude por chat, y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.
 
+## Preguntas y permisos de los agentes
+
+Los agentes trabajan en modo autónomo (`--yolo`), pero pueden pararse a preguntarte algo o a pedirte permiso sin gastar tokens de Claude:
+
+- Cada agente trae dos herramientas MCP, `preguntar` y `pedir_permiso` (las sirve `mcp/centro-mcp.mjs`, la entrada `centro-agentes` de la config de OpenCode de la sección de abajo). El centro le pasa su identidad por entorno (`CENTRO_CHAT_DIR`, `CENTRO_TRABAJO`) y le añade a su encargo cuándo usarlas.
+- La consulta se escribe en `consultas.jsonl` del chat y aparece en la web en **Esperan tu respuesta**, con la card del agente marcada como PREGUNTA o PERMISO. Contestas con los botones (o escribiendo) y la respuesta llega al agente por `respuestas.jsonl`.
+- **Permitir siempre en esta petición** aprueba esa categoría de permiso (`comando`, `instalar`, `red`, `escribir-fuera`, `otro`) para el resto del chat. Lo `destructivo` siempre se pregunta.
+- Mientras una consulta espera, el centro no corta al agente por tardar ni por callar. Si pasan 15 min sin respuesta, un permiso se da por denegado y el agente sigue por lo más seguro.
+- Hoy está conectado a OpenCode. Codex y Hermes siguen en `pendientes.json`.
+- Pruébalo sin gastar nada: `node mcp/prueba-consultas.mjs` (de punta a punta) o `node mcp/demo-bucle.mjs` (la web con consultas que se pueden contestar).
+
 ## Web
 
 `http://127.0.0.1:47321` (solo local, con clave). Un centro por chat, más la página **todos los chats**. Es la misma página con Claude o con OpenCode de jefe:
@@ -86,12 +97,12 @@ El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mi
        "type": "local",
        "command": ["node", "<ruta>/centro-agentes/mcp/centro-mcp.mjs"],
        "enabled": true,
-       "timeout": 900000
+       "timeout": 1200000
      }
    }
    ```
 
-   `timeout` es en milisegundos y cubre también la ejecución: repartir y esperar a los agentes tarda minutos.
+   `timeout` es en milisegundos y cubre también la ejecución: repartir y esperar a los agentes tarda minutos, y una consulta de un agente puede esperar hasta 15 min al usuario (por eso son 20 min).
 2. Copia `opencode/agents/jefe.md` y `opencode/commands/mst.md` de este repo a `~/.config/opencode/agents/` y `~/.config/opencode/commands/`: el agente `jefe` (modo `primary`, modelo `ollama/gpt-oss:120b-cloud`) lleva el protocolo, y `/mst` le pasa la tarea. Pon también `"model": "ollama/gpt-oss:120b-cloud"` en la config para no depender de OpenCode Zen.
 3. Opcional, en `~/.centro-agentes/opencode-jefe.json`: `{ "ntfyTema": "...", "conClaude": false, "timeoutMin": 8 }`.
 
