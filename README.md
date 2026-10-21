@@ -48,6 +48,12 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 
 En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, proxy y certificado de empresa, presupuesto de tokens de Claude por chat, y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.
 
+## Cómo arranca /mst y el cerebro global
+
+1. **El enlace primero.** Al escribir `/mst <tarea>`, lo primero que ves es el enlace del centro de agentes de ese chat (y el jefe lo repite como su primer mensaje).
+2. **Preguntas hasta tenerlo claro.** Antes de planificar, el jefe te pregunta (con la herramienta de preguntas de Claude Code, o en el chat) por el objetivo, el alcance, el estilo o la tecnología, las restricciones y cómo sabrás que está terminado. Cuando lo tiene claro, te resume lo que entendió y planifica. Lo que la tarea ya dice no se pregunta.
+3. **El cerebro global** (`~/.centro-agentes/cerebro.json`) es compartido por todos los chats y por OpenCode como jefe. Cada vez que el jefe puntúa un trabajo se apunta qué se hizo, qué agente y modelo lo hicieron y qué nota sacó. Antes de preguntar, el jefe lo consulta con la herramienta `cerebro` (palabras clave de la tarea): le dice quién lo hizo mejor en casos parecidos y cuáles fueron. Y al repartir, si dejas trabajador y modelo vacíos, el centro empieza por quien sacó 7 o más en algo parecido (Claude headless solo si sacó 9 o más). Guarda las últimas 400 experiencias.
+
 ## Preguntas y permisos de los agentes
 
 Los agentes trabajan en modo autónomo (`--yolo`), pero pueden pararse a preguntarte algo o a pedirte permiso sin gastar tokens de Claude:

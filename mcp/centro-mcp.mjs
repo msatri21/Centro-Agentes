@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from '../hooks/nucleo.ts'
 import { paginaCentro } from '../hooks/vista.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
+import { consultar as consultarCerebro, preferir, recomendar, registrar } from '../hooks/cerebro.ts'
 import { CATEGORIAS, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE, abiertas, permitidaSiempre, respuestaDe, resultadoParaAgente } from '../hooks/consultas.ts'
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8').replace(/^﻿/, '')).version
@@ -77,6 +78,12 @@ const leerJson = (f, def) => {
   }
 }
 const ARCHIVO_PUNTAJES = path.join(CASA, 'puntajes-opencode.json')
+// El cerebro global: el mismo archivo que usa el plugin, así lo aprendido en un chat sirve en todos.
+const ARCHIVO_CEREBRO = process.env.CENTRO_CEREBRO ?? path.join(CASA, 'cerebro.json') // CENTRO_CEREBRO: otro archivo, para las pruebas
+const leerCerebro = () => {
+  const g = leerJson(ARCHIVO_CEREBRO, { experiencias: [] })
+  return Array.isArray(g?.experiencias) ? g : { experiencias: [] }
+}
 const puntajes = () => leerJson(ARCHIVO_PUNTAJES, {})
 
 // ---------- Procesos ----------
@@ -342,8 +349,10 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     return { error: `Modelo no permitido: ${modeloPedido}. Usa uno de: ${elegibles.map(c => clave(c.trabajador, c.modelo)).join(', ')}` }
   const tabla = puntajes()
   const libre = c => !ocupados.get(clave(c.trabajador, c.modelo))
+  // Si el cerebro recuerda que alguien lo hizo muy bien en algo parecido, empieza por él.
+  const recuerdo = recomendar(leerCerebro(), categoria, input.tarea)
   const preparar = l => {
-    const o = ordenar(tabla, categoria, l, caidosAhora())
+    const o = preferir(ordenar(tabla, categoria, l, caidosAhora()), recuerdo)
     return [...o.filter(libre), ...o.filter(c => !libre(c))]
   }
   let cola = [...preparar(elegibles), ...(pedido ? preparar(todos.filter(c => c.trabajador !== pedido)) : [])]
@@ -626,6 +635,11 @@ const HERRAMIENTAS = [
     inputSchema: { type: 'object', properties: { subtareas: { type: 'array', items: { type: 'number' }, description: 'Opcional: solo estas subtareas. Vacío = todas las pendientes de juntar' }, verificar: { type: 'string', description: 'Opcional: comando de tests a ejecutar tras juntar' } } },
   },
   {
+    name: 'cerebro',
+    description: 'Consulta el cerebro global: qué agente y modelo lo hicieron mejor en tareas parecidas de cualquier chat, y los casos más parecidos. Devuelve también el enlace web de este chat ("web").',
+    inputSchema: { type: 'object', properties: { consulta: { type: 'string', description: 'Palabras clave de la tarea nueva' }, area: { type: 'string', description: 'Categoría si ya la sabes (css, javascript, tests, docs...)' } }, required: ['consulta'] },
+  },
+  {
     name: 'ranking',
     description: 'Nota media y tiempo medio de cada agente y modelo por categoría.',
     inputSchema: { type: 'object', properties: { categoria: { type: 'string' } } },
@@ -745,6 +759,8 @@ async function llamar(nombre, a) {
     c.msTotal += t.ms ?? 0
     fs.mkdirSync(CASA, { recursive: true })
     fs.writeFileSync(ARCHIVO_PUNTAJES, JSON.stringify(tabla))
+    const [agente, ...modelo] = t.trabajador.split(':')
+    fs.writeFileSync(ARCHIVO_CEREBRO, JSON.stringify(registrar(leerCerebro(), { en: Date.now(), area: t.categoria, tarea: t.tarea, agente, modelo: modelo.join(':'), nota: p, ms: t.ms, tokens: (t.tokensIn ?? 0) + (t.tokensOut ?? 0), chat: ID, leccion: a.nota })))
     t.puntaje = p
     marcar(t.subtarea, { estado: p >= 6 ? 'hecha' : 'pendiente', quien: t.trabajador, puntaje: p })
     avisarSiTermino()
@@ -771,6 +787,7 @@ async function llamar(nombre, a) {
     guardar()
     return { resultados, ...(verificacion ? { verificacion } : {}), pendientes: porJuntar.map(c => c.rama) }
   }
+  if (nombre === 'cerebro') return { web: urlWeb(), ...consultarCerebro(leerCerebro(), String(a.consulta ?? ''), a.area) }
   if (nombre === 'ranking') {
     const tabla = puntajes()
     return Object.entries(tabla)

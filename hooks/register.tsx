@@ -5,6 +5,8 @@ import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, tablero, VINO } from './figura'
 import { paginaCentro } from './vista'
 import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
+import { consultar, preferir, recomendar, registrar } from './cerebro'
+import type { Cerebro } from './cerebro'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
@@ -55,7 +57,13 @@ const lista = (s: string | undefined, def: string[]) => {
   return l.length ? l : def
 }
 
-const protocolo = (m: Modelos) => `Actúa como JEFE del centro de agentes. Tú no haces el trabajo: planificas, repartes, verificas y entregas. Gasta lo mínimo de Claude: el trabajo lo hacen los agentes gratis.
+// Lo primero que hace el jefe en /mst: el enlace, el cerebro y las preguntas. Después, el protocolo de siempre.
+const ANTES = (url?: string) => `Antes de empezar, en este orden:
+A. ${url ? `ENLACE: tu PRIMER mensaje es solo este enlace del centro de agentes de este chat (el usuario lo abre y lo ve todo en vivo): ${url}` : 'ENLACE: tu primer mensaje es el enlace del centro de agentes de este chat (el campo "web" que devuelve mcp__centro-agentes__cerebro).'}
+B. CEREBRO: llama a mcp__centro-agentes__cerebro con las palabras clave de la tarea. Te dice qué agente y modelo lo hicieron mejor en casos parecidos de CUALQUIER chat; tenlo en cuenta al preguntar y al repartir (el centro ya prefiere a ese agente si dejas trabajador y modelo vacíos).
+C. PREGUNTAS: pregúntale al usuario hasta que te quede claro qué quiere: objetivo, alcance, estilo o tecnología, restricciones y cómo sabrá que está terminado. Usa la herramienta AskUserQuestion si la tienes (2-4 preguntas por ronda, con tu opción recomendada primero); si no, pregunta en el chat. No preguntes lo que la tarea ya dice. Haz las rondas que hagan falta (normalmente 1 o 2). Cuando te quede claro, resume en 2-3 líneas lo que entendiste y pasa al protocolo.`
+
+const protocolo = (m: Modelos, url?: string) => `Actúa como JEFE del centro de agentes. Tú no haces el trabajo: planificas, repartes, verificas y entregas. Gasta lo mínimo de Claude: el trabajo lo hacen los agentes gratis.
 
 Agentes (el centro elige solo el mejor modelo de cada uno según su historial; un agente sin probar se explora):
 - opencode: agente de código que edita archivos en su directorio. Usa los modelos gratis de la nube de Ollama: ${ver(m.opencode)}.
@@ -64,6 +72,8 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 - aider: Aider, agente de código por parejas que edita archivos en su directorio; usa los modelos gratis de la nube de Ollama: ${ver(m.aider)}.
 - codex: Codex (OpenAI), agente de código que edita archivos y ejecuta comandos en su carpeta; usa tu cuenta de ChatGPT (cupo gratis limitado) o, de respaldo, los modelos gratis de Ollama: ${ver(m.codex)}.
 - claude: Claude headless (${ver(m.claude)}). Gasta del plan de Claude: el centro solo lo elige si los gratis rinden claramente peor.
+
+${ANTES(url)}
 
 Protocolo:
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
@@ -496,6 +506,22 @@ let servidorLanzado = false
 async function carpetaWeb($: EngineInterface) {
   const casa = await $.env.get('USERPROFILE').catch(() => undefined)
   return casa ? `${casa}/.centro-agentes` : `${$.plugin.root}/web`
+}
+
+// --- El cerebro global: lo aprendido en todos los chats (~/.centro-agentes/cerebro.json) ---
+async function leerCerebro($: EngineInterface): Promise<Cerebro> {
+  try {
+    const g = JSON.parse(await $.fs.read(`${await carpetaWeb($)}/cerebro.json`))
+    return Array.isArray(g?.experiencias) ? g : { experiencias: [] }
+  } catch {
+    return { experiencias: [] }
+  }
+}
+// Cada vez que el jefe puntúa un trabajo, el cerebro apunta qué se hizo, quién lo hizo y qué nota sacó.
+async function anotarCerebro($: EngineInterface, t: Trabajo, nota: number, leccion?: string) {
+  const [agente, ...modelo] = t.trabajador.split(':')
+  const c = registrar(await leerCerebro($), { en: Date.now(), area: t.categoria, tarea: t.tarea, agente: agente!, modelo: modelo.join(':'), nota, ms: t.ms, tokens: (t.tokensIn ?? 0) + (t.tokensOut ?? 0), chat: etiquetaChat(carpetaProyecto, nombreChat), leccion })
+  await $.fs.write(`${await carpetaWeb($)}/cerebro.json`, JSON.stringify(c)).catch(() => undefined)
 }
 
 // --- Un centro por chat, guardado en disco para sobrevivir a un cierre o un fallo ---
@@ -1062,8 +1088,10 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   const alcanzable = (c: Candidato) => esLocal(c) || conRed.get(c.trabajador) !== false
   const tabla = ((await $.store.get(STORE_KEY)) ?? {}) as Puntajes
   const libre = (c: Candidato) => !ocupados.get(clave(c.trabajador, c.modelo))
+  // Si el cerebro recuerda que alguien lo hizo muy bien en algo parecido, empieza por él.
+  const recuerdo = recomendar(await leerCerebro($), categoria, input.tarea)
   const preparar = (l: Candidato[]) => {
-    const o = ordenar(tabla, categoria, l, caidosAhora()).filter(alcanzable)
+    const o = preferir(ordenar(tabla, categoria, l, caidosAhora()).filter(alcanzable), recuerdo)
     return [...o.filter(libre), ...o.filter(c => !libre(c))]
   }
   // Primero el agente pedido; si no puede, se pasa a otro que sí funcione.
@@ -1339,6 +1367,12 @@ export const register: Register = (on, options) => {
       isDeferred: false,
       inputSchema: { type: 'object', properties: { categoria: { type: 'string' } } },
     })
+    await $.tool.register({
+      name: 'cerebro',
+      description: 'Consulta el cerebro global: qué agente y modelo lo hicieron mejor en tareas parecidas de cualquier chat, y los casos más parecidos. Devuelve también el enlace web de este chat.',
+      isDeferred: false,
+      inputSchema: { type: 'object', properties: { consulta: { type: 'string', description: 'Palabras clave de la tarea nueva' }, area: { type: 'string', description: 'Categoría si ya la sabes (css, javascript, tests, docs...)' } }, required: ['consulta'] },
+    })
 
     return next(e)
   })
@@ -1378,11 +1412,13 @@ ${protocolo(modelos)}`
     encenderWeb($)
     // Se da tiempo a que el servidor local empiece a escuchar.
     $.clock.after(1500, () => void abrirNavegador($))
-    if (!e.args.trim()) return { text: `${TITULO} abierto: panel y web (${await urlWeb($)}). Escribe /mst <tarea> para ponerlo a trabajar.` }
+    const url = await urlWeb($)
+    if (!e.args.trim()) return { text: `${TITULO}: ${url}\nEscribe /mst <tarea> para ponerlo a trabajar.` }
     await update($, plan, () => null)
     // Sin await: el envío espera a que la sesión quede libre, y eso solo pasa cuando este comando ha respondido.
-    void $.prompt.submit({ text: `${protocolo(modelos)}\n\nTAREA:\n${e.args}` }).catch(() => undefined)
-    return { text: `${TITULO} abierto y tarea enviada al jefe.` }
+    void $.prompt.submit({ text: `${protocolo(modelos, url)}\n\nTAREA:\n${e.args}` }).catch(() => undefined)
+    // Lo primero que ve el usuario es el enlace; el jefe lo repite y le hace sus preguntas.
+    return { text: `${TITULO}: ${url}\nTarea enviada al jefe: antes de planificar te hará unas preguntas.` }
   })
 
   on('command.run', { command: 'centro' }, async ($, e) => {
@@ -1514,6 +1550,7 @@ ${protocolo(modelos)}`
 
     await update($, trabajos, l => (l ?? []).map(x => (x.id === id ? { ...x, puntaje: p } : x)))
     await puntuarEnHistorial($, id, p)
+    await anotarCerebro($, t, p, nota)
     await marcar($, t.subtarea, { estado: p >= 6 ? 'hecha' : 'pendiente', quien: t.trabajador, puntaje: p })
     await avisarSiTermino($)
     if (p < 6) $.ui.toast(`${t.trabajador} sacó ${p}/10 en ${t.categoria}${nota ? `: ${corto(nota, 40)}` : ''}`)
@@ -1550,6 +1587,11 @@ ${protocolo(modelos)}`
     const halladas = buscarSkills(lista, consulta ?? '')
     return res(halladas.length ? { total: lista.length, skills: halladas } : { total: lista.length, skills: [], aviso: 'Ninguna encaja; prueba otras palabras o sigue sin skill.' })
   }).catch(async (_$, _e, next) => res({ error: `buscar_skills falló: ${String(next.error)}` }))
+
+  on('tool.call', { tool: 'mcp__centro-agentes__cerebro' }, async ($, e) => {
+    const { consulta, area } = args(e) as { consulta?: string; area?: string }
+    return res({ web: await urlWeb($), ...consultar(await leerCerebro($), String(consulta ?? ''), area) })
+  }).catch(async (_$, _e, next) => res({ error: `cerebro falló: ${String(next.error)}` }))
 
   on('tool.call', { tool: 'mcp__centro-agentes__ranking' }, async ($, e) => {
     const { categoria } = args(e) as { categoria?: string }

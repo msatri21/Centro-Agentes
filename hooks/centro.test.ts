@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { MAX_EXPERIENCIAS, consultar, preferir, recomendar, registrar } from './cerebro'
+import type { Cerebro } from './cerebro'
 import { colaDeLineas, figura, pagina, tablero } from './figura'
 import { buscarSkills, conSkills, costoComoClaude, esErrorDeCuenta, esMasNueva, etiquetaChat, leerFrontmatter, nombreDesdeMensaje, recuperar } from './register'
 
@@ -555,7 +557,9 @@ test('/mst con tarea responde al momento y manda la tarea al jefe sin quedarse e
     new Promise(res => setTimeout(() => res('bloqueado'), 3000)),
   ])
   expect(r).not.toBe('bloqueado')
-  expect((r as any).text).toContain('tarea enviada al jefe')
+  // Lo primero que ve el usuario es el enlace del centro; después, que el jefe le hará preguntas.
+  expect((r as any).text).toMatch(/^Centro de agentes MST: http:\/\/127\.0\.0\.1:\d+\/\?t=/)
+  expect((r as any).text).toContain('Tarea enviada al jefe')
   // Deja terminar lo que /mst lanza en segundo plano (web, servidor) antes de cerrar el test.
   await new Promise(res => setTimeout(res, 500))
 })
@@ -1170,4 +1174,36 @@ test('colocarGrupos: con 1, 2, 3 y 6 grupos no se solapan, ninguno toca el círc
   const distActivos = resMixto.posiciones.filter(p => p.id.startsWith('Activo')).map(p => Math.sqrt(p.x * p.x + p.y * p.y))
   const distAtenuados = resMixto.posiciones.filter(p => p.id.startsWith('Atenuado')).map(p => Math.sqrt(p.x * p.x + p.y * p.y))
   expect(Math.min(...distActivos)).toBeLessThan(Math.max(...distAtenuados))
+})
+
+test('el cerebro recuerda quién lo hizo mejor en algo parecido y lo prefiere de entrada', async () => {
+  let c: Cerebro = { experiencias: [] }
+  const hecha = (area: string, tarea: string, agente: string, modelo: string, nota: number, ms = 20_000) => (c = registrar(c, { en: Date.now(), area, tarea, agente, modelo, nota, ms }))
+  hecha('css', 'Estilos nocturnos con animaciones para una página de luciérnagas', 'hermes', 'ollama-local/gpt-oss:120b-cloud', 9)
+  hecha('css', 'Estilos de una landing con tarjetas de vidrio', 'hermes', 'ollama-local/gpt-oss:120b-cloud', 8)
+  hecha('css', 'Estilos de una landing con tarjetas de vidrio', 'opencode', 'ollama/beam:cloud', 5)
+  hecha('tests', 'Pruebas de la calculadora', 'aider', 'ollama_chat/gemma4:31b-cloud', 9)
+
+  // En algo parecido (aunque el área no se diga), gana quien mejor lo hizo.
+  const r = consultar(c, 'diseño de página con animaciones y estilos', 'css')
+  expect(r.recomendacion?.agente).toBe('hermes')
+  expect(r.recomendacion?.notaMedia).toBe(8.5)
+  expect(r.mejores.map(m => m.agente)).toEqual(['hermes', 'opencode'])
+  expect(r.similares.length).toBeGreaterThan(0)
+
+  // Lo que no se parece a nada no recomienda a nadie.
+  expect(consultar(c, 'traducir un poema al francés').recomendacion).toBeUndefined()
+  expect(recomendar(c, 'docs', 'resumir un documento')).toBeUndefined()
+
+  // Claude headless solo se prefiere si sacó 9 o más; el resto conserva su orden.
+  hecha('docs', 'Informe técnico', 'claude', 'sonnet', 8)
+  expect(recomendar(c, 'docs', 'Informe técnico')).toBeUndefined()
+  const cola = [{ trabajador: 'opencode', modelo: 'a' }, { trabajador: 'hermes', modelo: 'ollama-local/gpt-oss:120b-cloud' }, { trabajador: 'aider', modelo: 'b' }]
+  expect(preferir(cola, recomendar(c, 'css', 'estilos de una landing')).map(x => x.trabajador)).toEqual(['hermes', 'opencode', 'aider'])
+  expect(preferir(cola, undefined)).toEqual(cola)
+
+  // Se guarda como mucho lo último, con la nota dentro de 1-10.
+  for (let i = 0; i < MAX_EXPERIENCIAS + 20; i++) hecha('x', 'y', 'ollama', 'm', 99)
+  expect(c.experiencias.length).toBe(MAX_EXPERIENCIAS)
+  expect(c.experiencias.at(-1)?.nota).toBe(10)
 })

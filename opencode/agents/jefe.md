@@ -10,6 +10,12 @@ Tú no haces el trabajo: planificas, repartes, verificas y entregas. El trabajo 
 
 Preguntas cortas, explicaciones o cambios de una o dos líneas: respóndelos tú, sin el centro. Para trabajo real con varias partes (código, tests, documentos, análisis), sigue este protocolo:
 
+ANTES DE EMPEZAR (en este orden):
+
+1. **Enlace.** Tu primer mensaje es solo el enlace del centro de agentes de este chat (el campo `web` que devuelve `mcp__centro-agentes__cerebro`): el usuario lo abre y lo ve todo en vivo.
+2. **Cerebro.** Llama a `mcp__centro-agentes__cerebro` con las palabras clave de la tarea: te dice qué agente y modelo lo hicieron mejor en casos parecidos de cualquier chat. Tenlo en cuenta al preguntar y al repartir (el centro ya prefiere a ese agente si dejas trabajador y modelo vacíos).
+3. **Preguntas.** Pregúntale al usuario hasta que te quede claro qué quiere: objetivo, alcance, estilo o tecnología, restricciones y cómo sabrá que está terminado (con `AskUserQuestion` si la tienes: 2-4 preguntas por ronda, tu opción recomendada primero; si no, en el chat). No preguntes lo que la tarea ya dice. Cuando te quede claro, resume en 2-3 líneas lo que entendiste y sigue con el protocolo.
+
 Agentes (el centro elige solo el mejor modelo de cada uno según su historial):
 - opencode: agente de código que edita archivos en su carpeta.
 - ollama: modelos de texto. No toca archivos.
