@@ -5,7 +5,7 @@ import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, tablero, VINO } from './figura'
 import { paginaCentro } from './vista'
 import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
-import { CON_MAPA, clasificarTarea, skillsAutomaticas } from './skillsAuto'
+import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
@@ -1043,7 +1043,10 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   const conSkills = (input.skills ?? []).filter(Boolean)
   // Skills automáticas: el centro decide por la clase de tarea (escribir código, auditar un cambio, auditar un repo o texto) y no depende de que
   // Claude se acuerde. Solo las instaladas; y solo a los agentes que leen skills (Ollama y Aider quedan como están).
-  const claseTarea = skillsAuto ? clasificarTarea({ categoria, tarea: input.tarea, archivos: input.archivos, aislar: input.aislar, verificar: input.verificar }).clase : 'texto'
+  let clasificada = skillsAuto ? clasificarTarea({ categoria, tarea: input.tarea, archivos: input.archivos, aislar: input.aislar, verificar: input.verificar }) : undefined
+  // Una petición vaga que pide cambios en una carpeta con código también es código (el mapa del código no sale vacío).
+  if (clasificada && clasificada.clase === 'texto' && clasificada.pideCambios && input.cwd) clasificada = conCarpeta(clasificada, (await mapaDelCodigo($, input.cwd)) !== '')
+  const claseTarea = clasificada?.clase ?? 'texto'
   // El interruptor del encargo apaga lo que se añade al agente, no el recordatorio de con qué auditar el resultado.
   const clase = input.sin_skills_automaticas ? 'texto' : claseTarea
   const automaticas: string[] = []

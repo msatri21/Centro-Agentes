@@ -108,7 +108,7 @@ test('con la skill ponytail el encargo lleva el mapa del código de la carpeta d
   expect(vistos[vistos.length - 1].input).not.toContain('Codebase map')
 })
 
-import { CON_MAPA, clasificarTarea, skillsAutomaticas } from './skillsAuto'
+import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 
 test('clasificarTarea: código, auditoría de un cambio, auditoría de un repo o texto; ante la duda, código', () => {
   const clase = (e: any) => clasificarTarea(e).clase
@@ -138,10 +138,17 @@ test('clasificarTarea: código, auditoría de un cambio, auditoría de un repo o
   expect(skillsAutomaticas('auditoria-repo')).toEqual(['ponytail-audit'])
   expect(skillsAutomaticas('texto')).toEqual([])
   expect(CON_MAPA).toEqual(['ponytail', 'ponytail-audit'])
+  // Una petición vaga solo es código si pide cambios y la carpeta tiene código.
+  const vaga = clasificarTarea({ categoria: 'general', tarea: 'Agrega la posibilidad de aplicar un cupón de descuento al carrito.' })
+  expect(vaga.clase).toBe('texto')
+  expect(vaga.pideCambios).toBe(true)
+  expect(conCarpeta(vaga, true).clase).toBe('escritura')
+  expect(conCarpeta(vaga, false).clase).toBe('texto')
+  expect(conCarpeta(clasificarTarea({ categoria: 'texto', tarea: 'Redacta un correo de bienvenida' }), true).clase).toBe('texto')
 })
 
 // Un centro con ponytail, ponytail-review y ponytail-audit instaladas y el script del mapa; devuelve lo que ve el agente.
-const centroConPonytail = (on: any) => {
+const centroConPonytail = (on: any, { carpetaConCodigo = true } = {}) => {
   base(on)
   on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
   on('fs.exists', async (_$: any, e: any) => ({ value: /SKILL\.md$|ponytail-map\.js$/.test(String(e.path)) }))
@@ -150,7 +157,8 @@ const centroConPonytail = (on: any) => {
   on('process.run', async (_$: any, e: any) => {
     if (e.argv.some((a: string) => a.includes('ponytail-map.js'))) {
       mapas.push(e.init?.cwd)
-      return { value: { exitCode: 0, stdout: 'Codebase map (what already exists)\nweb/: crearGrafo\n', stderr: '', isStdoutTruncated: false } }
+      // Una carpeta sin código deja el mapa vacío.
+      return { value: { exitCode: 0, stdout: carpetaConCodigo ? 'Codebase map (what already exists)\nweb/: crearGrafo\n' : '', stderr: '', isStdoutTruncated: false } }
     }
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }
   })
@@ -203,6 +211,26 @@ test('sin skills automáticas: tareas de texto, el interruptor del encargo, el a
   const aider = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'aider', categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' } }))
   expect(aider.trabajador.startsWith('aider')).toBe(true)
   expect(c.visto()).not.toContain('Usa estas skills')
+})
+
+test('una petición vaga que pide cambios cuenta como código si la carpeta tiene código, y no si no lo tiene', async ($, on) => {
+  const c = centroConPonytail(on)
+  const vaga = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'general', tarea: 'Agrega la posibilidad de aplicar un cupón de descuento al carrito.', cwd: 'C:/proyecto' } }))
+  expect(vaga.exito).toBe(true)
+  expect(c.visto()).toContain('ponytail: lee')
+  expect(c.visto()).toContain('Codebase map')
+  // Una tarea de texto, aunque esté en una carpeta con código, sigue siendo texto: no pide cambios.
+  const resumen = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'analisis', tarea: 'Resume las diferencias entre los dos planes de precios', cwd: 'C:/proyecto' } }))
+  expect(resumen.exito).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+})
+
+test('una petición vaga en una carpeta sin código no lleva ponytail', async ($, on) => {
+  const c = centroConPonytail(on, { carpetaConCodigo: false })
+  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'general', tarea: 'Agrega una sección de preguntas frecuentes al documento', cwd: 'C:/documentos' } }))
+  expect(d.exito).toBe(true)
+  expect(c.visto()).not.toContain('Usa estas skills')
+  expect(d.auditar_con).toBeUndefined()
 })
 
 test('compara versiones para saber si hay que autoactualizar', async () => {
