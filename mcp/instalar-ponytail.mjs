@@ -108,9 +108,13 @@ async function main(argv) {
   const reemplazar = tiene('--reemplazar')
   const filas = plan({ casa, reemplazar })
   console.log(`ponytail ${COMMIT.slice(0, 7)} (${REPO}, licencia MIT)\n`)
-  console.log('Se descargaría (solo de raw.githubusercontent.com, a ese commit):')
-  for (const d of DESCARGAS) console.log(`  ${urlDe(d.ruta)}  (${d.tamano} bytes)`)
-  console.log('\nSe escribiría en:')
+  const instalando = tiene('--instalar')
+  // Solo lo que hace falta: si todo existe, no se descarga nada.
+  const necesarias = new Set(filas.filter(f => f.escribir).map(f => f.de).filter(Boolean))
+  const aBajar = DESCARGAS.filter(d => necesarias.has(d.ruta))
+  console.log(aBajar.length ? `${instalando ? 'Se descarga' : 'Se descargaría'} (solo de raw.githubusercontent.com, a ese commit):` : 'No hace falta descargar nada.')
+  for (const d of aBajar) console.log(`  ${urlDe(d.ruta)}  (${d.tamano} bytes)`)
+  console.log(`\n${instalando ? 'Se escribe' : 'Se escribiría'} en:`)
   for (const f of filas) console.log(`  ${f.escribir ? (f.existe ? 'reemplaza' : 'nuevo    ') : 'ya existe (se deja)'}  ${f.ruta}`)
   if (!tiene('--instalar')) {
     console.log('\nNo se descargó ni se escribió nada. Para instalar: node mcp/instalar-ponytail.mjs --instalar' + (reemplazar ? ' --reemplazar' : ''))
