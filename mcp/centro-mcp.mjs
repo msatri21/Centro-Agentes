@@ -53,6 +53,8 @@ const ID = 'opencode-' + new Date().toISOString().replace(/\D/g, '').slice(0, 14
 const DIR = path.join(process.env.CENTRO_CHATS ?? path.join(CASA, 'chats'), ID)
 const CARPETA = path.basename(process.cwd())
 let plan = null
+// Los planes anteriores de este chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
+let planes = []
 const trabajos = []
 const encargos = new Map()
 // Cómo cortar cada trabajo en marcha (para el botón Cancelar de la web) y lo que pasó mientras el jefe no miraba.
@@ -274,7 +276,7 @@ async function intentar(c, input) {
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, ultimaActividad: t0 }
+  const trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, ultimaActividad: t0, plan: plan?.objetivo }
   trabajos.push(trabajo)
   marcar(input.subtarea, { estado: 'en curso', quien })
   guardar()
@@ -510,7 +512,7 @@ function pagina() {
     return { nombre: t, ok: !fuera, nota: fuera ? (motivo.get(t) ?? 'apartado un rato') : `${MODELOS[t].length} modelos` }
   })
   return paginaCentro({
-    clave: claveWeb(), chat: CARPETA, jefe: 'OpenCode', plan, trabajos, agentes: estadoAgente, modelos: MODELOS,
+    clave: claveWeb(), chat: CARPETA, jefe: 'OpenCode', plan, planes, trabajos, agentes: estadoAgente, modelos: MODELOS,
     rendimiento: agregarRendimiento(puntajes(), 8), ahorro, version: VERSION,
     cancelables: trabajos.filter(t => t.estado === 'corriendo' && cortadores.has(t.id)).map(t => ({ id: t.id, titulo: `${t.trabajador.split(':')[0]} · ${corto(t.tarea, 30)}` })),
     relanzables: (plan?.subtareas ?? []).filter(x => x.estado !== 'en curso' && encargos.has(x.n)).map(x => ({ n: x.n, titulo: corto(x.titulo, 40) })),
@@ -558,7 +560,7 @@ function guardarYa() {
   if (!plan && !trabajos.length) return
   try {
     fs.mkdirSync(DIR, { recursive: true })
-    fs.writeFileSync(path.join(DIR, 'estado.json'), JSON.stringify({ plan, trabajos, encargos: [...encargos], nombre: `OpenCode jefe · ${plan?.objetivo ?? ''}` }))
+    fs.writeFileSync(path.join(DIR, 'estado.json'), JSON.stringify({ plan, planes, trabajos, encargos: [...encargos], nombre: `OpenCode jefe · ${plan?.objetivo ?? ''}` }))
     fs.writeFileSync(path.join(DIR, 'centro.html'), pagina())
   } catch {}
 }
@@ -703,10 +705,13 @@ async function llamar(nombre, a) {
   if (nombre === 'planificar') {
     const titulos = lista(a.subtareas)
     const dep = leerDependencias(a.dependencias, titulos.length)
-    plan = {
+    const nuevo = {
       objetivo: corto(String(a.objetivo ?? ''), 120),
       subtareas: titulos.map((t, i) => ({ n: i + 1, titulo: corto(String(t), 80), estado: 'pendiente', ...(dep.has(i + 1) ? { espera: dep.get(i + 1) } : {}) })),
     }
+    const mismo = (x, y) => x.trim() === y.trim()
+    planes = [...planes.filter(p => !mismo(p.objetivo, nuevo.objetivo) && !(plan && mismo(p.objetivo, plan.objetivo))), ...(plan && !mismo(plan.objetivo, nuevo.objetivo) ? [plan] : [])].slice(-6)
+    plan = nuevo
     avisadoPara = ''
     await asegurarWeb()
     guardar()

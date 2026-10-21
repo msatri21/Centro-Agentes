@@ -669,7 +669,7 @@ test('cerrojos: los archivos de otro agente cuentan como suyos aunque ya haya te
   expect(c.deOtros('/otra', b.id, b.desde)).toEqual([])
 })
 
-import { estadoAgente, eventosEntre, faseDe, resumenDe, tarjetasDe } from '../web/grafo-logica.js'
+import { estadoAgente, eventosEntre, faseDe, resumenDe, tarjetasDe, gruposDe, faseDeGrupo, rejilla, colocarGrupos, FASES_PLAN } from '../web/grafo-logica.js'
 import { graficaAhorro, graficaNotas, graficaTiempo, graficaTokens } from './graficas'
 import { paginaCentro } from './vista'
 
@@ -769,6 +769,9 @@ test('las cards: de los trabajos terminados solo salen los 20 más recientes, y 
 test('las cards: alarma de silencio pasado el umbral y sin alarma si el trabajo acaba de hablar', () => {
   const callado: any = { ahora: 120_000, esperaSilencioMs: 60_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000, ultimaActividad: 1000 })] }
   expect(tarjetasDe(callado)[0].alarma).toBe('silencio')
+  // Y cuenta cuánto lleva callado (no cuánto lleva trabajando): 119 s desde su última actividad, y 0 si ya terminó.
+  expect(tarjetasDe(callado)[0].callado).toBe(119)
+  expect(tarjetasDe({ ahora: 120_000, trabajos: [trab('a', 'opencode:m', 1, 'listo', { inicio: 1000, ms: 900 })] } as any)[0].callado).toBe(0)
   const fresco: any = { ahora: 120_000, esperaSilencioMs: 60_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000, ultimaActividad: 100_000 })] }
   expect(tarjetasDe(fresco)[0].alarma).toBe('')
   const porDefecto: any = { ahora: 120_000, trabajos: [trab('a', 'opencode:m', 1, 'corriendo', { inicio: 1000 })] }
@@ -881,4 +884,290 @@ test('consultas: el protocolo del agente explica las herramientas y las categor�
   expect(CATEGORIAS).toEqual(['comando', 'instalar', 'red', 'escribir-fuera', 'destructivo', 'otro'])
   expect(ESPERA_RESPUESTA_MS).toBe(900_000)
   expect(PROTOCOLO_AGENTE.includes('\n')).toBe(false)
+})
+
+// ===== NUEVO: tests para grafo-logica.js (gruposDe, faseDeGrupo, rejilla, colocarGrupos) =====
+
+const trabN = (id: string, quien: string, sub: number, estado: string, extra: object = {}) => ({
+  id,
+  trabajador: quien,
+  categoria: 'c',
+  tarea: 'x',
+  estado,
+  inicio: 1000,
+  subtarea: sub,
+  ...extra,
+}) as any
+
+test('gruposDe: un grupo por plan; los trabajos con plan van a su grupo y los que no lo traen al actual; plan anterior con mismo objetivo no se duplica; anteriores sin trabajos corriendo atenuados, actual siempre activo; orden: actual, activos, atenuados por ultima; tarjetas con alarma', () => {
+  const ahora = 100_000
+  const d = {
+    ahora,
+    plan: { objetivo: 'Objetivo A', subtareas: [{ n: 1, titulo: 't1', estado: 'en curso' }, { n: 2, titulo: 't2', estado: 'pendiente' }] },
+    planes: [
+      { objetivo: 'Objetivo B', subtareas: [{ n: 1, titulo: 't1', estado: 'hecha' }] },
+      { objetivo: 'Objetivo A', subtareas: [{ n: 1, titulo: 't1', estado: 'pendiente' }] }, // mismo objetivo que actual -> no duplica
+    ],
+    trabajos: [
+      trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 90_000, ultimaActividad: 10_000, plan: 'Objetivo A' }), // callado hace 90 s
+      trabN('t2', 'ollama:m', 2, 'listo', { inicio: 80_000, ms: 5000, plan: 'Objetivo A', puntaje: 8 }),
+      trabN('t3', 'hermes:m', 1, 'listo', { inicio: 70_000, ms: 3000, plan: 'Objetivo B' }),
+      trabN('t4', 'aider:m', 3, 'corriendo', { inicio: 60_000, plan: 'Objetivo C' }), // plan nuevo solo en trabajo
+      trabN('t5', 'claude:m', 1, 'listo', { inicio: 50_000, ms: 2000 }), // sin plan -> va al actual
+    ],
+    esperaSilencioMs: 60_000,
+    pendientes: [],
+  }
+
+  const grupos = gruposDe(d)
+
+  // 3 grupos: Objetivo A (actual), Objetivo B (anterior con trabajo), Objetivo C (solo en trabajo)
+  expect(grupos.length).toBe(3)
+
+  // Grupo 0: actual
+  const gA = grupos[0]
+  expect(gA.id).toBe('Objetivo A')
+  expect(gA.actual).toBe(true)
+  expect(gA.activo).toBe(true)
+  expect(gA.subtareas.length).toBe(2)
+  expect(gA.trabajos.length).toBe(3) // t1, t2, t5
+  expect(gA.tarjetas.length).toBe(3)
+  expect(gA.hechas).toBe(0)
+  expect(gA.total).toBe(2)
+  expect(gA.corriendo).toBe(1)
+  expect(gA.fase.nombre).toBe('En proceso') // hay corriendo > 6s
+
+  // Grupo 1: Objetivo B (tiene trabajo listo, no corriendo -> atenuado)
+  const gB = grupos.find(g => g.id === 'Objetivo B')!
+  expect(gB.id).toBe('Objetivo B')
+  expect(gB.actual).toBe(false)
+  expect(gB.activo).toBe(false)
+  expect(gB.trabajos.length).toBe(1)
+  expect(gB.hechas).toBe(1)
+  expect(gB.total).toBe(1)
+
+  // Grupo 2: Objetivo C (tiene trabajo corriendo -> activo)
+  const gC = grupos.find(g => g.id === 'Objetivo C')!
+  expect(gC.id).toBe('Objetivo C')
+  expect(gC.actual).toBe(false)
+  expect(gC.activo).toBe(true)
+  expect(gC.trabajos.length).toBe(1)
+  expect(gC.subtareas.length).toBe(0) // no se conocen subtareas
+
+  // Orden: actual (A), luego activos (C), luego atenuados (B) por ultima desc
+  expect(grupos.map(g => g.id)).toEqual(['Objetivo A', 'Objetivo C', 'Objetivo B'])
+
+  // Cada grupo trae tarjetas con alarma
+  expect(gA.tarjetas.some(c => c.alarma)).toBe(true) // t1 corriendo con silencio
+  expect(gB.tarjetas.every(c => !c.alarma)).toBe(true) // terminados sin alarma
+})
+
+test('gruposDe: sin plan actual, trabajos sin plan van a grupo (sin plan)', () => {
+  const ahora = 100_000
+  const d = {
+    ahora,
+    plan: null,
+    planes: [],
+    trabajos: [
+      trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 90_000 }),
+      trabN('t2', 'ollama:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 7 }),
+    ],
+    esperaSilencioMs: 60_000,
+    pendientes: [],
+  }
+
+  const grupos = gruposDe(d)
+  expect(grupos.length).toBe(1)
+  expect(grupos[0].id).toBe('(sin plan)')
+  expect(grupos[0].actual).toBe(false)
+  expect(grupos[0].activo).toBe(true) // tiene trabajo corriendo
+  expect(grupos[0].trabajos.length).toBe(2)
+})
+
+test('faseDeGrupo: los 7 casos y progreso hechas/total', () => {
+  const ahora = 100_000
+  const baseGrupo = (subtareas, trabajos) => ({
+    subtareas,
+    trabajos,
+    hechas: subtareas.filter(s => s.estado === 'hecha').length,
+    total: subtareas.length,
+  })
+
+  // 1. Planeación: sin trabajos
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'pendiente' }], []), ahora)).toEqual({ indice: 0, nombre: 'Planeación' })
+
+  // 2. Reparto: un trabajo corriendo recién lanzado (< 6s, ninguno terminado)
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 99_000 })]), ahora)).toEqual({ indice: 1, nombre: 'Reparto' })
+
+  // 3. En proceso: trabajo corriendo desde hace 20s
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 80_000 })]), ahora)).toEqual({ indice: 2, nombre: 'En proceso' })
+
+  // 4. Verificación: todos listos sin nota
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000 })]), ahora)).toEqual({ indice: 3, nombre: 'Verificación' })
+
+  // 5. Auditoría: mezcla listos con y sin nota
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }, { n: 2, estado: 'en curso' }], [
+    trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
+    trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000 }),
+  ]), ahora)).toEqual({ indice: 4, nombre: 'Auditoría' })
+
+  // 6. Juntar: solo quedan subtareas sin trabajos (nadie las delegó)
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'pendiente' }], [
+    trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
+  ]), ahora)).toEqual({ indice: 5, nombre: 'Juntar' })
+
+  // 7. En proceso: subtarea con trabajos no está hecha (falló o sacó poca nota)
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'en curso' }], [
+    trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
+    trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000, puntaje: 3 }),
+  ]), ahora)).toEqual({ indice: 2, nombre: 'En proceso' })
+
+  // 8. Informe: todas hechas
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'hecha' }], [
+    trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
+    trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000, puntaje: 9 }),
+  ]), ahora)).toEqual({ indice: 6, nombre: 'Informe' })
+
+  // Progreso
+  const g = baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'pendiente' }, { n: 3, estado: 'en curso' }], [])
+  expect(faseDeGrupo(g, ahora).indice).toBe(0) // Planeación (sin trabajos)
+  expect(g.hechas).toBe(1)
+  expect(g.total).toBe(3)
+})
+
+test('rejilla: 1 item, 2 items en 2 columnas, 5 items en 3 columnas con alturas distintas, vacía; sin solapes', () => {
+  // 1 item
+  const r1 = rejilla([{ w: 100, h: 50 }])
+  expect(r1.posiciones.length).toBe(1)
+  expect(r1.posiciones[0]).toEqual({ x: 16, y: 72 }) // margen + cabecera + margen
+  expect(r1.w).toBeGreaterThanOrEqual(240) // anchoMinimo
+  expect(r1.h).toBe(56 + 16 + 50 + 16)
+
+  // 2 items en 2 columnas
+  const r2 = rejilla([{ w: 100, h: 50 }, { w: 120, h: 60 }], { columnas: 2, cabecera: 0, margen: 10, hueco: 10 })
+  expect(r2.posiciones.length).toBe(2)
+  expect(r2.posiciones[0]).toEqual({ x: 10, y: 10 })
+  expect(r2.posiciones[1]).toEqual({ x: 120, y: 10 }) // 10 + 100 + 10
+  // Sin solape
+  expect(r2.posiciones[0].x + 100).toBeLessThanOrEqual(r2.posiciones[1].x)
+
+  // 5 items en 3 columnas con alturas distintas
+  const items = [
+    { w: 100, h: 50 },
+    { w: 80, h: 70 },
+    { w: 120, h: 40 },
+    { w: 90, h: 60 },
+    { w: 110, h: 55 },
+  ]
+  const r3 = rejilla(items, { columnas: 3, cabecera: 0, margen: 10, hueco: 10 })
+  expect(r3.posiciones.length).toBe(5)
+  // Filas: 0,1,2 en fila 0; 3,4 en fila 1
+  // Altura fila 0 = max(50, 70, 40) = 70
+  // Altura fila 1 = max(60, 55) = 60
+  expect(r3.posiciones[0]).toEqual({ x: 10, y: 10 })
+  expect(r3.posiciones[1]).toEqual({ x: 120, y: 10 }) // 10 + 100 + 10
+  expect(r3.posiciones[2]).toEqual({ x: 240, y: 10 }) // 120 + 110 (la columna 2 mide lo que su caja mayor, 110) + 10
+  expect(r3.posiciones[3]).toEqual({ x: 10, y: 90 }) // 10 + 70 + 10
+  expect(r3.posiciones[4]).toEqual({ x: 120, y: 90 })
+
+  // Vacía
+  const r0 = rejilla([])
+  expect(r0.posiciones).toEqual([])
+  expect(r0.w).toBe(240)
+  expect(r0.h).toBe(56 + 16)
+})
+
+test('colocarGrupos: con 1, 2, 3 y 6 grupos no se solapan, ninguno toca el círculo de Claude, ninguno en sector norte, activo más cerca que atenuado, determinista', () => {
+  const radio = 110
+  const margenCaja = 60
+
+  // Helper para verificar
+  const verificar = (grupos) => {
+    const res = colocarGrupos(grupos, { radio })
+    const { posiciones, caja } = res
+
+    // Mismo número de posiciones
+    expect(posiciones.length).toBe(grupos.length)
+
+    // Determinista: segunda llamada igual
+    const res2 = colocarGrupos(grupos, { radio })
+    expect(res2.posiciones.map(p => ({ id: p.id, x: Math.round(p.x), y: Math.round(p.y) }))).toEqual(
+      posiciones.map(p => ({ id: p.id, x: Math.round(p.x), y: Math.round(p.y) }))
+    )
+
+    // Caja contiene el círculo de Claude
+    expect(caja.x0).toBeLessThanOrEqual(-radio - margenCaja)
+    expect(caja.y0).toBeLessThanOrEqual(-radio - margenCaja)
+    expect(caja.x1).toBeGreaterThanOrEqual(radio + margenCaja)
+    expect(caja.y1).toBeGreaterThanOrEqual(radio + margenCaja)
+
+    // Ningún grupo toca el círculo (distancia del rectángulo al centro > radio)
+    for (const p of posiciones) {
+      const g = grupos.find(x => x.id === p.id)
+      const w = g.w, h = g.h
+      // Distancia del rectángulo al origen
+      const dx = Math.max(Math.abs(p.x) - w / 2, 0)
+      const dy = Math.max(Math.abs(p.y) - h / 2, 0)
+      const distRect = Math.sqrt(dx * dx + dy * dy)
+      expect(distRect).toBeGreaterThan(radio)
+
+      // No en sector norte (±40° alrededor de -90° = 270°)
+      const ang = Math.atan2(p.y, p.x) * 180 / Math.PI
+      const diffNorte = Math.abs((ang + 90 + 180) % 360 - 180)
+      expect(diffNorte).toBeGreaterThanOrEqual(40)
+    }
+
+    // Sin solapes entre grupos (con separación 24)
+    for (let i = 0; i < posiciones.length; i++) {
+      for (let j = i + 1; j < posiciones.length; j++) {
+        const a = posiciones[i], b = posiciones[j]
+        const ga = grupos.find(x => x.id === a.id)
+        const gb = grupos.find(x => x.id === b.id)
+        const ax0 = a.x - ga.w / 2 - 24, ay0 = a.y - ga.h / 2 - 24
+        const ax1 = a.x + ga.w / 2 + 24, ay1 = a.y + ga.h / 2 + 24
+        const bx0 = b.x - gb.w / 2 - 24, by0 = b.y - gb.h / 2 - 24
+        const bx1 = b.x + gb.w / 2 + 24, by1 = b.y + gb.h / 2 + 24
+        expect(ax0 < bx1 && ax1 > bx0 && ay0 < by1 && ay1 > by0).toBe(false)
+      }
+    }
+
+    return res
+  }
+
+  // 1 grupo
+  verificar([{ id: 'A', w: 200, h: 150, activo: true }])
+
+  // 2 grupos
+  verificar([
+    { id: 'A', w: 200, h: 150, activo: true },
+    { id: 'B', w: 180, h: 140, activo: false },
+  ])
+
+  // 3 grupos
+  verificar([
+    { id: 'A', w: 200, h: 150, activo: true },
+    { id: 'B', w: 180, h: 140, activo: true },
+    { id: 'C', w: 160, h: 130, activo: false },
+  ])
+
+  // 6 grupos de distintos tamaños
+  verificar([
+    { id: 'A', w: 200, h: 150, activo: true },
+    { id: 'B', w: 180, h: 140, activo: true },
+    { id: 'C', w: 220, h: 160, activo: true },
+    { id: 'D', w: 150, h: 120, activo: false },
+    { id: 'E', w: 170, h: 130, activo: false },
+    { id: 'F', w: 190, h: 145, activo: false },
+  ])
+
+  // Activo más cerca que atenuado (comparar distancias al centro)
+  const resMixto = verificar([
+    { id: 'Activo1', w: 200, h: 150, activo: true },
+    { id: 'Activo2', w: 200, h: 150, activo: true },
+    { id: 'Atenuado1', w: 200, h: 150, activo: false },
+    { id: 'Atenuado2', w: 200, h: 150, activo: false },
+  ])
+  const distActivos = resMixto.posiciones.filter(p => p.id.startsWith('Activo')).map(p => Math.sqrt(p.x * p.x + p.y * p.y))
+  const distAtenuados = resMixto.posiciones.filter(p => p.id.startsWith('Atenuado')).map(p => Math.sqrt(p.x * p.x + p.y * p.y))
+  expect(Math.min(...distActivos)).toBeLessThan(Math.max(...distAtenuados))
 })

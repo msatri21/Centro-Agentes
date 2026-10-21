@@ -24,6 +24,8 @@ export type Trabajo = {
   skills?: string[]
   /** Última vez que llegó texto del agente (ms epoch) */
   ultimaActividad?: number
+  /** Objetivo del plan al que pertenece este trabajo (agrupa los nodos del grafo) */
+  plan?: string
 }
 
 export type Subtarea = {
@@ -44,6 +46,8 @@ declare module 'claude-code' {
     'centro-agentes': {
       trabajos: Trabajo[]
       plan: Plan | null
+      /** Planes anteriores del chat (el grafo los dibuja atenuados) */
+      planes: Plan[]
     }
   }
 }

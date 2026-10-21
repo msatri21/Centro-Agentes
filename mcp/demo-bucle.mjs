@@ -52,6 +52,14 @@ const HISTORIA = [
   { id: 'k', quien: 'codex:chatgpt', sub: 6, ini: 54, fin: 62, nota: [66, 9], ti: 18000, to: 260, lineas: ['› revisando deploy.sh', '› shellcheck deploy.sh', 'ok'] },
 ]
 const CIERRE = 72 // el jefe cierra la última subtarea
+// Dos planes: el que va ocurriendo y uno anterior ya terminado, que el grafo dibuja atenuado.
+const OBJETIVO = 'Calculadora completa hecha por varios agentes (demo)'
+const ANTERIOR = { objetivo: 'Pantalla de inicio de sesión (demo)', subtareas: [{ n: 1, titulo: 'Formulario', estado: 'hecha' }, { n: 2, titulo: 'Validaciones', estado: 'hecha' }, { n: 3, titulo: 'Pruebas', estado: 'hecha' }] }
+const trabajosAnteriores = base => [
+  { id: 'p1', trabajador: 'hermes:nous/poolside/laguna-s-2.1:free', categoria: 'demo', tarea: 'Formulario', estado: 'listo', inicio: base - 600_000, ms: 41_000, subtarea: 1, puntaje: 9, tokensIn: 30000, tokensOut: 700, salida: 'ok', plan: ANTERIOR.objetivo },
+  { id: 'p2', trabajador: 'opencode:opencode/glm-5.3-flash-free', categoria: 'demo', tarea: 'Validaciones', estado: 'listo', inicio: base - 590_000, ms: 33_000, subtarea: 2, puntaje: 8, tokensIn: 22000, tokensOut: 400, salida: 'ok', plan: ANTERIOR.objetivo },
+  { id: 'p3', trabajador: 'codex:chatgpt', categoria: 'demo', tarea: 'Pruebas', estado: 'error', inicio: base - 580_000, ms: 8_000, subtarea: 3, tokensIn: 100, tokensOut: 0, salida: '✗ sin cupo', plan: ANTERIOR.objetivo },
+]
 
 function estadoEn(t, respondidas) {
   const ahora = Date.now()
@@ -72,6 +80,7 @@ function estadoEn(t, respondidas) {
       tokensIn: terminado ? h.ti : undefined, tokensOut: terminado ? h.to : undefined, salida: visibles.join('\n'),
       // Un agente en silencio lleva más de un minuto sin escribir; los demás acaban de hablar.
       ultimaActividad: callado ? ahora - 75_000 : ahora - 1500,
+      plan: OBJETIVO,
     }
   })
   const subtareas = SUBS.map(s => {
@@ -81,7 +90,7 @@ function estadoEn(t, respondidas) {
     const ultimo = suyos[suyos.length - 1]
     return { ...s, estado, quien: s.n === ULTIMA && estado === 'hecha' ? 'jefe' : bueno?.trabajador ?? ultimo?.trabajador, puntaje: bueno?.puntaje }
   })
-  return { ahora, trabajos, pendientes, plan: t >= 2 ? { objetivo: 'Calculadora completa hecha por varios agentes (demo)', subtareas } : null }
+  return { ahora, trabajos: [...trabajosAnteriores(base), ...trabajos], planes: [ANTERIOR], pendientes, plan: t >= 2 ? { objetivo: OBJETIVO, subtareas } : null }
 }
 
 // Las consultas de la historia se escriben de verdad (como haría un agente) para que se puedan contestar desde la web.
@@ -103,11 +112,11 @@ function escribir(t) {
   // Al empezar otra vuelta de la historia, las consultas vuelven a abrirse.
   if (t < anterior) abrirConsultas()
   anterior = t
-  const { ahora, trabajos, plan, pendientes } = estadoEn(t, respondidas())
+  const { ahora, trabajos, planes, plan, pendientes } = estadoEn(t, respondidas())
   const ahorro = trabajos.reduce((s, w) => s + ((w.tokensIn ?? 0) * 2 + (w.tokensOut ?? 0) * 10) / 1_000_000, 0)
   const corriendo = trabajos.filter(w => w.estado === 'corriendo')
   const html = paginaCentro({
-    clave, chat: 'demo-bucle · simulación', jefe: 'Claude', plan, trabajos, agentes: AGENTES, modelos: MODELOS, pendientes,
+    clave, chat: 'demo-bucle · simulación', jefe: 'Claude', plan, planes, trabajos, agentes: AGENTES, modelos: MODELOS, pendientes,
     rendimiento: [{ quien: 'opencode:deepseek-v4.1', media: 9, n: 14, segundos: 11 }, { quien: 'hermes:laguna-s-2.1', media: 8.5, n: 9, segundos: 38 }, { quien: 'codex:chatgpt', media: 8, n: 6, segundos: 14 }, { quien: 'ollama:gpt-oss:120b', media: 7, n: 4, segundos: 3 }],
     ahorro: ahorro + 1.8,
     cancelables: corriendo.map(w => ({ id: w.id, titulo: `${w.trabajador.split(':')[0]} · ${w.tarea.slice(0, 28)}` })), relanzables: [], version: 'demo', ahora,
@@ -115,7 +124,7 @@ function escribir(t) {
   fs.mkdirSync(DIR, { recursive: true })
   fs.writeFileSync(path.join(DIR, 'centro.html'), html)
   // El índice "todos los chats" lee esto para mostrar el progreso.
-  fs.writeFileSync(path.join(DIR, 'estado.json'), JSON.stringify({ plan, trabajos, encargos: [], nombre: 'demo-bucle' }))
+  fs.writeFileSync(path.join(DIR, 'estado.json'), JSON.stringify({ plan, planes, trabajos, encargos: [], nombre: 'demo-bucle' }))
 }
 
 // El servidor de esta carpeta, aparte del que ya tengas en el 47321. Si el puerto ya está ocupado, sale solo (servidor.js termina con 3).

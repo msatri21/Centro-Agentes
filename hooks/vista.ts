@@ -25,6 +25,8 @@ export type DatosPagina = {
   /** Columnas de la rejilla de `extra`, según la proporción de cada figura (p. ej. "1.68fr 0.84fr") */
   columnasExtra?: string
   ahora?: number
+  /** Planes anteriores del chat (el grafo los dibuja atenuados) */
+  planes?: { objetivo: string; subtareas: { n: number; titulo: string; estado: string; quien?: string; puntaje?: number }[] }[]
   /** Preguntas/permisos pendientes del agente al jefe */
   pendientes?: {
     id: string
@@ -67,8 +69,14 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 
 /* El grafo grande */
 #grafo-montaje{max-width:1800px;margin:24px auto 0;padding:0 20px}
-.lienzo{border:1px solid #2a2a2a;background:radial-gradient(ellipse at 30% 45%,#141414 0%,#0a0a0a 70%)}
-.lienzo svg{display:block;width:100%;height:auto}
+.lienzo{position:relative;height:min(78vh,820px);min-height:520px;overflow:hidden;border:1px solid #2a2a2a;background:radial-gradient(ellipse at 50% 45%,#141414 0%,#0a0a0a 70%);touch-action:none;cursor:grab;user-select:none}
+.lienzo.moviendo{cursor:grabbing}
+.lienzo svg{display:block;width:100%;height:100%}
+.g-rotulo{position:absolute;top:14px;font:11px ui-monospace,Consolas,monospace;color:#5a5a5a;letter-spacing:.12em;text-transform:uppercase;pointer-events:none}
+.g-izq{left:18px}.g-der{right:18px;text-align:right}
+.g-controles{position:absolute;right:14px;bottom:14px;display:flex;gap:6px}
+.g-controles button{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:6px 11px;font:13px ui-monospace,Consolas,monospace;cursor:pointer;border-radius:3px}
+.g-controles button:hover{border-color:var(--vino);color:#fff}
 .arista{fill:none;stroke:#333;stroke-width:1.2;transition:stroke .4s}.arista.viva{stroke:#666}
 .bus{fill:none;stroke:#2f2f2f;stroke-width:1;stroke-dasharray:3 5}
 .cambio{fill:none;stroke:transparent;stroke-width:1.4;stroke-dasharray:5 4}.cambio.viva{stroke:#5c1822}
@@ -88,13 +96,54 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 .aviso-falla{font:13px ui-monospace,Consolas,monospace;fill:#c4485a;opacity:0;transition:opacity .4s}
 .tarjeta rect{fill:#141414;stroke:#444}.tarjeta text{font:600 14px ui-monospace,Consolas,monospace;fill:#d4d4d4}
 .tarjeta.asignada rect{stroke:var(--vino)}.tarjeta.lista rect{fill:#5c1822;stroke:var(--vino)}
-.anillo{fill:none;stroke:var(--vino);stroke-width:1.5;stroke-dasharray:6 9;transform-origin:380px 400px;animation:girar 30s linear infinite}
-.halo{fill:var(--vino);opacity:.12;transform-origin:380px 400px;animation:latido 2.6s ease-in-out infinite}
+.anillo{fill:none;stroke:var(--vino);stroke-width:1.5;stroke-dasharray:6 9;transform-box:fill-box;transform-origin:center;animation:girar 30s linear infinite}
+.halo{fill:var(--vino);opacity:.12;transform-box:fill-box;transform-origin:center;animation:latido 2.6s ease-in-out infinite}
 .jefe-titulo{font:700 26px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}.jefe-sub{font:12px ui-monospace,Consolas,monospace;fill:#c4485a;letter-spacing:.14em}.jefe-desc{font:11.5px ui-monospace,Consolas,monospace;fill:#8a8a8a}
 .rotulo-svg{font:11px ui-monospace,Consolas,monospace;fill:#5a5a5a;letter-spacing:.12em;text-transform:uppercase}.rotulo-arista{font:12px ui-monospace,Consolas,monospace;fill:#a3a3a3}
 .listo-svg{font:700 44px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5;opacity:0;transition:opacity .6s}.listo-svg tspan{fill:#c4485a}
 .movil{opacity:.35;transition:opacity .4s}.movil.vibra{opacity:1;animation:vibrar .18s linear infinite}
 .movil rect{fill:#111;stroke:#8a8a8a}.movil.vibra rect{stroke:#c4485a}
+/* Un cuadrado punteado por plan, con la línea de tiempo de fases sobre su borde de arriba */
+.caja-grupo{fill:#0d0d0d99;stroke:#4a4a4a;stroke-width:1.4;stroke-dasharray:7 6;transition:stroke .4s}
+.grupo.actual .caja-grupo{stroke:#7a7a7a}
+.grupo.atenuado{opacity:.42}
+.titulo-grupo{font:600 14px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}
+.grupo .rol{font:12px ui-monospace,Consolas,monospace;fill:#8a8a8a}
+.etq-fase{font:9.5px ui-monospace,Consolas,monospace;fill:#5f5f5f;letter-spacing:.06em;text-transform:uppercase;text-anchor:middle;pointer-events:none}.etq-fase.actual{fill:#e6e6e6}
+.arista.tenue{stroke:#222}
+.linea-fases{fill:none;stroke:var(--vino);stroke-width:2.2}
+.punto-fase{stroke:#0a0a0a;stroke-width:2;transition:fill .4s}
+.punto-fase.pasada{fill:#8a8a8a}.punto-fase.futura{fill:#2c2c2c;stroke:#3e3e3e}
+.punto-fase.actual{fill:var(--vino);stroke:#f5f5f5;stroke-width:1.6}
+.contador-agentes{font:700 30px 'Segoe UI',system-ui,sans-serif;fill:#f5f5f5}
+.con-alarma{fill:#d9a441}
+/* Los subagentes: nodos pequeños que se agrandan con un clic o cuando piden algo */
+.nodo.sub{cursor:pointer}
+.nodo.sub rect{fill:#141414;stroke:#3e3e3e;stroke-width:1.2}
+.nodo.sub.abierto rect{fill:#121212;stroke:#6a6a6a}
+.nombre-sub{font:600 14px 'Segoe UI',system-ui,sans-serif}
+.punto-estado{fill:#8a8a8a}
+.punto-estado.trabajando{fill:var(--vino);animation:parpadeo 1.4s ease-in-out infinite}
+.punto-estado.listo{fill:#5ac18e}.punto-estado.error{fill:#e0505f}
+.nodo.sub.abierto .insignia{font-weight:700}
+.nodo.sub foreignObject{overflow:visible}
+.fo-cuerpo{font:12.5px/1.4 'Segoe UI',system-ui,sans-serif;color:#d4d4d4;height:100%;overflow:auto;cursor:default;padding-right:2px}
+.fo-texto{margin:0 0 6px;font-size:13.5px;color:#f5f5f5;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.fo-detalle{margin:0 0 6px;font:11.5px ui-monospace,Consolas,monospace;color:#9a9a9a;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.fo-cat{margin:0 0 6px;font:11px ui-monospace,Consolas,monospace;color:#d9a441}
+.fo-nota{margin:0 0 6px;font:11px ui-monospace,Consolas,monospace;color:#8a8a8a}
+.fo-acciones{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
+.fo-cuerpo button{background:#131313;color:#d4d4d4;border:1px solid #3e3e3e;padding:5px 10px;font:12px ui-monospace,Consolas,monospace;cursor:pointer;border-radius:3px}
+.fo-cuerpo button:hover{border-color:var(--vino);color:#fff}
+.fo-cuerpo button:disabled{opacity:.55;cursor:default}
+.fo-cuerpo .btn-principal{background:#c4485a;border-color:#c4485a;color:#fff}
+.fo-cuerpo textarea{width:100%;box-sizing:border-box;min-height:44px;background:#0c0c0c;color:#d4d4d4;border:1px solid #3e3e3e;padding:6px 8px;font:12px ui-monospace,Consolas,monospace;border-radius:3px;resize:none}
+.fo-cuerpo textarea:focus{outline:none;border-color:var(--vino)}
+.fo-estado{font:11.5px ui-monospace,Consolas,monospace;color:#8a8a8a;margin-top:4px}.fo-estado.ok{color:#5ac18e}.fo-estado.aviso{color:#d9a441}.fo-estado.mal{color:#e0505f}
+.fo-fila{display:flex;gap:10px;padding:2px 0;border-bottom:1px solid #1f1f1f}
+.fo-k{flex:0 0 64px;font:11px ui-monospace,Consolas,monospace;color:#6a6a6a;text-transform:uppercase;letter-spacing:.06em}.fo-v{color:#e6e6e6;word-break:break-word}
+.fo-salida{margin-top:6px;font:11px ui-monospace,Consolas,monospace;color:#8a8a8a;word-break:break-all}
+@media (min-width:701px){#pendientes{display:none}}
 @keyframes girar{to{transform:rotate(360deg)}}
 @keyframes latido{0%,100%{transform:scale(1);opacity:.1}50%{transform:scale(1.18);opacity:.22}}
 @keyframes parpadeo{50%{opacity:.35}}
@@ -120,7 +169,7 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 @media (min-width:900px){.paso{grid-template-columns:340px 1fr}}
 .paso h2{font:700 28px/1.1 'Segoe UI',system-ui,sans-serif;color:#f5f5f5;margin:0}.paso h2 i{font:normal 15px ui-monospace,Consolas,monospace;color:#c4485a;display:block;margin-bottom:6px}
 .paso p{margin:0;color:#d4d4d4;font-size:17px;min-height:52px}.paso .rotulo{margin:0 0 6px}
-.fases,.fases-nombres{display:grid;grid-template-columns:repeat(8,1fr);gap:4px}.fases{margin-top:16px}
+.fases,.fases-nombres{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}.fases{margin-top:16px}
 .fases span{height:6px;background:#262626;transition:background .4s}.fases span.pasada{background:#555}.fases span.actual{background:var(--vino)}
 .fases-nombres{margin-top:6px;font:10.5px ui-monospace,Consolas,monospace;color:#5a5a5a;text-transform:uppercase;letter-spacing:.04em}
 @media (max-width:700px){.fases-nombres{display:none}}
@@ -133,7 +182,7 @@ h2.seccion{font:12px ui-monospace,Consolas,monospace;color:#8a8a8a;letter-spacin
 @media (max-width:700px){#grafo-montaje .lienzo{display:none}.g-lista{display:grid;gap:8px;margin-top:0}}
 #g-tip{position:fixed;z-index:10;max-width:320px;padding:12px 14px;background:#141414;border:1px solid var(--vino);color:#d4d4d4;font-size:14px;line-height:1.45;pointer-events:none;opacity:0;transition:opacity .15s}
 #g-tip b{display:block;color:#f5f5f5;font-size:15px;margin-bottom:4px}
-@media (prefers-reduced-motion:reduce){.anillo,.halo,.movil.vibra,.nodo.falla rect,.nodo.card.alarma-silencio rect,.nodo.card.alarma-pregunta rect,.nodo.card.alarma-permiso rect,.card-entra{animation:none!important}.nodo.card{transition:none!important}}
+@media (prefers-reduced-motion:reduce){.punto-estado.trabajando,.anillo,.halo,.movil.vibra,.nodo.falla rect,.nodo.card.alarma-silencio rect,.nodo.card.alarma-pregunta rect,.nodo.card.alarma-permiso rect,.card-entra{animation:none!important}.nodo.card{transition:none!important}}
 
 /* Pendientes: consultas de los agentes */
 #pendientes{margin-top:24px}
@@ -212,7 +261,8 @@ export function paginaCentro(d: DatosPagina): string {
     jefe: d.jefe,
     ahora,
     plan: d.plan,
-    trabajos: d.trabajos.slice(-60).map(t => ({ id: t.id, trabajador: t.trabajador, estado: t.estado, subtarea: t.subtarea, inicio: t.inicio, ms: t.ms, puntaje: t.puntaje, salida: (t.salida ?? '').slice(-400), skills: t.skills, tokensIn: t.tokensIn, tokensOut: t.tokensOut, ultimaActividad: t.ultimaActividad })),
+    trabajos: d.trabajos.slice(-60).map(t => ({ id: t.id, trabajador: t.trabajador, estado: t.estado, subtarea: t.subtarea, inicio: t.inicio, ms: t.ms, puntaje: t.puntaje, salida: (t.salida ?? '').slice(-400), skills: t.skills, tokensIn: t.tokensIn, tokensOut: t.tokensOut, ultimaActividad: t.ultimaActividad, plan: t.plan })),
+    planes: (d.planes ?? []).slice(-6).map(p => ({ objetivo: p.objetivo, subtareas: p.subtareas.map(x => ({ n: x.n, titulo: x.titulo, estado: x.estado, quien: x.quien, puntaje: x.puntaje })) })),
     agentes: d.agentes,
     modelos: d.modelos,
     listo,

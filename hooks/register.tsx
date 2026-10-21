@@ -25,6 +25,8 @@ const TRABAJADORES: readonly Trabajador[] = ['ollama', 'opencode', 'hermes', 'ai
 let seq = 0
 const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, [] as Trabajo[])
 const plan = atom({ plugin: 'centro-agentes', key: 'plan' } as const, null as Plan | null)
+// Los planes anteriores del chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
+const planes = atom({ plugin: 'centro-agentes', key: 'planes' } as const, [] as Plan[])
 
 
 type Opciones = {
@@ -514,12 +516,12 @@ async function carpetaChat($: EngineInterface) {
   return `${await carpetaWeb($)}/chats/${SID}`
 }
 
-type Guardado = { plan: Plan | null; trabajos: Trabajo[]; encargos: [number, Encargo][]; nombre?: string }
+type Guardado = { plan: Plan | null; planes?: Plan[]; trabajos: Trabajo[]; encargos: [number, Encargo][]; nombre?: string }
 let ultimoGuardado = ''
 
 // Guarda plan, trabajos y encargos del chat cuando cambian (se llama cada 2 s).
 async function guardarEstado($: EngineInterface) {
-  const estado: Guardado = { plan: (await read($, plan)) ?? null, trabajos: (await read($, trabajos)) ?? [], encargos: [...encargos], nombre: nombreChat }
+  const estado: Guardado = { plan: (await read($, plan)) ?? null, planes: (await read($, planes)) ?? [], trabajos: (await read($, trabajos)) ?? [], encargos: [...encargos], nombre: nombreChat }
   // La salida en vivo cambia a cada momento y no hace falta para recuperar el centro.
   const texto = JSON.stringify({ ...estado, trabajos: estado.trabajos.map(t => ({ ...t, salida: t.estado === 'corriendo' ? undefined : t.salida })) })
   if (texto === ultimoGuardado) return
@@ -535,6 +537,7 @@ export function recuperar(g: Guardado): Guardado & { interrumpidos: number } {
   return {
     plan: g.plan ? { ...g.plan, subtareas: g.plan.subtareas.map(s => (s.estado === 'en curso' && subs.has(s.n) ? { ...s, estado: 'pendiente' as const } : s)) } : null,
     trabajos: g.trabajos.map(t => (t.estado === 'corriendo' ? { ...t, estado: 'error' as const, salida: '[interrumpido: el chat se cerró mientras trabajaba]' } : t)),
+    planes: g.planes ?? [],
     encargos: g.encargos,
     interrumpidos: corriendo.length,
   }
@@ -554,6 +557,7 @@ async function restaurarEstado($: EngineInterface) {
   if ((await read($, plan)) || ((await read($, trabajos)) ?? []).length) return
   const r = recuperar(g)
   await update($, plan, () => r.plan)
+  await update($, planes, () => r.planes ?? [])
   await update($, trabajos, () => r.trabajos)
   for (const [n, e] of r.encargos) encargos.set(n, e)
   if (r.interrumpidos) $.ui.toast(`${TITULO}: recuperado. ${r.interrumpidos} trabajo(s) quedaron interrumpidos; relánzalos desde la web o con /mst.`)
@@ -682,6 +686,7 @@ async function escribirWeb($: EngineInterface) {
     chat,
     jefe: 'Claude',
     plan: (await read($, plan)) ?? null,
+    planes: (await read($, planes)) ?? [],
     trabajos: lista,
     agentes: contexto ? estadoAgentes(contexto.modelos, Date.now(), tokensClaude(lista)) : [],
     modelos: contexto?.modelos ?? {},
@@ -767,7 +772,7 @@ async function intentar(
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, ultimaActividad: t0 }
+  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
   await marcar($, input.subtarea, { estado: 'en curso', quien })
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
@@ -1421,6 +1426,11 @@ ${protocolo(modelos)}`
         objetivo: corto(String(objetivo), 120),
         subtareas: titulos.map((titulo, i) => ({ n: i + 1, titulo: corto(String(titulo), 80), estado: 'pendiente', ...(dep.has(i + 1) ? { espera: dep.get(i + 1) } : {}) })),
       }
+      // El plan que se deja pasa al historial (salvo que sea el mismo objetivo: sigue siendo el mismo grupo) y, si el nuevo
+      // objetivo ya estaba en el historial, sale de él: el grupo se reactiva con los trabajos que ya tenía.
+      const anterior = await read($, plan)
+      const mismo = (a: string, b: string) => a.trim() === b.trim()
+      await update($, planes, l => [...(l ?? []).filter(p => !mismo(p.objetivo, nuevo.objetivo) && !(anterior && mismo(p.objetivo, anterior.objetivo))), ...(anterior && !mismo(anterior.objetivo, nuevo.objetivo) ? [anterior] : [])].slice(-6))
       await update($, plan, () => nuevo)
       void $.ui.open({ id: PANE, title: TITULO })
       return res({
