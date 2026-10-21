@@ -729,6 +729,43 @@ test('/mst con tarea responde al momento y manda la tarea al jefe sin quedarse e
   await new Promise(res => setTimeout(res, 500))
 })
 
+import { textoAvisoPonytail, PONYTAIL } from './ponytailAviso'
+
+test('el aviso de ponytail dice qué se descarga, de dónde, dónde se escribe y que Claude espere el sí del usuario', () => {
+  const t = textoAvisoPonytail(['ponytail', 'ponytail-review', 'ponytail-audit', 'mapa'], 'C:/plugin/mcp/instalar-ponytail.mjs')
+  expect(t).toContain('raw.githubusercontent.com')
+  expect(t).toContain('DietrichGebert/ponytail')
+  expect(t).toContain(PONYTAIL.commit.slice(0, 7))
+  expect(t).toContain('~/.claude/skills/ponytail-audit/')
+  expect(t).toContain('~/.centro-agentes/ponytail/')
+  expect(t).toContain('skills/ponytail/SKILL.md  (3496 bytes)')
+  expect(t).toContain('--instalar')
+  expect(t).toContain('espera su sí')
+  // Solo lista lo que falta.
+  const solo = textoAvisoPonytail(['mapa'], 's.mjs')
+  expect(solo).toContain('hooks/ponytail-map.js')
+  expect(solo).not.toContain('skills/ponytail/SKILL.md')
+  expect(solo).not.toContain('~/.claude/skills')
+})
+
+test('/mst avisa una sola vez de que falta ponytail', async ($, on) => {
+  base(on)
+  on('session.usage', async () => ({ value: { context: { percent: 0, tokens: 0, window: 200000 } } }))
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.read', async () => ({ value: 'clave' }))
+  on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
+  on('fs.exists', async () => ({ value: false }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
+  procesos(on)
+  const primera: any = await $.command.run({ command: 'mst', args: '' })
+  expect(primera.text).toContain('Falta ponytail')
+  expect(primera.text).toContain('instalar-ponytail.mjs')
+  // Solo una vez.
+  const segunda: any = await $.command.run({ command: 'mst', args: '' })
+  expect(segunda.text).not.toContain('Falta ponytail')
+  await new Promise(res => setTimeout(res, 300))
+})
+
 import { leerCodex } from './register'
 
 test('codex: lee su respuesta y tokens, y se lanza con su cuenta o con Ollama, con la tarea por stdin', async ($, on) => {

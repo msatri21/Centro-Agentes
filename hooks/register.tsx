@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, tablero, VINO } from './figura'
 import { paginaCentro, paginaTodosGrafo } from './vista'
+import { textoAvisoPonytail } from './ponytailAviso'
 import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
 import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
@@ -970,6 +971,20 @@ async function mapaDelCodigo($: EngineInterface, cwd: string): Promise<string> {
   return mapa ? '\n\n' + mapa : ''
 }
 
+// El aviso de que falta ponytail, una sola vez: lo que se descargaría y dónde. El plugin no descarga nada (lo hace mcp/instalar-ponytail.mjs si el usuario acepta).
+const AVISO_PONYTAIL_KEY = 'ponytailAvisado'
+async function avisoPonytail($: EngineInterface): Promise<string> {
+  if (!skillsAuto || (await $.store.get(AVISO_PONYTAIL_KEY).catch(() => undefined))) return ''
+  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  if (!casa) return ''
+  const faltan: string[] = []
+  for (const n of ['ponytail', 'ponytail-review', 'ponytail-audit']) if (!(await rutaSkill($, n))) faltan.push(n)
+  if (!(await $.fs.exists(`${casa}/.centro-agentes/ponytail/ponytail-map.js`).catch(() => false))) faltan.push('mapa')
+  if (!faltan.length) return ''
+  await $.store.set(AVISO_PONYTAIL_KEY, true)
+  return '\n\n' + textoAvisoPonytail(faltan, `${$.plugin.root}/mcp/instalar-ponytail.mjs`)
+}
+
 type Encargo = {
   trabajador?: Trabajador | 'auto'; modelo?: string; categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]
   /** No añadir solas las skills de ponytail a este encargo (el centro las pone según la clase de tarea) */
@@ -1405,11 +1420,12 @@ ${protocolo(modelos)}`
     encenderWeb($)
     // Se da tiempo a que el servidor local empiece a escuchar.
     $.clock.after(1500, () => void abrirNavegador($))
-    if (!e.args.trim()) return { text: `${TITULO} abierto: panel y web (${await urlWeb($)}). Escribe /mst <tarea> para ponerlo a trabajar.` }
+    const aviso = await avisoPonytail($)
+    if (!e.args.trim()) return { text: `${TITULO} abierto: panel y web (${await urlWeb($)}). Escribe /mst <tarea> para ponerlo a trabajar.${aviso}` }
     await update($, plan, () => null)
     // Sin await: el envío espera a que la sesión quede libre, y eso solo pasa cuando este comando ha respondido.
     void $.prompt.submit({ text: `${protocolo(modelos)}\n\nTAREA:\n${e.args}` }).catch(() => undefined)
-    return { text: `${TITULO} abierto y tarea enviada al jefe.` }
+    return { text: `${TITULO} abierto y tarea enviada al jefe.${aviso}` }
   })
 
   on('command.run', { command: 'centro' }, async ($, e) => {
