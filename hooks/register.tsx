@@ -1149,8 +1149,8 @@ export const register: Register = (on, options) => {
   const modelos: Modelos = {
     // Los :cloud que entran en el plan Free de Ollama (probados con sesión iniciada); llama3.2:3b es local y queda de respaldo.
     ollama: lista(opt.ollamaModels, ['gpt-oss:120b-cloud', 'beam:cloud', 'gemma4:31b-cloud', 'nemotron-3-super:cloud', 'gpt-oss:20b-cloud', 'llama3.2:3b']),
-    // OpenCode sobre tu Ollama (proveedor "ollama" en ~/.config/opencode/opencode.jsonc): gratis, sin clave que caduque.
-    opencode: lista(opt.opencodeModels, ['ollama/gpt-oss:120b-cloud', 'ollama/beam:cloud', 'ollama/gemma4:31b-cloud', 'ollama/nemotron-3-super:cloud', 'ollama/gpt-oss:20b-cloud']),
+    // Los modelos gratuitos propios de OpenCode (probados con herramientas MCP): sin Ollama y sin clave.
+    opencode: lista(opt.opencodeModels, ['opencode/deepseek-v4.1-flash-free', 'opencode/glm-5.3-flash-free', 'opencode/minimax-m3.1-flash-free', 'opencode/nemotron-3-ultra-free', 'opencode/big-pickle']),
     // proveedor/modelo de Hermes; ollama-local está en ~/.hermes/config.yaml y apunta a tu Ollama (gratis, sin clave).
     hermes: lista(opt.hermesModels, ['ollama-local/gpt-oss:120b-cloud', 'ollama-local/beam:cloud', 'ollama-local/gemma4:31b-cloud', 'ollama-local/gpt-oss:20b-cloud']),
     // Aider llama a Ollama con el prefijo ollama_chat/ (el de chat, que respeta el formato de edición).

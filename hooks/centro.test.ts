@@ -272,7 +272,7 @@ test('delegar_varios lanza las tareas a la vez y reparte modelos distintos', asy
   const quienes = r.resultados.map((x: any) => x.trabajador)
   expect(r.resultados.every((x: any) => x.exito)).toBe(true)
   expect(new Set(quienes).size).toBe(2)
-  expect(quienes[0]).toBe('opencode:ollama/gpt-oss:120b-cloud')
+  expect(quienes[0]).toBe('opencode:opencode/deepseek-v4.1-flash-free')
 })
 
 test('la terminal de un agente muestra su texto legible y sus últimas líneas', async () => {

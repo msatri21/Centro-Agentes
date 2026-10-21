@@ -28,7 +28,8 @@ const CONFIG = (() => {
 const ES_TRABAJADOR = process.env.CENTRO_TRABAJADOR === '1'
 
 const MODELOS = {
-  opencode: ['ollama/gpt-oss:120b-cloud', 'ollama/beam:cloud', 'ollama/gemma4:31b-cloud', 'ollama/nemotron-3-super:cloud', 'ollama/gpt-oss:20b-cloud'],
+  // Los modelos gratuitos propios de OpenCode: sin Ollama y sin clave.
+  opencode: ['opencode/deepseek-v4.1-flash-free', 'opencode/glm-5.3-flash-free', 'opencode/minimax-m3.1-flash-free', 'opencode/nemotron-3-ultra-free', 'opencode/big-pickle'],
   ollama: ['gpt-oss:120b-cloud', 'beam:cloud', 'gemma4:31b-cloud', 'nemotron-3-super:cloud', 'gpt-oss:20b-cloud', 'llama3.2:3b'],
   hermes: ['ollama-local/gpt-oss:120b-cloud', 'ollama-local/beam:cloud', 'ollama-local/gemma4:31b-cloud', 'ollama-local/gpt-oss:20b-cloud'],
   aider: ['ollama_chat/gpt-oss:120b-cloud', 'ollama_chat/beam:cloud', 'ollama_chat/gemma4:31b-cloud'],

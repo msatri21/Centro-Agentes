@@ -21,7 +21,7 @@ Reabre las sesiones de Claude Code. En cualquier chat: `/mst` abre el panel y la
 | Agente | Instalación | Notas |
 |---|---|---|
 | Ollama | [ollama.com](https://ollama.com) y `ollama signin` | Los modelos `:cloud` del plan Free son gratis |
-| OpenCode | `npm i -g opencode-ai` y el proveedor `ollama` en `~/.config/opencode/opencode.jsonc` (ver abajo) | Usa tu Ollama, sin clave |
+| OpenCode | `npm i -g opencode-ai` | Usa sus propios modelos gratuitos (`opencode/...-free`), sin clave y sin Ollama. Ollama es opcional (ver el final) |
 | Hermes Agent | en `~/.hermes` (proveedor `ollama-local` en su `config.yaml`) | Usa tu Ollama, sin clave |
 | Aider | `uv tool install aider-chat` en `~/.aider` | Usa tu Ollama, sin clave |
 | Codex | `npm i -g @openai/codex` y `codex login` con tu cuenta de ChatGPT | Cupo gratis limitado de tu cuenta; si no hay sesión o se acaba, usa tu Ollama |
@@ -118,14 +118,14 @@ El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mi
    ```
 
    `timeout` es en milisegundos y cubre también la ejecución: repartir y esperar a los agentes tarda minutos, y una consulta de un agente puede esperar hasta 15 min al usuario (por eso son 20 min).
-2. Copia `opencode/agents/jefe.md` y `opencode/commands/mst.md` de este repo a `~/.config/opencode/agents/` y `~/.config/opencode/commands/`: el agente `jefe` (modo `primary`, modelo `ollama/gpt-oss:120b-cloud`) lleva el protocolo, y `/mst` le pasa la tarea. Pon también `"model": "ollama/gpt-oss:120b-cloud"` en la config para no depender de OpenCode Zen.
+2. Copia `opencode/agents/jefe.md` y `opencode/commands/mst.md` de este repo a `~/.config/opencode/agents/` y `~/.config/opencode/commands/`: el agente `jefe` (modo `primary`, modelo `opencode/deepseek-v4.1-flash-free`, uno de los gratuitos de OpenCode) lleva el protocolo, y `/mst` le pasa la tarea.
 3. Opcional, en `~/.centro-agentes/opencode-jefe.json`: `{ "ntfyTema": "...", "conClaude": false, "timeoutMin": 8 }`.
 
 Uso: `opencode` en la carpeta del proyecto, cambia al agente **jefe** (tecla Tab) y escribe `/mst <tarea>`. La web es la misma (`http://127.0.0.1:47321`) y el chat aparece en **todos los chats** como `OpenCode jefe`. Con OpenCode como jefe, Claude headless no se usa salvo que pongas `"conClaude": true`, y las skills se ignoran.
 
-## OpenCode con Ollama (gratis, sin clave)
+## OpenCode con Ollama (opcional)
 
-En `~/.config/opencode/opencode.jsonc`:
+Por defecto OpenCode usa sus propios modelos gratuitos y no necesita nada de esto. Si además quieres los modelos de Ollama, añade `ollama/<modelo>` a los modelos de OpenCode en los ajustes del plugin y, en `~/.config/opencode/opencode.jsonc`:
 
 ```jsonc
 {
