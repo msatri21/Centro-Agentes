@@ -62,12 +62,22 @@ const MARGEN = 14
 const HUECO = 10
 
 // Enviar a la web lo que el usuario decide: contestar una consulta o cortar un agente (la clave y el chat van en location.search).
+// En la vista de todos los chats los ids vienen como "<chat>|<id>": la orden va al chat al que pertenecen.
+function destino(id) {
+  const i = String(id).indexOf('|')
+  if (i < 0) return { id, search: location.search }
+  const p = new URLSearchParams(location.search)
+  p.set('s', id.slice(0, i))
+  return { id: id.slice(i + 1), search: '?' + p }
+}
 export async function enviarRespuesta(consulta, decision, texto) {
-  const r = await fetch('/accion' + location.search, { method: 'POST', body: JSON.stringify({ tipo: 'responder', id: consulta, decision, texto }) })
+  const d = destino(consulta)
+  const r = await fetch('/accion' + d.search, { method: 'POST', body: JSON.stringify({ tipo: 'responder', id: d.id, decision, texto }) })
   return r.status
 }
 export async function cancelarTrabajo(id) {
-  const r = await fetch('/accion' + location.search, { method: 'POST', body: JSON.stringify({ tipo: 'cancelar', id }) })
+  const d = destino(id)
+  const r = await fetch('/accion' + d.search, { method: 'POST', body: JSON.stringify({ tipo: 'cancelar', id: d.id }) })
   return r.status
 }
 

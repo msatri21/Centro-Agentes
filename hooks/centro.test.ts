@@ -838,7 +838,7 @@ test('cerrojos: los archivos de otro agente cuentan como suyos aunque ya haya te
   expect(c.deOtros('/otra', b.id, b.desde)).toEqual([])
 })
 
-import { estadoAgente, eventosEntre, faseDe, resumenDe, tarjetasDe, gruposDe, faseDeGrupo, rejilla, colocarGrupos, FASES_PLAN } from '../web/grafo-logica.js'
+import { estadoAgente, eventosEntre, faseDe, resumenDe, tarjetasDe, gruposDe, faseDeGrupo, rejilla, colocarGrupos, unirChats, FASES_PLAN } from '../web/grafo-logica.js'
 import { graficaAhorro, graficaNotas, graficaTiempo, graficaTokens } from './graficas'
 import { paginaCentro } from './vista'
 
@@ -967,6 +967,32 @@ test('las cards: la pregunta o el permiso pendientes ponen su alarma, y mandan s
   expect(tarjetas.find(t => t.id === 'a')?.alarma).toBe('pregunta')
   expect(tarjetas.find(t => t.id === 'b')?.alarma).toBe('permiso')
   expect(tarjetas.find(t => t.id === 'c')?.alarma).toBe('')
+})
+
+test('unirChats: junta los chats en un solo grafo, con el nombre del chat en cada plan y los ids como chat|id', () => {
+  const sub = (n: number, titulo: string, estado = 'pendiente') => ({ n, titulo, estado })
+  const trabajo = (id: string, plan: string | undefined, extra: any = {}) => ({ id, trabajador: 'opencode:m', categoria: 'x', tarea: 't', estado: 'corriendo', inicio: 1000, ultimaActividad: 1000, plan, ...extra })
+  const a = { id: 'c1', nombre: 'Tienda', en: 10, datos: { plan: { objetivo: 'Carrito', subtareas: [sub(1, 'Botón'), sub(2, 'Cupón')] }, planes: [{ objetivo: 'Login', subtareas: [sub(1, 'Formulario', 'hecha')] }], trabajos: [trabajo('t1', 'Carrito', { subtarea: 2 }), trabajo('t2', undefined)], pendientes: [{ id: 't1', consulta: 'q1', agente: 'opencode', tipo: 'pregunta', texto: '¿?' }], agentes: [{ nombre: 'opencode', ok: true }] } }
+  const b = { id: 'c2', nombre: 'Blog', en: 20, datos: { plan: { objetivo: 'Carrito', subtareas: [sub(1, 'Otra cosa')] }, planes: [], trabajos: [trabajo('t1', 'Carrito', { subtarea: 1 })], pendientes: [], agentes: [{ nombre: 'hermes', ok: true }] } }
+  const d: any = unirChats([a, b], 5000)
+  // Dos chats con el mismo objetivo no se mezclan: cada plan lleva el nombre de su chat.
+  expect(d.planes.map((p: any) => p.objetivo)).toEqual(['Tienda · Carrito', 'Tienda · Login', 'Tienda · (sin plan)', 'Blog · Carrito'])
+  expect(d.trabajos.map((t: any) => [t.id, t.plan])).toEqual([['c1|t1', 'Tienda · Carrito'], ['c1|t2', 'Tienda · (sin plan)'], ['c2|t1', 'Blog · Carrito']])
+  expect(d.pendientes[0]).toMatchObject({ id: 'c1|t1', consulta: 'c1|q1' })
+  expect(d.plan).toBeNull()
+  expect(d.ahora).toBe(5000)
+  // Los agentes salen del chat con la actividad más reciente.
+  expect(d.agentes).toEqual([{ nombre: 'hermes', ok: true }])
+  // Y el grafo de siempre los reparte en un grupo por plan, cada uno con sus cards y su alarma de pregunta.
+  const grupos = gruposDe(d)
+  expect(grupos.map((g: any) => g.id).sort()).toEqual(['Blog · Carrito', 'Tienda · (sin plan)', 'Tienda · Carrito', 'Tienda · Login'])
+  const carrito = grupos.find((g: any) => g.id === 'Tienda · Carrito')
+  expect(carrito.tarjetas.map((t: any) => t.id)).toEqual(['c1|t1'])
+  expect(carrito.tarjetas[0].alarma).toBe('pregunta')
+  // Los títulos salen del plan de cada grupo, aunque dos chats numeren distinto sus subtareas.
+  expect(carrito.tarjetas[0].titulo).toBe('Cupón')
+  expect(grupos.find((g: any) => g.id === 'Blog · Carrito').tarjetas[0].titulo).toBe('Otra cosa')
+  expect(unirChats([], 1).trabajos).toEqual([])
 })
 
 test('las cards: el resumen cuenta activos, alarmas, el reparto por agente y los ids con alarma', () => {

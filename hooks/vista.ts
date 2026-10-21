@@ -284,7 +284,7 @@ export function paginaCentro(d: DatosPagina): string {
   const graficas = [graficaTokens(d.trabajos), grafica(d.rendimiento), graficaTiempo(d.trabajos, ahora), graficaNotas(d.trabajos), graficaAhorro(d.trabajos)].join('')
 
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(titulo)}</title><style>${ESTILO}</style></head><body>
-<header><p class="rotulo">/mst · orquestador de agentes · jefe: ${esc(d.jefe)} · ${esc(d.chat)} · <a href="/todos?t=${encodeURIComponent(d.clave)}">todos los chats</a></p><h1>Centro de agentes <b>MST</b></h1></header>
+<header><p class="rotulo">/mst · orquestador de agentes · jefe: ${esc(d.jefe)} · ${esc(d.chat)} · <a href="/todos?t=${encodeURIComponent(d.clave)}">todos los chats</a> · <a href="/grafo-todos?t=${encodeURIComponent(d.clave)}">todos en un grafo</a></p><h1>Centro de agentes <b>MST</b></h1></header>
 <div id="v1" class="cinta"><script id="datos" type="application/json">${jsonSeguro(datos)}</script>${d.plan ? `<p class="obj">${esc(d.plan.objetivo)}</p>` : ''}
 <div class="kpis">${kpis.map(([e, v, n], i) => `<div class="kpi"><i>0${i + 1}</i><span>${esc(e)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></div>`).join('')}</div>
 ${listo ? `<div class="listo">✓ Todo listo · ${esc(listo)}</div>` : ''}<div class="botones">${botones}</div></div>
@@ -517,4 +517,14 @@ async function vuelta() {
 }
 setTimeout(vuelta, 2000)
 </script></body></html>`
+}
+
+// La vista común: el grafo con los planes de todos los chats. Es una página fija (los datos los trae web/todos.js del servidor).
+export function paginaTodosGrafo(version: string): string {
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Todos los chats en un grafo · Centro de agentes MST</title><style>${ESTILO}</style></head><body>
+<header><p class="rotulo">/mst · orquestador de agentes · <span id="cuenta">cargando…</span> · <a href="/todos" id="lista">lista de chats</a></p><h1>Todos los <b>chats</b></h1></header>
+<div id="grafo-montaje"></div>
+<footer>Centro de agentes MST ${esc(version)} · se actualiza cada 2 s sin recargar</footer>
+<script>document.getElementById('lista').href = '/todos' + location.search</script>
+<script type="module" src="/todos.js"></script></body></html>`
 }

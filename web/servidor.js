@@ -63,7 +63,30 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:
 .chat strong{display:block;font:600 19px 'Segoe UI',system-ui,sans-serif;color:#f5f5f5;margin-bottom:6px}
 .chat span{display:block;color:#a3a3a3;margin-bottom:10px}.chat small{color:#8a8a8a}
 .chat b{position:absolute;left:0;bottom:0;height:3px;background:${vino}}
-</style></head><body><header><p class="rotulo">/mst · orquestador de agentes · ${filas.length} chats</p><h1>Todos los <b>chats</b></h1></header><main>${cuerpo}</main></body></html>`
+</style></head><body><header><p class="rotulo">/mst · orquestador de agentes · ${filas.length} chats · <a href="/grafo-todos?t=${t}" style="color:${vino}">verlos todos en un grafo</a></p><h1>Todos los <b>chats</b></h1></header><main>${cuerpo}</main></body></html>`
+}
+
+// Los chats con actividad en las últimas 24 h, con los datos que su página ya trae para el grafo (el bloque "datos").
+const ACTIVIDAD_MS = 24 * 60 * 60 * 1000
+function datosDeTodos() {
+  let ids = []
+  try {
+    ids = fs.readdirSync(chats).filter(id => /^[\w-]{1,100}$/.test(id))
+  } catch {}
+  const salida = []
+  for (const id of ids) {
+    try {
+      const archivo = path.join(chats, id, 'centro.html')
+      const en = fs.statSync(archivo).mtimeMs
+      if (Date.now() - en > ACTIVIDAD_MS) continue
+      const html = fs.readFileSync(archivo, 'utf8')
+      const bloque = html.match(/<script id="datos" type="application\/json">([\s\S]*?)<\/script>/)
+      if (!bloque) continue
+      const titulo = (html.match(/<title>([^<]*)<\/title>/) ?? [])[1] ?? id
+      salida.push({ id, nombre: titulo.split(' · ')[0] || id, en, datos: JSON.parse(bloque[1]) })
+    } catch {}
+  }
+  return salida
 }
 
 // Respuesta del usuario a una consulta de un agente (una pregunta o un permiso): localiza la consulta por su id
@@ -136,7 +159,7 @@ const servidor = http.createServer((req, res) => {
     return
   }
   // El código del grafo es estático (sin datos del chat): se sirve sin clave para que la página lo cargue como módulo.
-  const estatico = req.method === 'GET' && url.pathname.match(/^\/(grafo|grafo-logica)\.js$/)
+  const estatico = req.method === 'GET' && url.pathname.match(/^\/(grafo|grafo-logica|todos)\.js$/)
   if (estatico) {
     fs.readFile(path.join(__dirname, `${estatico[1]}.js`), (err, js) => {
       if (err) res.writeHead(404).end()
@@ -151,6 +174,18 @@ const servidor = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/todos') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(indice(clave))
+    return
+  }
+  // El grafo de todos los chats: la página la escribe el plugin junto a la carpeta de chats; los datos se leen de la página de cada chat.
+  if (req.method === 'GET' && url.pathname === '/grafo-todos') {
+    fs.readFile(path.join(path.dirname(chats), 'todos.html'), (err, html) => {
+      if (err) res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' }).end('La vista común aún no está escrita.')
+      else res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html)
+    })
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/datos-todos') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify({ chats: datosDeTodos() }))
     return
   }
   // Solo letras, números, - y _: el id no puede salirse de la carpeta de chats.

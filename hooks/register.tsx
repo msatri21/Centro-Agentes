@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Plan, Trabajador, Trabajo } from '../types'
 import { colaDeLineas, figura, tablero, VINO } from './figura'
-import { paginaCentro } from './vista'
+import { paginaCentro, paginaTodosGrafo } from './vista'
 import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
 import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
@@ -598,6 +598,8 @@ async function lanzarServidor($: EngineInterface) {
     await $.process
       .run(['powershell', '-NoProfile', '-Command', `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*servidor.js*${PUERTO_WEB}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`], { timeoutMs: 15_000 })
       .catch(() => undefined)
+  // La vista común de todos los chats es una página fija que el servidor lee junto a la carpeta de chats.
+  await $.fs.write(`${dir}/todos.html`, paginaTodosGrafo(mia)).catch(() => undefined)
   const argv = ['node', `${$.plugin.root}/web/servidor.js`, String(PUERTO_WEB), `${dir}/clave.txt`, `${dir}/chats`, mia]
   void (async () => {
     try {
