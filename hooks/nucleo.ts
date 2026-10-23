@@ -167,6 +167,15 @@ export function vistaDe(trabajador: Trabajador, stdout: string): string {
 // shortcut: cuenta toda la entrada a precio normal aunque parte fuera caché (más barata); sobreestima algo el ahorro.
 export const costoComoClaude = (tokIn = 0, tokOut = 0) => (tokIn * 2 + tokOut * 10) / 1_000_000
 
+// --- Autoactualización: cuándo vale la pena buscar una versión nueva ---
+
+// Las sesiones cargan la copia instalada en la caché de plugins de Claude Code; cargado desde otra carpeta (desarrollo) no hay nada que actualizar.
+export const enCacheDePlugins = (raiz: string) => /[\\/]\.claude[\\/]plugins[\\/]cache[\\/]/.test(raiz)
+// Buscar en internet en cada sesión sería lento y pesado: como mucho una vez cada 6 horas.
+export const BUSCAR_ACTUALIZACION_CADA_MS = 6 * 60 * 60 * 1000
+export const debeBuscarActualizacion = (raiz: string, ultima: number | undefined, ahora: number) =>
+  enCacheDePlugins(raiz) && (ultima === undefined || !Number.isFinite(ultima) || ahora - ultima >= BUSCAR_ACTUALIZACION_CADA_MS)
+
 export type Candidato = { trabajador: Trabajador; modelo: string }
 
 // Un modelo sin probar vale PREVIO: gana a uno que rinde mal y pierde contra uno bueno, así el centro explora solo.
