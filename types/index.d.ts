@@ -34,6 +34,7 @@ export type Trabajo = {
 
 export type Subtarea = {
   n: number
+  id?: string
   titulo: string
   estado: 'pendiente' | 'en_proceso' | 'realizado' | 'solucionado'
   /** Números de las subtareas que tienen que estar hechas antes de lanzar esta */
@@ -41,9 +42,10 @@ export type Subtarea = {
   /** trabajador:modelo que la tiene o la hizo */
   quien?: string
   puntaje?: number
+  manual?: boolean
 }
 
-export type Plan = { objetivo: string; subtareas: Subtarea[] }
+export type Plan = { objetivo: string; tarea?: string; raiz?: string; subtareas: Subtarea[] }
 
 declare module 'claude-code' {
   interface PluginState {
