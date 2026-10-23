@@ -12,6 +12,7 @@ import { paginaCentro } from '../hooks/vista.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
 import { consultar as consultarCerebro, preferir, recomendar, registrar } from '../hooks/cerebro.ts'
 import { CATEGORIAS, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE, abiertas, permitidaSiempre, respuestaDe, resultadoParaAgente } from '../hooks/consultas.ts'
+import { transaccion, leer as leerTareas, resumenDe } from './tareas.mjs'
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8').replace(/^﻿/, '')).version
 const CASA = path.join(os.homedir(), '.centro-agentes')
@@ -262,7 +263,10 @@ ${PROTOCOLO_AGENTE}` }
   if (c.trabajador === 'hermes') {
     const i = c.modelo.indexOf('/')
     const [prov, modelo] = i > 0 ? [c.modelo.slice(0, i), c.modelo.slice(i + 1)] : ['auto', c.modelo]
-    return { argv: [ejecutable('hermes'), 'chat', '--oneshot', '--query-file', '-', '--format', 'stream-json', '--yolo', '--provider', prov, '-m', modelo], stdin: tarea }
+    // El protocolo trae las mismas reglas que con el jefe Claude: preguntar, pedir permiso y no editar mst-tareas.json.
+    return { argv: [ejecutable('hermes'), 'chat', '--oneshot', '--query-file', '-', '--format', 'stream-json', '--yolo', '--provider', prov, '-m', modelo], stdin: `${tarea}
+
+${PROTOCOLO_AGENTE}` }
   }
   if (c.trabajador === 'aider') {
     // Aider solo edita los archivos que recibe: se le pasan los que nombra la tarea y existen.
@@ -274,7 +278,9 @@ ${PROTOCOLO_AGENTE}` }
     // --json: un evento por línea. danger-full-access: en Windows su sandbox le impide escribir y ejecutar;
     // trabaja en su carpeta (o en su copia aislada), como los demás agentes. La tarea va por stdin.
     const local = c.modelo.startsWith('ollama/') ? ['--oss', '--local-provider', 'ollama', '-m', c.modelo.slice('ollama/'.length)] : c.modelo && c.modelo !== 'chatgpt' ? ['-m', c.modelo] : []
-    return { argv: [...comandoNode('codex'), 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check', ...local], stdin: tarea }
+    return { argv: [...comandoNode('codex'), 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check', ...local], stdin: `${tarea}
+
+${PROTOCOLO_AGENTE}` }
   }
   return { argv: [ejecutable('claude'), '-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--model', c.modelo], stdin: tarea }
 }
@@ -333,11 +339,13 @@ const candidatos = () => TRABAJADORES.flatMap(t => (MODELOS[t] ?? []).map(modelo
 
 async function delegarSinCerrojo(input, sinBloqueo = false) {
   const categoria = String(input.categoria ?? '').toLowerCase().trim() || 'general'
+  let aviso_archivo
+  const subPlan = input.subtarea === undefined ? undefined : plan?.subtareas.find(s => s.n === input.subtarea)
+  if (input.subtarea !== undefined && subPlan?.manual) return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} es manual y no se delega` }
   if (input.subtarea !== undefined && !sinBloqueo) {
     const faltan = bloqueos(plan?.subtareas ?? [], input.subtarea)
     if (faltan.length) return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} espera a ${faltan.join(', ')}: lánzala cuando estén hechas.` }
   }
-  if (input.subtarea !== undefined) encargos.set(input.subtarea, { ...input })
   const pedido = input.trabajador && input.trabajador !== 'auto' ? input.trabajador : undefined
   if (pedido && !TRABAJADORES.includes(pedido)) return { error: `Trabajador desconocido: ${pedido}` }
   let todos = candidatos()
@@ -347,6 +355,17 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
   const modeloPedido = input.modelo?.trim()
   if (modeloPedido && !elegibles.some(c => c.modelo === modeloPedido))
     return { error: `Modelo no permitido: ${modeloPedido}. Usa uno de: ${elegibles.map(c => clave(c.trabajador, c.modelo)).join(', ')}` }
+  // La marca en el archivo va después de validar el encargo: si no se lanza nada, la subtarea no queda en proceso.
+  if (input.subtarea !== undefined && plan?.tarea && plan?.raiz) {
+    const estado = await transaccion(plan.raiz, path.basename(plan.raiz), { tipo: 'estado', id: `${plan.tarea}.${input.subtarea}`, estado: 'en_proceso', solo_si: 'pendiente' })
+    if (!estado.ok) {
+      if (estado.codigo === 'conflicto') return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} ya está en proceso (otro encargo u otro chat); no se lanza otra vez` }
+      if (estado.codigo === 'bloqueada') return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} espera a ${estado.mensaje.match(/Faltan dependencias: (.*)/)?.[1] ?? 'sus dependencias'}: lánzala cuando estén hechas.` }
+      if (estado.codigo === 'manual') return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} es manual y no se delega` }
+      aviso_archivo = estado.mensaje
+    } else plan.subtareas = plan.subtareas.map(s => s.n === input.subtarea ? { ...s, estado: 'en_proceso' } : s)
+  }
+  if (input.subtarea !== undefined) encargos.set(input.subtarea, { ...input })
   const tabla = puntajes()
   const libre = c => !ocupados.get(clave(c.trabajador, c.modelo))
   // Si el cerebro recuerda que alguien lo hizo muy bien en algo parecido, empieza por él.
@@ -392,9 +411,17 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
   }
   if (!r) {
     if (copia?.carpeta) await borrarCopia(copia)
-    return { subtarea: input.subtarea, error: 'Todos los modelos posibles fallaron hace poco. Prueba otro trabajador o espera unos minutos.' }
+    if (input.subtarea !== undefined) {
+      marcar(input.subtarea, { estado: 'pendiente' })
+      await sincronizarEstado(input.subtarea, 'pendiente')
+    }
+    return { subtarea: input.subtarea, error: 'Todos los modelos posibles fallaron hace poco. Prueba otro trabajador o espera unos minutos.', ...(aviso_archivo ? { aviso_archivo } : {}) }
   }
-  if (!r.ok) marcar(input.subtarea, { estado: 'pendiente' })
+  marcar(input.subtarea, { estado: r.ok ? 'realizado' : 'pendiente' })
+  if (input.subtarea !== undefined) {
+    const aviso = await sincronizarEstado(input.subtarea, r.ok ? 'realizado' : 'pendiente')
+    aviso_archivo ??= aviso
+  }
   const quien = clave(elegido.trabajador, elegido.modelo)
   const aislado = copia?.carpeta ? await cerrarCopia(copia, `mst: subtarea ${input.subtarea ?? '-'} (${quien})`) : copia
   const verificacion = r.ok && input.verificar?.trim() ? await verificarEn(cwd, input.verificar.trim()) : undefined
@@ -410,10 +437,18 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     ...(aislado ? { copia: aislado } : {}),
     ...(verificacion ? { verificacion } : {}),
     salida: r.s.texto.slice(0, 30_000) || '(sin salida)',
+    ...(aviso_archivo ? { aviso_archivo } : {}),
     aviso: verificacion
       ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
       : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
   }
+}
+
+async function sincronizarEstado(n, estado) {
+  if (!plan?.tarea || !plan?.raiz) return undefined
+  const r = await transaccion(plan.raiz, path.basename(plan.raiz), { tipo: 'estado', id: `${plan.tarea}.${n}`, estado })
+  if (!r.ok) return r.mensaje
+  return undefined
 }
 
 // Carpeta compartida: sin "aislar", los agentes de una misma carpeta (y rama) esperan su turno solo si chocan en archivos.
@@ -477,6 +512,7 @@ function avisarSiTermino() {
   if (!plan?.subtareas.length || plan.subtareas.some(s => s.estado !== 'solucionado') || avisadoPara === plan.objetivo) return
   avisadoPara = plan.objetivo
   const ahorro = trabajos.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut), 0)
+  fs.mkdirSync(DIR, { recursive: true })
   fs.writeFileSync(path.join(DIR, 'informe.md'), informeMarkdown({ chat: `${CARPETA} · OpenCode jefe`, plan, trabajos, ahorro, fecha: new Date().toLocaleString('es') }))
   const tema = String(CONFIG.ntfyTema ?? '').trim()
   if (temaNtfyValido(tema))
@@ -598,17 +634,22 @@ const CAMPOS_ENCARGO = {
 const HERRAMIENTAS = [
   {
     name: 'planificar',
-    description: 'Registra el objetivo y las subtareas del trabajo (reemplaza el plan anterior). Devuelve la dirección de la web en vivo y qué subtareas puedes lanzar ya.',
+    description: 'Crea o carga una tarea del archivo mst-tareas.json y devuelve qué subtareas puedes lanzar ya.',
     inputSchema: {
       type: 'object',
       properties: {
         objetivo: { type: 'string', description: 'Resultado final en una frase' },
         subtareas: { type: 'array', items: { type: 'string' }, description: 'Títulos cortos, en orden' },
         dependencias: { type: 'object', description: 'Opcional. Qué subtareas espera cada una, p. ej. {"3": [1, 2]}' },
+        manuales: { type: 'array', items: { type: 'number' }, description: 'Posiciones de subtareas manuales que no se delegan' },
+        tarea: { type: 'string', description: 'Carga una tarea existente, p. ej. T2' },
+        agregar: { type: 'array', items: { oneOf: [{ type: 'string' }, { type: 'object', properties: { titulo: { type: 'string' }, depende_de: { type: 'array', items: { type: 'string' } }, manual: { type: 'boolean' } }, required: ['titulo'] }] } },
+        ajustar: { type: 'object', description: 'Cambios por id de subtarea pendiente, p. ej. {"T2.1": { titulo, depende_de }}' },
+        cwd: { type: 'string', description: 'Carpeta del proyecto donde vive mst-tareas.json' },
       },
-      required: ['objetivo', 'subtareas'],
     },
   },
+  { name: 'tareas_estado', description: 'Resumen de mst-tareas.json del proyecto; solo lectura.', inputSchema: { type: 'object', properties: { cwd: { type: 'string', description: 'Carpeta del proyecto' } } } },
   {
     name: 'delegar',
     description: 'Delega una tarea a un agente (opencode, ollama, hermes, aider) con modelos gratis de Ollama y devuelve su salida, tiempo y tokens. El resultado NO está verificado: debes auditarlo.',
@@ -724,19 +765,62 @@ async function consultar(nombre, a) {
 async function llamar(nombre, a) {
   if (ES_TRABAJADOR) return nombre === 'preguntar' || nombre === 'pedir_permiso' ? consultar(nombre, a) : { error: `Herramienta desconocida: ${nombre}` }
   if (nombre === 'planificar') {
-    const titulos = lista(a.subtareas)
-    const dep = leerDependencias(a.dependencias, titulos.length)
-    const nuevo = {
-      objetivo: corto(String(a.objetivo ?? ''), 120),
-      subtareas: titulos.map((t, i) => ({ n: i + 1, titulo: corto(String(t), 80), estado: 'pendiente', ...(dep.has(i + 1) ? { espera: dep.get(i + 1) } : {}) })),
+    const modos = ['tarea', 'agregar', 'ajustar'].filter(k => a[k] !== undefined)
+    const crear = a.objetivo !== undefined || a.subtareas !== undefined
+    if (modos.length + Number(crear) !== 1) return { error: 'Elige un solo modo: objetivo/subtareas, tarea, agregar o ajustar.' }
+    const actualPrevio = plan
+    const raiz = path.resolve(typeof a.cwd === 'string' ? a.cwd : plan?.raiz ?? process.cwd())
+    let nuevo, metaArchivo, aviso_archivo
+    const montar = t => ({ objetivo: t.titulo, tarea: t.id, raiz, subtareas: t.subtareas.map(s => ({ id: s.id, n: Number(s.id.split('.').at(-1)), titulo: s.titulo, estado: s.estado === 'cerrado' ? 'solucionado' : s.estado, ...(s.depende_de.length ? { espera: s.depende_de.map(d => Number(d.split('.').at(-1))) } : {}), ...(s.manual ? { manual: true } : {}) })) })
+    if (crear) {
+      let titulos
+      try { titulos = typeof a.subtareas === 'string' ? JSON.parse(a.subtareas) : a.subtareas } catch { return { error: 'El modo crear requiere objetivo y subtareas (una lista).' } }
+      if (typeof a.objetivo !== 'string' || !Array.isArray(titulos)) return { error: 'El modo crear requiere objetivo y subtareas (una lista).' }
+      const dep = leerDependencias(a.dependencias, titulos.length)
+      nuevo = { objetivo: corto(a.objetivo, 120), raiz, subtareas: titulos.map((titulo, i) => ({ n: i + 1, titulo: corto(String(titulo), 80), estado: 'pendiente', ...(dep.has(i + 1) ? { espera: dep.get(i + 1) } : {}), ...(Array.isArray(a.manuales) && a.manuales.includes(i + 1) ? { manual: true } : {}) })) }
+      const r = await transaccion(raiz, path.basename(raiz), { tipo: 'crear_tarea', titulo: nuevo.objetivo, subtareas: nuevo.subtareas.map(s => ({ titulo: s.titulo, depende_de: s.espera, manual: s.manual })) })
+      if (r.ok) {
+        const t = r.archivo.tareas.find(x => x.id === (r.cambios[0]?.match(/(?:crea|reutiliza) (T\d+)/)?.[1]))
+        if (t) nuevo = montar(t)
+        metaArchivo = { creado: !!r.creado, gitignore: r.gitignore ?? null, avisos: r.avisos ?? [] }
+      } else aviso_archivo = r.mensaje
+    } else if (modos[0] === 'tarea') {
+      if (typeof a.tarea !== 'string') return { error: 'El modo tarea requiere un id, p. ej. T2.' }
+      const r = await leerTareas(raiz, path.basename(raiz))
+      const t = r.archivo?.tareas.find(x => x.id === a.tarea)
+      if (!t) return { error: `No existe la tarea ${a.tarea} en mst-tareas.json.` }
+      nuevo = montar(t); metaArchivo = { creado: false, gitignore: null, avisos: r.avisos ?? [] }
+    } else if (modos[0] === 'agregar') {
+      if (!Array.isArray(a.agregar) || !a.agregar.length) return { error: 'El modo agregar requiere una lista de títulos u objetos.' }
+      if (!actualPrevio?.tarea) return { error: 'No hay una tarea activa del archivo; carga una con planificar { tarea: "Tn" }.' }
+      const subs = a.agregar.map(x => typeof x === 'string' ? { titulo: x } : x)
+      if (subs.some(x => !x || typeof x.titulo !== 'string')) return { error: 'Cada elemento de agregar necesita un título.' }
+      const r = await transaccion(raiz, path.basename(raiz), { tipo: 'agregar', tarea: actualPrevio.tarea, subtareas: subs })
+      if (r.ok) { nuevo = montar(r.archivo.tareas.find(x => x.id === actualPrevio.tarea)); metaArchivo = { creado: false, gitignore: null, avisos: r.avisos ?? [] } } else aviso_archivo = r.mensaje
+    } else {
+      if (!a.ajustar || typeof a.ajustar !== 'object' || !Object.keys(a.ajustar).length) return { error: 'El modo ajustar requiere un objeto con ids y cambios.' }
+      if (!actualPrevio?.tarea) return { error: 'No hay una tarea activa del archivo; carga una con planificar { tarea: "Tn" }.' }
+      let archivo
+      for (const [id, cambio] of Object.entries(a.ajustar)) {
+        const r = await transaccion(raiz, path.basename(raiz), { tipo: 'ajustar', id, ...cambio })
+        if (!r.ok) { aviso_archivo = r.mensaje; break }
+        archivo = r.archivo; metaArchivo = { creado: false, gitignore: null, avisos: r.avisos ?? [] }
+      }
+      if (archivo) nuevo = montar(archivo.tareas.find(x => x.id === actualPrevio.tarea))
     }
+    if (!nuevo) return { error: aviso_archivo ?? 'No se pudo construir el plan.' }
     const mismo = (x, y) => x.trim() === y.trim()
-    planes = [...planes.filter(p => !mismo(p.objetivo, nuevo.objetivo) && !(plan && mismo(p.objetivo, plan.objetivo))), ...(plan && !mismo(plan.objetivo, nuevo.objetivo) ? [plan] : [])].slice(-6)
+    planes = [...planes.filter(p => !mismo(p.objetivo, nuevo.objetivo) && !(actualPrevio && mismo(p.objetivo, actualPrevio.objetivo))), ...(actualPrevio && !mismo(actualPrevio.objetivo, nuevo.objetivo) ? [actualPrevio] : [])].slice(-6)
     plan = nuevo
     avisadoPara = ''
     await asegurarWeb()
     guardar()
-    return { guardado: true, web: urlWeb(), subtareas: plan.subtareas.map(s => ({ n: s.n, titulo: s.titulo, ...(s.espera ? { espera: s.espera } : {}) })), lanzar_ya: listas(plan.subtareas).map(s => s.n) }
+    return { guardado: true, ...(nuevo.tarea ? { tarea: nuevo.tarea, ids: nuevo.subtareas.map(s => s.id) } : {}), ...(metaArchivo ? { archivo: metaArchivo } : {}), ...(aviso_archivo ? { aviso_archivo } : {}), web: urlWeb(), subtareas: nuevo.subtareas.map(s => ({ n: s.n, titulo: s.titulo, estado: s.estado, ...(s.espera ? { espera: s.espera } : {}), ...(s.manual ? { manual: true } : {}) })), lanzar_ya: listas(nuevo.subtareas).map(s => s.n) }
+  }
+  if (nombre === 'tareas_estado') {
+    const raiz = path.resolve(typeof a.cwd === 'string' ? a.cwd : plan?.raiz ?? process.cwd())
+    const r = resumenDe(raiz, path.basename(raiz))
+    return r.existe ? r : { existe: false, aviso: 'Aún no hay plan guardado: se crea con el primer planificar.' }
   }
   if (nombre === 'delegar') {
     await asegurarWeb()
@@ -763,11 +847,13 @@ async function llamar(nombre, a) {
     fs.writeFileSync(ARCHIVO_CEREBRO, JSON.stringify(registrar(leerCerebro(), { en: Date.now(), area: t.categoria, tarea: t.tarea, agente, modelo: modelo.join(':'), nota: p, ms: t.ms, tokens: (t.tokensIn ?? 0) + (t.tokensOut ?? 0), chat: ID, leccion: a.nota })))
     t.puntaje = p
     marcar(t.subtarea, { estado: p >= 6 ? 'solucionado' : 'pendiente', quien: t.trabajador, puntaje: p })
+    const aviso_archivo = t.subtarea === undefined ? undefined : await sincronizarEstado(t.subtarea, p >= 6 ? 'solucionado' : 'pendiente')
     avisarSiTermino()
     guardar()
     const siguiente = p < 6 ? ordenar(tabla, t.categoria, candidatos(), new Set([...caidosAhora(), t.trabajador]))[0] : undefined
     return {
       guardado: true, trabajador: t.trabajador, puntaje: p, progreso: progreso(),
+      ...(aviso_archivo ? { aviso_archivo } : {}),
       ...(siguiente ? { siguiente, aviso: `Rinde poco: vuelve a delegar con trabajador "${siguiente.trabajador}" y modelo "${siguiente.modelo}" diciendo qué falló.` } : {}),
     }
   }
@@ -775,9 +861,10 @@ async function llamar(nombre, a) {
     const n = Number(a.subtarea)
     if (!plan?.subtareas.some(s => s.n === n)) return { error: `No existe la subtarea ${a.subtarea} en el plan` }
     marcar(n, { estado: 'solucionado', quien: 'jefe' })
+    const aviso_archivo = await sincronizarEstado(n, 'solucionado')
     avisarSiTermino()
     guardar()
-    return { hecha: n, progreso: progreso() }
+    return { hecha: n, progreso: progreso(), ...(aviso_archivo ? { aviso_archivo } : {}) }
   }
   if (nombre === 'juntar_copias') {
     if (!porJuntar.length) return { aviso: 'No hay copias con cambios pendientes de juntar en este chat.' }
