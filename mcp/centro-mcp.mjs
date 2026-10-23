@@ -634,7 +634,7 @@ const CAMPOS_ENCARGO = {
 const HERRAMIENTAS = [
   {
     name: 'planificar',
-    description: 'Crea o carga una tarea del archivo mst-tareas.json y devuelve qué subtareas puedes lanzar ya.',
+    description: 'Crea o carga una tarea del archivo mst-tareas.json, la reabre con reabrir y devuelve qué subtareas puedes lanzar ya.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -645,6 +645,7 @@ const HERRAMIENTAS = [
         tarea: { type: 'string', description: 'Carga una tarea existente, p. ej. T2' },
         agregar: { type: 'array', items: { oneOf: [{ type: 'string' }, { type: 'object', properties: { titulo: { type: 'string' }, depende_de: { type: 'array', items: { type: 'string' } }, manual: { type: 'boolean' } }, required: ['titulo'] }] } },
         ajustar: { type: 'object', description: 'Cambios por id de subtarea pendiente, p. ej. {"T2.1": { titulo, depende_de }}' },
+        reabrir: { type: 'array', items: { type: 'string' }, description: 'Devuelve esas subtareas a pendiente para rehacerlas (y reabre su tarea si estaba solucionada). Úsalo cuando una tarea solucionada no cumplía lo pedido; si cumplía y hay trabajo nuevo, crea una tarea nueva con planificar.' },
         cwd: { type: 'string', description: 'Carpeta del proyecto donde vive mst-tareas.json' },
       },
     },
@@ -765,9 +766,9 @@ async function consultar(nombre, a) {
 async function llamar(nombre, a) {
   if (ES_TRABAJADOR) return nombre === 'preguntar' || nombre === 'pedir_permiso' ? consultar(nombre, a) : { error: `Herramienta desconocida: ${nombre}` }
   if (nombre === 'planificar') {
-    const modos = ['tarea', 'agregar', 'ajustar'].filter(k => a[k] !== undefined)
+    const modos = ['tarea', 'agregar', 'ajustar', 'reabrir'].filter(k => a[k] !== undefined)
     const crear = a.objetivo !== undefined || a.subtareas !== undefined
-    if (modos.length + Number(crear) !== 1) return { error: 'Elige un solo modo: objetivo/subtareas, tarea, agregar o ajustar.' }
+    if (modos.length + Number(crear) !== 1) return { error: 'Elige un solo modo: objetivo/subtareas, tarea, agregar, ajustar o reabrir.' }
     const actualPrevio = plan
     const raiz = path.resolve(typeof a.cwd === 'string' ? a.cwd : plan?.raiz ?? process.cwd())
     let nuevo, metaArchivo, aviso_archivo
@@ -797,7 +798,7 @@ async function llamar(nombre, a) {
       if (subs.some(x => !x || typeof x.titulo !== 'string')) return { error: 'Cada elemento de agregar necesita un título.' }
       const r = await transaccion(raiz, path.basename(raiz), { tipo: 'agregar', tarea: actualPrevio.tarea, subtareas: subs })
       if (r.ok) { nuevo = montar(r.archivo.tareas.find(x => x.id === actualPrevio.tarea)); metaArchivo = { creado: false, gitignore: null, avisos: r.avisos ?? [] } } else aviso_archivo = r.mensaje
-    } else {
+    } else if (modos[0] === 'ajustar') {
       if (!a.ajustar || typeof a.ajustar !== 'object' || !Object.keys(a.ajustar).length) return { error: 'El modo ajustar requiere un objeto con ids y cambios.' }
       if (!actualPrevio?.tarea) return { error: 'No hay una tarea activa del archivo; carga una con planificar { tarea: "Tn" }.' }
       let archivo
@@ -807,6 +808,25 @@ async function llamar(nombre, a) {
         archivo = r.archivo; metaArchivo = { creado: false, gitignore: null, avisos: r.avisos ?? [] }
       }
       if (archivo) nuevo = montar(archivo.tareas.find(x => x.id === actualPrevio.tarea))
+    } else {
+      if (!Array.isArray(a.reabrir) || !a.reabrir.length || a.reabrir.some(id => typeof id !== 'string')) return { error: 'El modo reabrir requiere una lista de ids de tarea o subtareas.' }
+      const ids = a.reabrir
+      const tareas = ids.map(id => /^(T[1-9]\d*)(?:\.([1-9]\d*))?$/.exec(id)?.[1])
+      if (tareas.some(id => !id)) return { error: 'Cada id de reabrir debe ser una tarea o subtarea válida, p. ej. T2.3.' }
+      if (new Set(tareas).size !== 1) return { error: 'Reabre subtareas de una sola tarea por llamada.' }
+      const reabiertas = []
+      for (const id of ids) {
+        const r = await transaccion(raiz, path.basename(raiz), { tipo: 'estado', id, estado: 'pendiente' })
+        if (!r.ok) return { error: `No se pudo reabrir ${id}: ${r.mensaje}. Reabiertas: ${reabiertas.join(', ') || 'ninguna'}.` }
+        reabiertas.push(id)
+        metaArchivo = { creado: false, gitignore: null, avisos: r.avisos ?? [] }
+      }
+      const recarga = await leerTareas(raiz, path.basename(raiz))
+      const tarea = recarga.archivo?.tareas.find(t => t.id === tareas[0])
+      if (!tarea) return { error: `No se pudo recargar la tarea ${tareas[0]} tras reabrir ${reabiertas.join(', ')}.` }
+      nuevo = montar(tarea)
+      metaArchivo = { creado: false, gitignore: null, avisos: recarga.avisos ?? [] }
+      nuevo.reabiertas = reabiertas
     }
     if (!nuevo) return { error: aviso_archivo ?? 'No se pudo construir el plan.' }
     const mismo = (x, y) => x.trim() === y.trim()
@@ -815,7 +835,7 @@ async function llamar(nombre, a) {
     avisadoPara = ''
     await asegurarWeb()
     guardar()
-    return { guardado: true, ...(nuevo.tarea ? { tarea: nuevo.tarea, ids: nuevo.subtareas.map(s => s.id) } : {}), ...(metaArchivo ? { archivo: metaArchivo } : {}), ...(aviso_archivo ? { aviso_archivo } : {}), web: urlWeb(), subtareas: nuevo.subtareas.map(s => ({ n: s.n, titulo: s.titulo, estado: s.estado, ...(s.espera ? { espera: s.espera } : {}), ...(s.manual ? { manual: true } : {}) })), lanzar_ya: listas(nuevo.subtareas).map(s => s.n) }
+    return { guardado: true, ...(nuevo.tarea ? { tarea: nuevo.tarea, ids: nuevo.subtareas.map(s => s.id) } : {}), ...(metaArchivo ? { archivo: metaArchivo } : {}), ...(aviso_archivo ? { aviso_archivo } : {}), web: urlWeb(), subtareas: nuevo.subtareas.map(s => ({ n: s.n, titulo: s.titulo, estado: s.estado, ...(s.espera ? { espera: s.espera } : {}), ...(s.manual ? { manual: true } : {}) })), lanzar_ya: listas(nuevo.subtareas).map(s => s.n), ...(nuevo.reabiertas ? { reabiertas: nuevo.reabiertas } : {}) }
   }
   if (nombre === 'tareas_estado') {
     const raiz = path.resolve(typeof a.cwd === 'string' ? a.cwd : plan?.raiz ?? process.cwd())

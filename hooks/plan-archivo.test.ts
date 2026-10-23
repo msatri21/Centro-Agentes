@@ -35,6 +35,15 @@ test('reutiliza el mismo objetivo y el siguiente objetivo incrementa el id', asy
   expect(falso.archivo.siguiente_tarea).toBe(3)
 })
 
+test('lanzar_ya no ofrece las subtareas manuales: no se delegan, así que el jefe no debe intentarlo', async ($, on) => {
+  base(on)
+  scriptFalso(on)
+  const p = out(await llamar($, { objetivo: 'demo', subtareas: ['a', 'instalar a mano', 'c'], manuales: [2], dependencias: { 3: [1] } }))
+  // La 1 se puede lanzar; la 2 es manual; la 3 espera a la 1.
+  expect(p.lanzar_ya).toEqual([1])
+  expect(p.subtareas[1].manual).toBe(true)
+})
+
 test('agregar suma hermanas con el siguiente número y devuelve los ids nuevos', async ($, on) => {
   base(on)
   const falso = scriptFalso(on)
@@ -55,6 +64,56 @@ test('ajustar edita una pendiente y rechaza claramente una subtarea en marcha', 
   if (estado.ok) falso.archivo = estado.archivo
   const error = out(await llamar($, { ajustar: { 'T1.2': { titulo: 'no' } } }))
   expect(error.error).toContain('Solo se ajustan subtareas pendientes')
+})
+
+test('reabrir devuelve a pendiente una subtarea solucionada y recarga el plan', async ($, on) => {
+  base(on)
+  const falso = scriptFalso(on)
+  await llamar($, { objetivo: 'demo', subtareas: ['a', 'b'], manuales: [2] })
+  for (const id of ['T1.1', 'T1.2']) {
+    const estado = aplicar(falso.archivo, { tipo: 'estado', id, estado: 'solucionado' }, '2026-01-01')
+    if (estado.ok) falso.archivo = estado.archivo
+  }
+  expect(falso.archivo.tareas[0]).toMatchObject({ estado: 'solucionado', solucionada: '2026-01-01' })
+
+  const p = out(await llamar($, { reabrir: ['T1.2'] }))
+  // La 2 es manual: queda pendiente pero NO se ofrece para lanzar (la rehace el jefe o el usuario).
+  expect(p).toMatchObject({ tarea: 'T1', reabiertas: ['T1.2'], lanzar_ya: [], subtareas: [{ n: 1, estado: 'solucionado' }, { n: 2, estado: 'pendiente', manual: true }] })
+  expect(falso.archivo.tareas[0]).toMatchObject({ estado: 'en_proceso', solucionada: null, subtareas: [{ id: 'T1.1', estado: 'solucionado' }, { id: 'T1.2', estado: 'pendiente' }] })
+  expect(p.subtareas[1].estado).toBe('pendiente')
+})
+
+test('reabrir valida una sola tarea, ids existentes y un solo modo antes de escribir', async ($, on) => {
+  base(on)
+  const falso = scriptFalso(on)
+  await llamar($, { objetivo: 'uno', subtareas: ['a'] })
+  await llamar($, { objetivo: 'dos', subtareas: ['b'] })
+  const antes = falso.lanzamientos
+  expect(out(await llamar($, { reabrir: ['T1.1', 'T2.1'] })).error).toContain('Reabre subtareas de una sola tarea')
+  expect(falso.lanzamientos).toBe(antes)
+  const inexistente = out(await llamar($, { reabrir: ['T1.9'] }))
+  expect(inexistente.error).toContain('La subtarea no existe')
+  expect(inexistente.error).toContain('Reabiertas: ninguna')
+  expect(out(await llamar($, { reabrir: ['T1.1'], tarea: 'T1' })).error).toContain('Elige un solo modo')
+  expect(falso.archivo.tareas[0].subtareas[0].estado).toBe('pendiente')
+})
+
+test('reabrir sin carpeta de proyecto devuelve un error claro', async ($, on) => {
+  base(on)
+  scriptFalso(on)
+  const r = out(await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { reabrir: ['T1.1'] } }))
+  expect(r.error).toContain('No hay una carpeta de proyecto')
+})
+
+test('reabrir acepta el id de una tarea solucionada sin subtareas', async ($, on) => {
+  base(on)
+  const falso = scriptFalso(on)
+  await llamar($, { objetivo: 'sin subtareas', subtareas: [] })
+  const estado = aplicar(falso.archivo, { tipo: 'estado', id: 'T1', estado: 'solucionado' }, '2026-01-01')
+  if (estado.ok) falso.archivo = estado.archivo
+  const p = out(await llamar($, { reabrir: ['T1'] }))
+  expect(p).toMatchObject({ tarea: 'T1', ids: [], reabiertas: ['T1'], subtareas: [], lanzar_ya: [] })
+  expect(falso.archivo.tareas[0]).toMatchObject({ estado: 'pendiente', solucionada: null })
 })
 
 test('carga una tarea existente y explica cuando no existe', async ($, on) => {

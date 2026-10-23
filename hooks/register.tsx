@@ -80,7 +80,7 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 ${ANTES(url)}
 
 Protocolo:
-El plan se guarda en mst-tareas.json de la carpeta del proyecto (git lo ignora) y se crea con el primer planificar: planifica un BORRADOR al tener objetivo y subtareas de primer vistazo y púlelo al repartir con planificar { agregar } y { ajustar }. Usa manuales para lo que no se delegas (instalar, respaldar). tareas_estado muestra el estado; planificar { tarea: 'T2' } retoma una tarea. Los agentes no editan mst-tareas.json: anotan trabajo nuevo al final bajo «Propuestas:» y tú decides si agregarlo como hermana o planificarlo como tarea nueva. Reabrir una tarea solucionada es decisión tuya: si cumplía lo pedido crea una nueva; si no, devuelve a pendiente la subtarea que falló.
+El plan se guarda en mst-tareas.json de la carpeta del proyecto (git lo ignora) y se crea con el primer planificar: planifica un BORRADOR al tener objetivo y subtareas de primer vistazo y púlelo al repartir con planificar { agregar } y { ajustar }. Usa manuales para lo que no se delegas (instalar, respaldar). tareas_estado muestra el estado; planificar { tarea: 'T2' } retoma una tarea. Los agentes no editan mst-tareas.json: anotan trabajo nuevo al final bajo «Propuestas:» y tú decides si agregarlo como hermana o planificarlo como tarea nueva. Reabrir una tarea solucionada es decisión tuya: si cumplía lo pedido crea una nueva; si no, usa planificar { reabrir: ["T2.3"] } para devolver a pendiente la subtarea que falló.
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
 2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo delegar_varios: arrancan solas cuando terminan bien aquellas de las que dependen.
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
@@ -1397,6 +1397,7 @@ export const register: Register = (on, options) => {
           tarea: { type: 'string', description: 'Id de tarea guardada para cargar, p. ej. T2' },
           agregar: { type: 'array', description: 'Títulos u objetos { titulo, depende_de: ["T3.1"], manual } para añadir a la tarea actual', items: { oneOf: [{ type: 'string' }, { type: 'object', properties: { titulo: { type: 'string' }, depende_de: { type: 'array', items: { type: 'string' } }, manual: { type: 'boolean' } }, required: ['titulo'] }] } },
           ajustar: { type: 'object', description: 'Ajustes por id de subtarea pendiente, p. ej. {"T3.2": { titulo, depende_de }}' },
+          reabrir: { type: 'array', items: { type: 'string' }, description: 'Devuelve esas subtareas a pendiente para rehacerlas (y reabre su tarea si estaba solucionada). Úsalo cuando una tarea solucionada no cumplía lo pedido; si cumplía y hay trabajo nuevo, crea una tarea nueva con planificar.' },
         },
       },
     })
@@ -1602,13 +1603,14 @@ ${protocolo(modelos)}`
   on('tool.call', { tool: 'mcp__centro-agentes__planificar' }, async ($, e) => {
     try {
       const a = args(e) as any
-      const modos = ['tarea', 'agregar', 'ajustar'].filter(k => a[k] !== undefined)
+      const modos = ['tarea', 'agregar', 'ajustar', 'reabrir'].filter(k => a[k] !== undefined)
       const crear = a.objetivo !== undefined || a.subtareas !== undefined
-      if (modos.length + Number(crear) !== 1) return res({ error: 'Elige un solo modo: objetivo/subtareas, tarea, agregar o ajustar.' })
+      if (modos.length + Number(crear) !== 1) return res({ error: 'Elige un solo modo: objetivo/subtareas, tarea, agregar, ajustar o reabrir.' })
       let nuevo: Plan | undefined
       let archivo: any
       let aviso_archivo: string | undefined
       let metaArchivo: any
+      let reabiertas: string[] | undefined
       const actualPrevio = await read($, plan)
       const raiz = typeof a.cwd === 'string' ? a.cwd : actualPrevio?.raiz ?? rutaProyecto
       if (!raiz) {
@@ -1642,7 +1644,7 @@ ${protocolo(modelos)}`
         if (subs.some((x: any) => !x || typeof x.titulo !== 'string')) return res({ error: 'Cada elemento de agregar necesita un título.' })
         const r = await tareasArchivo($, 'aplicar', raiz || actual.raiz || '', { tipo: 'agregar', tarea: actual.tarea, subtareas: subs })
         if (r.ok) { archivo = r.archivo; nuevo = montar(archivo.tareas.find((x: Tarea) => x.id === actual.tarea)); metaArchivo = { ...(r.avisos?.length ? { avisos: r.avisos } : {}) } } else aviso_archivo = r.mensaje
-      } else {
+      } else if (modos[0] === 'ajustar') {
         if (!a.ajustar || typeof a.ajustar !== 'object' || !Object.keys(a.ajustar).length) return res({ error: 'El modo ajustar requiere un objeto con ids y cambios.' })
         const actual = actualPrevio
         if (!actual?.tarea) return res({ error: 'No hay una tarea activa del archivo; carga una con planificar { tarea: "Tn" }.' })
@@ -1652,6 +1654,26 @@ ${protocolo(modelos)}`
           archivo = r.archivo; metaArchivo = { ...(r.avisos?.length ? { avisos: r.avisos } : {}) }
         }
         if (archivo) nuevo = montar(archivo.tareas.find((x: Tarea) => x.id === actual.tarea))
+      } else {
+        if (!Array.isArray(a.reabrir) || !a.reabrir.length || a.reabrir.some((id: unknown) => typeof id !== 'string')) return res({ error: 'El modo reabrir requiere una lista de ids de tarea o subtareas.' })
+        const ids: string[] = a.reabrir
+        const tareas = ids.map(id => /^(T[1-9]\d*)(?:\.([1-9]\d*))?$/.exec(id)?.[1])
+        if (tareas.some(id => !id)) return res({ error: 'Cada id de reabrir debe ser una tarea o subtarea válida, p. ej. T2.3.' })
+        if (new Set(tareas).size !== 1) return res({ error: 'Reabre subtareas de una sola tarea por llamada.' })
+        if (!raiz) return res({ error: 'No hay una carpeta de proyecto para acceder al archivo de tareas.' })
+        reabiertas = []
+        for (const id of ids) {
+          const r = await tareasArchivo($, 'aplicar', raiz, { tipo: 'estado', id, estado: 'pendiente' })
+          if (!r.ok) return res({ error: `No se pudo reabrir ${id}: ${r.mensaje}. Reabiertas: ${reabiertas.join(', ') || 'ninguna'}.` })
+          reabiertas.push(id)
+          archivo = r.archivo
+          metaArchivo = { ...(r.avisos?.length ? { avisos: r.avisos } : {}) }
+        }
+        const recarga = await tareasArchivo($, 'leer', raiz)
+        const tarea = recarga.archivo?.tareas?.find((t: Tarea) => t.id === tareas[0])
+        if (!tarea) return res({ error: `No se pudo recargar la tarea ${tareas[0]} tras reabrir ${reabiertas.join(', ')}.` })
+        nuevo = montar(tarea)
+        metaArchivo = { ...(recarga.avisos?.length ? { avisos: recarga.avisos } : {}) }
       }
       if (!nuevo) return res({ error: aviso_archivo ?? 'No se pudo construir el plan.' })
       // El plan que se deja pasa al historial (salvo que sea el mismo objetivo: sigue siendo el mismo grupo) y, si el nuevo
@@ -1668,6 +1690,7 @@ ${protocolo(modelos)}`
         ...(aviso_archivo ? { aviso_archivo } : {}),
         subtareas: nuevo.subtareas.map(s => ({ n: s.n, titulo: s.titulo, estado: s.estado, ...(s.espera ? { espera: s.espera } : {}), ...(s.manual ? { manual: true } : {}) })),
         lanzar_ya: listas(nuevo.subtareas).map(s => s.n),
+        ...(reabiertas ? { reabiertas } : {}),
       })
     } catch (err) {
       return res({ error: `planificar falló: ${String(err)}` })

@@ -164,6 +164,27 @@ const conflicto = await llamar('delegar', { categoria: 'tests', trabajador: 'ope
 assert.match(conflicto.error, /ya está en proceso/)
 assert.equal(lanzamientos(), 2)
 
+// Reabrir una tarea auditada vuelve a pendiente solo la subtarea indicada y reconstruye el plan.
+const reapertura = await llamar('planificar', { objetivo: 'Reapertura', subtareas: ['Uno', 'Dos'] })
+await llamar('cerrar_subtarea', { subtarea: 1 })
+await llamar('cerrar_subtarea', { subtarea: 2 })
+assert.equal(archivoDeTareas().tareas[2].estado, 'solucionado')
+assert.ok(archivoDeTareas().tareas[2].solucionada)
+const reabierta = await llamar('planificar', { reabrir: ['T3.2'] })
+assert.equal(reabierta.tarea, 'T3')
+assert.deepEqual(reabierta.reabiertas, ['T3.2'])
+assert.deepEqual(reabierta.lanzar_ya, [2])
+assert.equal(reabierta.subtareas[1].estado, 'pendiente')
+assert.equal(archivoDeTareas().tareas[2].estado, 'en_proceso')
+assert.equal(archivoDeTareas().tareas[2].solucionada, null)
+assert.equal(archivoDeTareas().tareas[2].subtareas[1].estado, 'pendiente')
+assert.equal((await llamar('planificar', { reabrir: ['T1.1', 'T3.1'] })).error, 'Reabre subtareas de una sola tarea por llamada.')
+const idInexistente = await llamar('planificar', { reabrir: ['T3.9'] })
+assert.match(idInexistente.error, /La subtarea no existe/)
+assert.match(idInexistente.error, /Reabiertas: ninguna/)
+assert.match((await llamar('planificar', { reabrir: ['T3.1'], tarea: 'T3' })).error, /Elige un solo modo/)
+assert.equal(archivoDeTareas().tareas[2].subtareas[0].estado, 'solucionado')
+
 // Archivo bloqueado (aquí, una carpeta con su nombre): el trabajo sigue con aviso_archivo.
 fs.renameSync(path.join(raiz, 'mst-tareas.json'), path.join(temporal, 'tareas-guardadas.json'))
 fs.rmSync(path.join(raiz, 'mst-tareas.json.bak'), { force: true })

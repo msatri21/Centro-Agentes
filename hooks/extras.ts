@@ -17,8 +17,8 @@ export function leerDependencias(dep: unknown, total: number): Map<number, numbe
 // Lo que aún bloquea a una subtarea: las que espera y no están hechas.
 export const bloqueos = (subs: Subtarea[], n: number) =>
   (subs.find(s => s.n === n)?.espera ?? []).filter(e => subs.find(s => s.n === e)?.estado !== 'solucionado')
-// Subtareas pendientes que ya se pueden lanzar.
-export const listas = (subs: Subtarea[]) => subs.filter(s => s.estado === 'pendiente' && !bloqueos(subs, s.n).length)
+// Subtareas pendientes que ya se pueden lanzar a un agente: las manuales no (las hace el usuario o el jefe) y delegarlas da error.
+export const listas = (subs: Subtarea[]) => subs.filter(s => s.estado === 'pendiente' && !s.manual && !bloqueos(subs, s.n).length)
 
 // Puntajes guardados: categoría → "trabajador:modelo" → suma de notas, nº de trabajos y tiempo total.
 export type Puntajes = Record<string, Record<string, { n: number; suma: number; msTotal: number }>>
