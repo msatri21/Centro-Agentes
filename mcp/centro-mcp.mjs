@@ -285,7 +285,7 @@ async function intentar(c, input) {
   const t0 = Date.now()
   const trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, ultimaActividad: t0, plan: plan?.objetivo }
   trabajos.push(trabajo)
-  marcar(input.subtarea, { estado: 'en curso', quien })
+  marcar(input.subtarea, { estado: 'en_proceso', quien })
   guardar()
   const { argv, stdin } = await argvDe(c, input.tarea, input.cwd)
   const env = {
@@ -470,11 +470,11 @@ async function delegarVarios(lista) {
 
 function progreso() {
   const subs = plan?.subtareas ?? []
-  return { hechas: subs.filter(s => s.estado === 'hecha').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'hecha').map(s => s.n), lanzar_ya: listas(subs).map(s => s.n) }
+  return { hechas: subs.filter(s => s.estado === 'solucionado').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'solucionado').map(s => s.n), lanzar_ya: listas(subs).map(s => s.n) }
 }
 
 function avisarSiTermino() {
-  if (!plan?.subtareas.length || plan.subtareas.some(s => s.estado !== 'hecha') || avisadoPara === plan.objetivo) return
+  if (!plan?.subtareas.length || plan.subtareas.some(s => s.estado !== 'solucionado') || avisadoPara === plan.objetivo) return
   avisadoPara = plan.objetivo
   const ahorro = trabajos.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut), 0)
   fs.writeFileSync(path.join(DIR, 'informe.md'), informeMarkdown({ chat: `${CARPETA} · OpenCode jefe`, plan, trabajos, ahorro, fecha: new Date().toLocaleString('es') }))
@@ -524,7 +524,7 @@ function pagina() {
     clave: claveWeb(), chat: CARPETA, jefe: 'OpenCode', plan, planes, trabajos, agentes: estadoAgente, modelos: MODELOS,
     rendimiento: agregarRendimiento(puntajes(), 8), ahorro, version: VERSION,
     cancelables: trabajos.filter(t => t.estado === 'corriendo' && cortadores.has(t.id)).map(t => ({ id: t.id, titulo: `${t.trabajador.split(':')[0]} · ${corto(t.tarea, 30)}` })),
-    relanzables: (plan?.subtareas ?? []).filter(x => x.estado !== 'en curso' && encargos.has(x.n)).map(x => ({ n: x.n, titulo: corto(x.titulo, 40) })),
+    relanzables: (plan?.subtareas ?? []).filter(x => x.estado !== 'en_proceso' && x.estado !== 'realizado' && encargos.has(x.n)).map(x => ({ n: x.n, titulo: corto(x.titulo, 40) })),
     pendientes: abiertas(leerDir('consultas.jsonl'), leerDir('respuestas.jsonl'), leerDir('permisos.json'))
       .filter(c => trabajos.some(t => t.id === c.trabajo && t.estado === 'corriendo'))
       .map(c => ({ id: c.trabajo, consulta: c.id, agente: trabajos.find(t => t.id === c.trabajo).trabajador.split(':')[0], tipo: c.tipo, texto: c.texto, detalle: c.detalle, categoria: c.categoria, opciones: c.opciones, en: c.en })),
@@ -621,12 +621,12 @@ const HERRAMIENTAS = [
   },
   {
     name: 'registrar_auditoria',
-    description: 'Guarda tu nota (1-10) de un trabajo delegado. Con 6 o más su subtarea queda hecha; con menos te sugiere otro modelo para rehacerla.',
+    description: 'Guarda tu nota (1-10) de un trabajo delegado. Con 6 o más su subtarea queda solucionada; con menos te sugiere otro modelo para rehacerla.',
     inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'id que devolvió delegar' }, puntaje: { type: 'number', minimum: 1, maximum: 10 }, nota: { type: 'string' } }, required: ['id', 'puntaje'] },
   },
   {
     name: 'cerrar_subtarea',
-    description: 'Marca como hecha una subtarea que hiciste tú como jefe (p. ej. juntar ramas o revisar el conjunto).',
+    description: 'Marca como solucionada una subtarea que hiciste tú como jefe (p. ej. juntar ramas o revisar el conjunto).',
     inputSchema: { type: 'object', properties: { subtarea: { type: 'number' }, nota: { type: 'string' } }, required: ['subtarea'] },
   },
   {
@@ -762,7 +762,7 @@ async function llamar(nombre, a) {
     const [agente, ...modelo] = t.trabajador.split(':')
     fs.writeFileSync(ARCHIVO_CEREBRO, JSON.stringify(registrar(leerCerebro(), { en: Date.now(), area: t.categoria, tarea: t.tarea, agente, modelo: modelo.join(':'), nota: p, ms: t.ms, tokens: (t.tokensIn ?? 0) + (t.tokensOut ?? 0), chat: ID, leccion: a.nota })))
     t.puntaje = p
-    marcar(t.subtarea, { estado: p >= 6 ? 'hecha' : 'pendiente', quien: t.trabajador, puntaje: p })
+    marcar(t.subtarea, { estado: p >= 6 ? 'solucionado' : 'pendiente', quien: t.trabajador, puntaje: p })
     avisarSiTermino()
     guardar()
     const siguiente = p < 6 ? ordenar(tabla, t.categoria, candidatos(), new Set([...caidosAhora(), t.trabajador]))[0] : undefined
@@ -774,7 +774,7 @@ async function llamar(nombre, a) {
   if (nombre === 'cerrar_subtarea') {
     const n = Number(a.subtarea)
     if (!plan?.subtareas.some(s => s.n === n)) return { error: `No existe la subtarea ${a.subtarea} en el plan` }
-    marcar(n, { estado: 'hecha', quien: 'jefe' })
+    marcar(n, { estado: 'solucionado', quien: 'jefe' })
     avisarSiTermino()
     guardar()
     return { hecha: n, progreso: progreso() }

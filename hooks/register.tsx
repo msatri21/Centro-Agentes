@@ -9,7 +9,7 @@ import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
 import { consultar, preferir, recomendar, registrar } from './cerebro'
 import type { Cerebro } from './cerebro'
 import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
-import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
+import { agregarRendimiento, bloqueos, estadoSubtareaNuevo, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
@@ -84,7 +84,7 @@ Protocolo:
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
    Skills: si una subtarea es de un tipo para el que puede haber una skill (diseño, una plataforma, un formato de archivo, un framework, pruebas en navegador...), llama a mcp__centro-agentes__buscar_skills con unas palabras de la tarea y pasa los nombres que encajen en "skills" del encargo; el agente leerá su SKILL.md y la seguirá (las tareas con skills no van a Ollama, que no lee archivos). Usa tú también tus skills para verificar cuando ayuden (p. ej. un navegador para comprobar una web).
 4. VERIFICA cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
-5. Registra cada verificación con mcp__centro-agentes__registrar_auditoria (puntaje 1-10 honesto). Con 6 o más la subtarea queda hecha.
+5. Registra cada verificación con mcp__centro-agentes__registrar_auditoria (puntaje 1-10 honesto). Con 6 o más la subtarea queda solucionada.
 6. Si el puntaje es < 6, rehazla a partir de lo que está mal: vuelve a delegarla (sola o con otras en delegar_varios) diciendo qué falló exactamente, qué hay que corregir y, si sirve, el resultado anterior. registrar_auditoria te sugiere en "siguiente" otro modelo; úsalo. Máximo 2 reintentos por subtarea.
 7. Las subtareas que hagas tú (juntar ramas, revisar el conjunto) ciérralas con mcp__centro-agentes__cerrar_subtarea. Cuando todo esté hecho, junta las piezas y entrega el resultado final con un informe corto: qué hizo cada agente, su puntaje, qué se rehízo y qué queda pendiente.
 
@@ -350,7 +350,7 @@ async function armar($: EngineInterface, filasVista = 30) {
     const ahorroSesion = lista.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut), 0)
 
     const subs = p?.subtareas ?? []
-    const hechas = subs.filter(s => s.estado === 'hecha').length
+    const hechas = subs.filter(s => s.estado === 'solucionado').length
     const pct = subs.length ? Math.round((hechas / subs.length) * 100) : 0
     const terminados = lista.filter(t => t.ms !== undefined)
     // shortcut: estima lo que falta con el tiempo medio de los trabajos terminados; no sabe si una subtarea es más larga.
@@ -360,8 +360,8 @@ async function armar($: EngineInterface, filasVista = 30) {
     const tokOut = lista.reduce((a, t) => a + (t.tokensOut ?? 0), 0)
     const costo = lista.reduce((a, t) => a + (t.costo ?? 0), 0)
     const seg = (ms: number) => (ms >= 60_000 ? `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s` : `${Math.round(ms / 1000)}s`)
-    const icono = { pendiente: '○', 'en curso': '●', hecha: '✓' } as const
-    const tonoSub = { pendiente: 'lo', 'en curso': 'vino', hecha: 'hi' } as const
+    const icono = { pendiente: '○', en_proceso: '●', realizado: '●', solucionado: '✓' } as const
+    const tonoSub = { pendiente: 'lo', en_proceso: 'vino', realizado: 'vino', solucionado: 'hi' } as const
     const tonoTrab = (t: Trabajo): Tono =>
       t.estado === 'error' || (t.puntaje ?? 10) < 6 ? 'vino' : t.puntaje !== undefined ? 'hi' : 'mid'
     const corriendo = lista.filter(t => t.estado === 'corriendo')
@@ -398,7 +398,7 @@ async function armar($: EngineInterface, filasVista = 30) {
         titulo: 'Subtareas',
         columnas: [16, 52, 380, 560],
         filas: subs.map(s => ({
-          celdas: [`${icono[s.estado]} ${s.n}`, corto(conSkills(encargos.get(s.n)?.skills, s.titulo), 40), corto(s.quien ?? '', 22), s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado],
+          celdas: [`${icono[s.estado]} ${s.n}`, corto(conSkills(encargos.get(s.n)?.skills, s.titulo), 40), corto(s.quien ?? '', 22), s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado],
           tono: tonoSub[s.estado],
         })),
         vacio: 'sin subtareas',
@@ -568,9 +568,9 @@ export function recuperar(g: Guardado): Guardado & { interrumpidos: number } {
   const corriendo = g.trabajos.filter(t => t.estado === 'corriendo')
   const subs = new Set(corriendo.map(t => t.subtarea).filter((n): n is number => n !== undefined))
   return {
-    plan: g.plan ? { ...g.plan, subtareas: g.plan.subtareas.map(s => (s.estado === 'en curso' && subs.has(s.n) ? { ...s, estado: 'pendiente' as const } : s)) } : null,
+    plan: g.plan ? { ...g.plan, subtareas: g.plan.subtareas.map(s => { const estado = estadoSubtareaNuevo(s.estado); return estado === 'en_proceso' && subs.has(s.n) ? { ...s, estado: 'pendiente' as const } : { ...s, estado } }) } : null,
     trabajos: g.trabajos.map(t => (t.estado === 'corriendo' ? { ...t, estado: 'error' as const, salida: '[interrumpido: el chat se cerró mientras trabajaba]' } : t)),
-    planes: g.planes ?? [],
+    planes: (g.planes ?? []).map(p => ({ ...p, subtareas: p.subtareas.map(s => ({ ...s, estado: estadoSubtareaNuevo(s.estado) })) })),
     encargos: g.encargos,
     interrumpidos: corriendo.length,
   }
@@ -692,7 +692,7 @@ async function relanzar($: EngineInterface, n: number) {
 let avisadoPara = ''
 async function avisarSiTermino($: EngineInterface) {
   const p = await read($, plan)
-  if (!p || !p.subtareas.length || p.subtareas.some(s => s.estado !== 'hecha') || avisadoPara === p.objetivo) return
+  if (!p || !p.subtareas.length || p.subtareas.some(s => s.estado !== 'solucionado') || avisadoPara === p.objetivo) return
   avisadoPara = p.objetivo
   $.ui.toast(`✓ Todo listo: ${p.objetivo}`)
   await escribirInforme($).catch(() => undefined)
@@ -723,8 +723,8 @@ async function escribirWeb($: EngineInterface) {
   const controles = {
     clave: await claveWeb($),
     cancelables: lista.filter(t => t.estado === 'corriendo' && cortadores.has(t.id)).map(t => ({ id: t.id, titulo: `${t.trabajador} · ${corto(t.tarea, 40)}` })),
-    relanzables: subs.filter(s => s.estado !== 'en curso' && encargos.has(s.n)).map(s => ({ n: s.n, titulo: corto(s.titulo, 40) })),
-    listo: subs.length > 0 && subs.every(s => s.estado === 'hecha') ? (await read($, plan))!.objetivo : undefined,
+    relanzables: subs.filter(s => s.estado !== 'en_proceso' && s.estado !== 'realizado' && encargos.has(s.n)).map(s => ({ n: s.n, titulo: corto(s.titulo, 40) })),
+    listo: subs.length > 0 && subs.every(s => s.estado === 'solucionado') ? (await read($, plan))!.objetivo : undefined,
   }
   const chat = etiquetaChat(carpetaProyecto, nombreChat)
   // Lado a lado, cada figura recibe un ancho proporcional a su relación de aspecto: así las dos miden lo mismo de alto.
@@ -824,7 +824,7 @@ async function intentar(
   const t0 = Date.now()
   const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, clasificacion: input.clasificacion, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
-  await marcar($, input.subtarea, { estado: 'en curso', quien })
+  await marcar($, input.subtarea, { estado: 'en_proceso', quien })
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
   // Publica cada 1,5 s lo último que escribió el agente: el panel lo muestra como su terminal.
   let crudo = ''
@@ -1396,7 +1396,7 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'registrar_auditoria',
-      description: 'Guarda el puntaje (1-10) de tu auditoría a un trabajo delegado, para que el centro aprenda qué trabajador sirve para cada categoría. Con 6 o más, su subtarea queda hecha.',
+      description: 'Guarda el puntaje (1-10) de tu auditoría a un trabajo delegado, para que el centro aprenda qué trabajador sirve para cada categoría. Con 6 o más, su subtarea queda solucionada.',
       isDeferred: false,
       inputSchema: {
         type: 'object',
@@ -1410,7 +1410,7 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'cerrar_subtarea',
-      description: 'Marca como hecha una subtarea que hiciste tú como jefe (p. ej. juntar ramas o revisar el conjunto), sin trabajo de un agente que auditar.',
+      description: 'Marca como solucionada una subtarea que hiciste tú como jefe (p. ej. juntar ramas o revisar el conjunto), sin trabajo de un agente que auditar.',
       isDeferred: false,
       inputSchema: {
         type: 'object',
@@ -1612,12 +1612,12 @@ ${protocolo(modelos)}`
     await update($, trabajos, l => (l ?? []).map(x => (x.id === id ? { ...x, puntaje: p } : x)))
     await puntuarEnHistorial($, id, p)
     await anotarCerebro($, t, p, nota)
-    await marcar($, t.subtarea, { estado: p >= 6 ? 'hecha' : 'pendiente', quien: t.trabajador, puntaje: p })
+    await marcar($, t.subtarea, { estado: p >= 6 ? 'solucionado' : 'pendiente', quien: t.trabajador, puntaje: p })
     await avisarSiTermino($)
     if (p < 6) $.ui.toast(`${t.trabajador} sacó ${p}/10 en ${t.categoria}${nota ? `: ${corto(nota, 40)}` : ''}`)
     const subs = (await read($, plan))?.subtareas ?? []
     const progreso = {
-      hechas: subs.filter(s => s.estado === 'hecha').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'hecha').map(s => s.n),
+      hechas: subs.filter(s => s.estado === 'solucionado').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'solucionado').map(s => s.n),
       // Las pendientes cuyas dependencias ya están hechas: lánzalas ahora.
       lanzar_ya: listas(subs).map(s => s.n),
     }
@@ -1636,10 +1636,10 @@ ${protocolo(modelos)}`
     const n = Number(subtarea)
     const subs0 = (await read($, plan))?.subtareas ?? []
     if (!subs0.some(s => s.n === n)) return res({ error: `No existe la subtarea ${subtarea} en el plan` })
-    await marcar($, n, { estado: 'hecha', quien: 'jefe' })
+    await marcar($, n, { estado: 'solucionado', quien: 'jefe' })
     await avisarSiTermino($)
     const subs = (await read($, plan))?.subtareas ?? []
-    return res({ hecha: n, progreso: { hechas: subs.filter(s => s.estado === 'hecha').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'hecha').map(s => s.n), lanzar_ya: listas(subs).map(s => s.n) } })
+    return res({ hecha: n, progreso: { hechas: subs.filter(s => s.estado === 'solucionado').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'solucionado').map(s => s.n), lanzar_ya: listas(subs).map(s => s.n) } })
   }).catch(async (_$, _e, next) => res({ error: `cerrar_subtarea falló: ${String(next.error)}` }))
 
   on('tool.call', { tool: 'mcp__centro-agentes__buscar_skills' }, async ($, e) => {

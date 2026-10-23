@@ -38,7 +38,7 @@ function indice(clave) {
         const g = JSON.parse(fs.readFileSync(path.join(dir, 'estado.json'), 'utf8'))
         objetivo = g.plan?.objetivo ?? ''
         total = g.plan?.subtareas?.length ?? 0
-        hechas = (g.plan?.subtareas ?? []).filter(s => s.estado === 'hecha').length
+        hechas = (g.plan?.subtareas ?? []).filter(s => s.estado === 'solucionado' || s.estado === 'hecha').length
         trabajos = (g.trabajos ?? []).length
       } catch {}
       return { id, en, titulo, objetivo, hechas, total, trabajos }

@@ -35,7 +35,7 @@ export type Trabajo = {
 export type Subtarea = {
   n: number
   titulo: string
-  estado: 'pendiente' | 'en curso' | 'hecha'
+  estado: 'pendiente' | 'en_proceso' | 'realizado' | 'solucionado'
   /** Números de las subtareas que tienen que estar hechas antes de lanzar esta */
   espera?: number[]
   /** trabajador:modelo que la tiene o la hizo */

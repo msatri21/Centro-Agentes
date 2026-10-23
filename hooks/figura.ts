@@ -11,7 +11,7 @@ import type { Plan as Planta, Point3, Projection } from './anatomy/iso-kit.ts'
 export type Bahia = { nombre: string; modelo?: string; tokens: number; trabajando: boolean }
 export type DatosFigura = {
   bahias: Bahia[]
-  subtareas: ('pendiente' | 'en curso' | 'hecha')[]
+  subtareas: ('pendiente' | 'en_proceso' | 'realizado' | 'solucionado')[]
   /** 0-100 */
   contexto?: number
   titulo: string
@@ -104,17 +104,17 @@ export function figura(d: DatosFigura): string {
   const fichas: { z: number; svg: string }[] = []
   d.subtareas.forEach((e, i) => {
     const x = 106 + i * (ancho + 4)
-    const alto = e === 'hecha' ? 18 : e === 'en curso' ? 9 : 1.5
+    const alto = e === 'solucionado' ? 18 : e === 'en_proceso' || e === 'realizado' ? 9 : 1.5
     const pieza: Planta = { x, y: 148, w: ancho, d: 24, r: 2 }
     const c: Point3 = [x + ancho / 2, 160, 3]
-    fichas.push({ z: depthOf(c, P), svg: solidSvg(slabOf(pieza, 3, alto, P, 6, 0.4), { lit: e === 'hecha', tone: e === 'pendiente' ? 'lo' : 'hi', className: e === 'en curso' ? 'vino' : undefined }) })
-    if (e === 'en curso') fichas.push({ z: depthOf(c, P) + 0.01, svg: dotsSvg([iso([c[0], c[1], 3 + alto + 0.2], P)], { size: 1.4, tone: 'hi', pulse: true }) })
+    fichas.push({ z: depthOf(c, P), svg: solidSvg(slabOf(pieza, 3, alto, P, 6, 0.4), { lit: e === 'solucionado', tone: e === 'pendiente' ? 'lo' : 'hi', className: e === 'en_proceso' || e === 'realizado' ? 'vino' : undefined }) })
+    if (e === 'en_proceso' || e === 'realizado') fichas.push({ z: depthOf(c, P) + 0.01, svg: dotsSvg([iso([c[0], c[1], 3 + alto + 0.2], P)], { size: 1.4, tone: 'hi', pulse: true }) })
   })
   fichas.sort((a, b) => a.z - b.z)
 
   piezas.sort((a, b) => a.z - b.z)
 
-  const hechas = d.subtareas.filter(e => e === 'hecha').length
+  const hechas = d.subtareas.filter(e => e === 'solucionado').length
   const [dx, dy] = iso([45, 120, 0], P)
   const cuerpo = [
     ...marco(H, 'Fig 1', d.titulo, 'DIRECTOR · TRABAJADORES · SUBTAREAS', d.lectura),

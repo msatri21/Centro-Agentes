@@ -27,7 +27,7 @@ export function faseDe(d) {
   const ahora = d.ahora ?? Date.now()
   const poner = i => ({ indice: i, ...FASES[i] })
   if (!subs.length) return REPOSO
-  if (subs.every(s => s.estado === 'hecha')) return poner(7)
+  if (subs.every(s => s.estado === 'solucionado')) return poner(7)
   const corriendo = trabajos.filter(t => t.estado === 'corriendo')
   // Un fallo reciente al que otro agente ya está tomando el relevo (o que sigue sin resolver).
   const hayRelevo = trabajos.some(e => e.estado === 'error' && (fin(e) ?? 0) > ahora - 15_000 && (trabajos.some(n => n.subtarea === e.subtarea && n.inicio > e.inicio) || !corriendo.length))
@@ -61,7 +61,7 @@ export function eventosEntre(antes, despues) {
   const subsAntes = new Map((antes.plan?.subtareas ?? []).map(s => [s.n, s]))
   for (const s of despues.plan?.subtareas ?? []) {
     const p = subsAntes.get(s.n)
-    if (p && p.estado !== 'hecha' && s.estado === 'hecha' && s.quien === 'jefe') eventos.push({ tipo: 'cierre', subtarea: s.n })
+    if (p && p.estado !== 'solucionado' && s.estado === 'solucionado' && s.quien === 'jefe') eventos.push({ tipo: 'cierre', subtarea: s.n })
   }
   if (!(antes.plan?.subtareas ?? []).length && (despues.plan?.subtareas ?? []).length) eventos.push({ tipo: 'plan' })
   return eventos
@@ -173,7 +173,7 @@ export function gruposDe(d) {
   if (planActual && planActual.objetivo) {
     const objetivo = normalizarObjetivo(planActual.objetivo)
     const subtareas = planActual.subtareas ?? []
-    const hechas = subtareas.filter(s => s.estado === 'hecha').length
+    const hechas = subtareas.filter(s => s.estado === 'solucionado').length
     const total = subtareas.length
     gruposMap.set(objetivo, {
       id: objetivo,
@@ -199,7 +199,7 @@ export function gruposDe(d) {
     if (objetivoActual && objetivo === objetivoActual) continue // el actual manda
     if (gruposMap.has(objetivo)) continue
     const subtareas = p.subtareas ?? []
-    const hechas = subtareas.filter(s => s.estado === 'hecha').length
+    const hechas = subtareas.filter(s => s.estado === 'solucionado').length
     const total = subtareas.length
     gruposMap.set(objetivo, {
       id: objetivo,
@@ -325,6 +325,11 @@ export function gruposDe(d) {
 export function faseDeGrupo(grupo, ahora = Date.now()) {
   const { subtareas = [], trabajos = [], hechas = 0, total = subtareas.length } = grupo
 
+  const sinSolucionar = subtareas.filter(s => s.estado !== 'solucionado')
+  if (sinSolucionar.length && sinSolucionar.every(s => s.estado === 'realizado')) {
+    return { indice: 3, nombre: FASES_PLAN[3] }
+  }
+
   // Si total > 0 y hechas === total → Informe (6)
   if (total > 0 && hechas === total) {
     return { indice: 6, nombre: FASES_PLAN[6] }
@@ -361,7 +366,7 @@ export function faseDeGrupo(grupo, ahora = Date.now()) {
 
   // Todos los 'listo' tienen nota (o no hay 'listo')
   // Mirar subtareas que NO están hechas
-  const pendientes = subtareas.filter(s => s.estado !== 'hecha')
+  const pendientes = subtareas.filter(s => s.estado !== 'solucionado')
   const algunaConTrabajos = pendientes.some(sub =>
     trabajos.some(t => t.subtarea === sub.n)
   )

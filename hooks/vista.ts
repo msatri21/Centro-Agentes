@@ -230,7 +230,7 @@ const jsonSeguro = (x: unknown) => JSON.stringify(x).replace(/</g, '\\u003c')
 export function paginaCentro(d: DatosPagina): string {
   const ahora = d.ahora ?? Date.now()
   const subs = d.plan?.subtareas ?? []
-  const hechas = subs.filter(s => s.estado === 'hecha').length
+  const hechas = subs.filter(s => s.estado === 'solucionado').length
   const pct = subs.length ? Math.round((hechas / subs.length) * 100) : 0
   const corriendo = d.trabajos.filter(t => t.estado === 'corriendo')
   const tokIn = d.trabajos.reduce((a, t) => a + (t.tokensIn ?? 0), 0)
@@ -249,7 +249,7 @@ export function paginaCentro(d: DatosPagina): string {
   const listo = subs.length > 0 && hechas === subs.length ? d.plan!.objetivo : ''
 
   const filasPlan = subs
-    .map(s => `<tr class="${s.estado === 'hecha' ? 'hecha' : s.estado === 'en curso' ? 'curso' : ''}"><td>${s.n}</td><td>${esc(s.titulo)}${s.espera?.length ? ` <small>espera ${s.espera.join(', ')}</small>` : ''}</td><td>${esc(s.estado)}</td><td>${esc(s.quien ?? '')}</td><td>${s.puntaje !== undefined ? `${s.puntaje}/10` : ''}</td></tr>`)
+    .map(s => `<tr class="${s.estado === 'solucionado' ? 'hecha' : s.estado === 'en_proceso' || s.estado === 'realizado' ? 'curso' : ''}"><td>${s.n}</td><td>${esc(s.titulo)}${s.espera?.length ? ` <small>espera ${s.espera.join(', ')}</small>` : ''}</td><td>${esc(s.estado === 'realizado' ? 'en_proceso' : s.estado)}</td><td>${esc(s.quien ?? '')}</td><td>${s.puntaje !== undefined ? `${s.puntaje}/10` : ''}</td></tr>`)
     .join('')
   const historial = [...d.trabajos]
     .reverse()
