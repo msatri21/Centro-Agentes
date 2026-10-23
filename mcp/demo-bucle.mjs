@@ -57,7 +57,7 @@ const HISTORIA = [
 const CIERRE = 72 // el jefe cierra la última subtarea
 // Dos planes: el que va ocurriendo y uno anterior ya terminado, que el grafo dibuja atenuado.
 const OBJETIVO = 'Calculadora completa hecha por varios agentes (demo)'
-const ANTERIOR = { objetivo: 'Pantalla de inicio de sesión (demo)', subtareas: [{ n: 1, titulo: 'Formulario', estado: 'hecha' }, { n: 2, titulo: 'Validaciones', estado: 'hecha' }, { n: 3, titulo: 'Pruebas', estado: 'hecha' }] }
+const ANTERIOR = { objetivo: 'Pantalla de inicio de sesión (demo)', subtareas: [{ n: 1, titulo: 'Formulario', estado: 'solucionado' }, { n: 2, titulo: 'Validaciones', estado: 'solucionado' }, { n: 3, titulo: 'Pruebas', estado: 'solucionado' }] }
 const trabajosAnteriores = base => [
   { id: 'p1', trabajador: 'hermes:nous/poolside/laguna-s-2.1:free', categoria: 'demo', tarea: 'Formulario', estado: 'listo', inicio: base - 600_000, ms: 41_000, subtarea: 1, puntaje: 9, tokensIn: 30000, tokensOut: 700, salida: 'ok', plan: ANTERIOR.objetivo },
   { id: 'p2', trabajador: 'opencode:opencode/glm-5.3-flash-free', categoria: 'demo', tarea: 'Validaciones', estado: 'listo', inicio: base - 590_000, ms: 33_000, subtarea: 2, puntaje: 8, tokensIn: 22000, tokensOut: 400, salida: 'ok', plan: ANTERIOR.objetivo },
@@ -93,9 +93,9 @@ function estadoEn(t, respondidas) {
   const subtareas = SUBS.map(s => {
     const suyos = trabajos.filter(w => w.subtarea === s.n)
     const bueno = suyos.find(w => w.puntaje !== undefined && w.puntaje >= 6)
-    const estado = s.n === ULTIMA ? (t >= CIERRE ? 'hecha' : 'pendiente') : bueno ? 'hecha' : suyos.some(w => w.estado === 'corriendo') ? 'en curso' : 'pendiente'
+    const estado = s.n === ULTIMA ? (t >= CIERRE ? 'solucionado' : 'pendiente') : bueno ? 'solucionado' : suyos.some(w => w.estado === 'corriendo') ? 'en_proceso' : 'pendiente'
     const ultimo = suyos[suyos.length - 1]
-    return { ...s, estado, quien: s.n === ULTIMA && estado === 'hecha' ? 'jefe' : bueno?.trabajador ?? ultimo?.trabajador, puntaje: bueno?.puntaje }
+    return { ...s, estado, quien: s.n === ULTIMA && estado === 'solucionado' ? 'jefe' : bueno?.trabajador ?? ultimo?.trabajador, puntaje: bueno?.puntaje }
   })
   return { ahora, trabajos: [...trabajosAnteriores(base), ...trabajos], planes: [ANTERIOR], pendientes, plan: t >= 2 ? { objetivo: OBJETIVO, subtareas } : null }
 }
@@ -138,7 +138,7 @@ function escribir(t) {
 // El segundo chat: un plan pequeño con dos agentes trabajando, siempre igual.
 function escribirSegundo(ahora) {
   const sub = (n, titulo, estado) => ({ n, titulo, estado })
-  const plan = { objetivo: 'Migrar el blog a Astro', subtareas: [sub(1, 'Plantillas', 'en curso'), sub(2, 'Feed RSS', 'en curso'), sub(3, 'Despliegue', 'pendiente')] }
+  const plan = { objetivo: 'Migrar el blog a Astro', subtareas: [sub(1, 'Plantillas', 'en_proceso'), sub(2, 'Feed RSS', 'en_proceso'), sub(3, 'Despliegue', 'pendiente')] }
   const trab = (id, quien, subtarea, extra = {}) => ({ id, trabajador: quien, categoria: 'demo', tarea: plan.subtareas[subtarea - 1].titulo, estado: 'corriendo', inicio: ahora - 25_000, subtarea, salida: 'trabajando…', ultimaActividad: ahora - 1500, plan: plan.objetivo, ...extra })
   const trabajos = [
     trab('x1', 'opencode:opencode/deepseek-v4.1-flash-free', 1, { clasificacion: { clase: 'escritura', motivos: ['categoría de código', 'nombra archivos de código'], anadidas: ['ponytail'] } }),

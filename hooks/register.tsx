@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Plan, Trabajador, Trabajo } from '../types'
+import type { Tarea } from './tareas'
 import { colaDeLineas, figura, tablero, VINO } from './figura'
 import { paginaCentro, paginaTodosGrafo } from './vista'
 import { textoAvisoPonytail } from './ponytailAviso'
@@ -9,7 +10,7 @@ import { abiertas, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE } from './consultas'
 import { consultar, preferir, recomendar, registrar } from './cerebro'
 import type { Cerebro } from './cerebro'
 import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
-import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
+import { agregarRendimiento, bloqueos, estadoSubtareaNuevo, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
@@ -79,12 +80,13 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 ${ANTES(url)}
 
 Protocolo:
+El plan se guarda en mst-tareas.json de la carpeta del proyecto (git lo ignora) y se crea con el primer planificar: planifica un BORRADOR al tener objetivo y subtareas de primer vistazo y púlelo al repartir con planificar { agregar } y { ajustar }. Usa manuales para lo que no se delegas (instalar, respaldar). tareas_estado muestra el estado; planificar { tarea: 'T2' } retoma una tarea. Los agentes no editan mst-tareas.json: anotan trabajo nuevo al final bajo «Propuestas:» y tú decides si agregarlo como hermana o planificarlo como tarea nueva. Reabrir una tarea solucionada es decisión tuya: si cumplía lo pedido crea una nueva; si no, usa planificar { reabrir: ["T2.3"] } para devolver a pendiente la subtarea que falló.
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
 2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo delegar_varios: arrancan solas cuando terminan bien aquellas de las que dependen.
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
    Skills: si una subtarea es de un tipo para el que puede haber una skill (diseño, una plataforma, un formato de archivo, un framework, pruebas en navegador...), llama a mcp__centro-agentes__buscar_skills con unas palabras de la tarea y pasa los nombres que encajen en "skills" del encargo; el agente leerá su SKILL.md y la seguirá (las tareas con skills no van a Ollama, que no lee archivos). Usa tú también tus skills para verificar cuando ayuden (p. ej. un navegador para comprobar una web).
 4. VERIFICA cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
-5. Registra cada verificación con mcp__centro-agentes__registrar_auditoria (puntaje 1-10 honesto). Con 6 o más la subtarea queda hecha.
+5. Registra cada verificación con mcp__centro-agentes__registrar_auditoria (puntaje 1-10 honesto). Con 6 o más la subtarea queda solucionada.
 6. Si el puntaje es < 6, rehazla a partir de lo que está mal: vuelve a delegarla (sola o con otras en delegar_varios) diciendo qué falló exactamente, qué hay que corregir y, si sirve, el resultado anterior. registrar_auditoria te sugiere en "siguiente" otro modelo; úsalo. Máximo 2 reintentos por subtarea.
 7. Las subtareas que hagas tú (juntar ramas, revisar el conjunto) ciérralas con mcp__centro-agentes__cerrar_subtarea. Cuando todo esté hecho, junta las piezas y entrega el resultado final con un informe corto: qué hizo cada agente, su puntaje, qué se rehízo y qué queda pendiente.
 
@@ -305,10 +307,25 @@ async function ejecutar(
 }
 
 
-const marcar = ($: EngineInterface, n: number | undefined, cambio: Partial<Plan['subtareas'][number]>) =>
-  n === undefined
-    ? Promise.resolve()
-    : update($, plan, p => (p ? { ...p, subtareas: p.subtareas.map(s => (s.n === n ? { ...s, ...cambio } : s)) } : p))
+async function marcar($: EngineInterface, n: number | undefined, cambio: Partial<Plan['subtareas'][number]>) {
+  if (n === undefined) return undefined
+  const p = await read($, plan)
+  await update($, plan, actual => (actual ? { ...actual, subtareas: actual.subtareas.map(s => (s.n === n ? { ...s, ...cambio } : s)) } : actual))
+  if (!p?.tarea || !p.raiz) return undefined
+  const r = await tareasArchivo($, 'aplicar', p.raiz, { tipo: 'estado', id: `${p.tarea}.${n}`, estado: cambio.estado })
+  return r.ok ? undefined : r.mensaje ?? 'No se pudo guardar el estado de la subtarea en el archivo'
+}
+
+async function reservarSubtarea($: EngineInterface, n: number) {
+  const p = await read($, plan)
+  if (!p?.tarea || !p.raiz) return {}
+  const r = await tareasArchivo($, 'aplicar', p.raiz, { tipo: 'estado', id: `${p.tarea}.${n}`, estado: 'en_proceso', solo_si: 'pendiente' })
+  if (!r.ok && r.codigo === 'conflicto') return { error: `La subtarea ${n} ya está en proceso (otro encargo u otro chat); no se lanza otra vez` }
+  if (!r.ok && r.codigo === 'bloqueada') return { error: `La subtarea ${n} espera a sus dependencias: lánzala cuando estén hechas.` }
+  if (!r.ok && r.codigo === 'manual') return { error: `La subtarea ${n} es manual y no se delega` }
+  await update($, plan, actual => (actual ? { ...actual, subtareas: actual.subtareas.map(s => s.n === n ? { ...s, estado: 'en_proceso' } : s) } : actual))
+  return r.ok ? {} : { aviso_archivo: r.mensaje ?? 'No se pudo reservar la subtarea en el archivo' }
+}
 
 // Arma todo lo que muestra el centro (panel y página web) a partir del estado.
 // --- Historial entre sesiones y contador de ahorro (en el almacén permanente del plugin) ---
@@ -350,7 +367,7 @@ async function armar($: EngineInterface, filasVista = 30) {
     const ahorroSesion = lista.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut), 0)
 
     const subs = p?.subtareas ?? []
-    const hechas = subs.filter(s => s.estado === 'hecha').length
+    const hechas = subs.filter(s => s.estado === 'solucionado').length
     const pct = subs.length ? Math.round((hechas / subs.length) * 100) : 0
     const terminados = lista.filter(t => t.ms !== undefined)
     // shortcut: estima lo que falta con el tiempo medio de los trabajos terminados; no sabe si una subtarea es más larga.
@@ -360,8 +377,8 @@ async function armar($: EngineInterface, filasVista = 30) {
     const tokOut = lista.reduce((a, t) => a + (t.tokensOut ?? 0), 0)
     const costo = lista.reduce((a, t) => a + (t.costo ?? 0), 0)
     const seg = (ms: number) => (ms >= 60_000 ? `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s` : `${Math.round(ms / 1000)}s`)
-    const icono = { pendiente: '○', 'en curso': '●', hecha: '✓' } as const
-    const tonoSub = { pendiente: 'lo', 'en curso': 'vino', hecha: 'hi' } as const
+    const icono = { pendiente: '○', en_proceso: '●', realizado: '●', solucionado: '✓' } as const
+    const tonoSub = { pendiente: 'lo', en_proceso: 'vino', realizado: 'vino', solucionado: 'hi' } as const
     const tonoTrab = (t: Trabajo): Tono =>
       t.estado === 'error' || (t.puntaje ?? 10) < 6 ? 'vino' : t.puntaje !== undefined ? 'hi' : 'mid'
     const corriendo = lista.filter(t => t.estado === 'corriendo')
@@ -398,7 +415,7 @@ async function armar($: EngineInterface, filasVista = 30) {
         titulo: 'Subtareas',
         columnas: [16, 52, 380, 560],
         filas: subs.map(s => ({
-          celdas: [`${icono[s.estado]} ${s.n}`, corto(conSkills(encargos.get(s.n)?.skills, s.titulo), 40), corto(s.quien ?? '', 22), s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado],
+          celdas: [`${icono[s.estado]} ${s.n}`, corto(conSkills(encargos.get(s.n)?.skills, s.titulo), 40), corto(s.quien ?? '', 22), s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado],
           tono: tonoSub[s.estado],
         })),
         vacio: 'sin subtareas',
@@ -538,6 +555,24 @@ let SID = 'local'
 let carpetaProyecto = ''
 // Ruta completa del proyecto: donde trabajan los agentes cuando el encargo viene de la web.
 let rutaProyecto = ''
+async function tareasArchivo($: EngineInterface, orden: 'aplicar' | 'resumen' | 'leer', raiz: string, op?: unknown): Promise<any> {
+  const nombre = raiz.split(/[\\/]/).filter(Boolean).at(-1) ?? ''
+  try {
+    // El harness rechaza el encadenamiento opcional sobre $.plugin durante la carga del hook.
+    let pluginRoot = ''
+    try { pluginRoot = $.plugin.root } catch {}
+    const argv = ['node', `${pluginRoot}/mcp/tareas.mjs`, orden, raiz, '--proyecto', nombre]
+    const flujo = $.process.spawn({ argv, cwd: raiz, input: op ? JSON.stringify(op) : undefined })
+    let stdout = ''
+    for await (const parte of flujo) if (parte.stream === 'stdout') stdout += parte.text
+    const fin = await flujo.result
+    const linea = stdout.trim().split(/\r?\n/).at(-1)
+    if (fin?.code !== 0) return { ok: false, codigo: 'script', mensaje: `El script terminó con código ${fin?.code ?? 'desconocido'}` }
+    try { return JSON.parse(linea ?? '') } catch { return { ok: false, codigo: 'script', mensaje: 'El script no devolvió JSON válido' } }
+  } catch (e) {
+    return { ok: false, codigo: 'script', mensaje: String(e) }
+  }
+}
 let nombreChat = ''
 export const etiquetaChat = (carpeta: string, nombre: string) => [carpeta, nombre].filter(Boolean).join(' · ') || 'chat'
 // El primer mensaje de un chat como nombre: de /mst <tarea> se toma la tarea, no el protocolo que la acompaña.
@@ -568,12 +603,18 @@ export function recuperar(g: Guardado): Guardado & { interrumpidos: number } {
   const corriendo = g.trabajos.filter(t => t.estado === 'corriendo')
   const subs = new Set(corriendo.map(t => t.subtarea).filter((n): n is number => n !== undefined))
   return {
-    plan: g.plan ? { ...g.plan, subtareas: g.plan.subtareas.map(s => (s.estado === 'en curso' && subs.has(s.n) ? { ...s, estado: 'pendiente' as const } : s)) } : null,
+    plan: g.plan ? { ...g.plan, subtareas: g.plan.subtareas.map(s => { const estado = estadoSubtareaNuevo(s.estado); return estado === 'en_proceso' && subs.has(s.n) ? { ...s, estado: 'pendiente' as const } : { ...s, estado } }) } : null,
     trabajos: g.trabajos.map(t => (t.estado === 'corriendo' ? { ...t, estado: 'error' as const, salida: '[interrumpido: el chat se cerró mientras trabajaba]' } : t)),
-    planes: g.planes ?? [],
+    planes: (g.planes ?? []).map(p => ({ ...p, subtareas: p.subtareas.map(s => ({ ...s, estado: estadoSubtareaNuevo(s.estado) })) })),
     encargos: g.encargos,
     interrumpidos: corriendo.length,
   }
+}
+
+export function estadosInterrumpidos(g: Guardado): { id: string; estado: 'pendiente' }[] {
+  if (!g.plan?.tarea) return []
+  return [...new Set(g.trabajos.filter(t => t.estado === 'corriendo' && t.subtarea !== undefined).map(t => t.subtarea!))]
+    .map(n => ({ id: `${g.plan!.tarea}.${n}`, estado: 'pendiente' as const }))
 }
 
 async function restaurarEstado($: EngineInterface) {
@@ -593,6 +634,12 @@ async function restaurarEstado($: EngineInterface) {
   await update($, planes, () => r.planes ?? [])
   await update($, trabajos, () => r.trabajos)
   for (const [n, e] of r.encargos) encargos.set(n, e)
+  if (r.plan?.raiz) {
+    for (const op of estadosInterrumpidos(g)) {
+      const guardado = await tareasArchivo($, 'aplicar', r.plan.raiz, { tipo: 'estado', ...op })
+      if (!guardado.ok) $.ui.toast(`${TITULO}: no se pudo restaurar la subtarea ${op.id} en mst-tareas.json: ${guardado.mensaje ?? guardado.codigo}`)
+    }
+  }
   if (r.interrumpidos) $.ui.toast(`${TITULO}: recuperado. ${r.interrumpidos} trabajo(s) quedaron interrumpidos; relánzalos desde la web o con /mst.`)
 }
 
@@ -692,7 +739,7 @@ async function relanzar($: EngineInterface, n: number) {
 let avisadoPara = ''
 async function avisarSiTermino($: EngineInterface) {
   const p = await read($, plan)
-  if (!p || !p.subtareas.length || p.subtareas.some(s => s.estado !== 'hecha') || avisadoPara === p.objetivo) return
+  if (!p || !p.subtareas.length || p.subtareas.some(s => s.estado !== 'solucionado') || avisadoPara === p.objetivo) return
   avisadoPara = p.objetivo
   $.ui.toast(`✓ Todo listo: ${p.objetivo}`)
   await escribirInforme($).catch(() => undefined)
@@ -723,8 +770,8 @@ async function escribirWeb($: EngineInterface) {
   const controles = {
     clave: await claveWeb($),
     cancelables: lista.filter(t => t.estado === 'corriendo' && cortadores.has(t.id)).map(t => ({ id: t.id, titulo: `${t.trabajador} · ${corto(t.tarea, 40)}` })),
-    relanzables: subs.filter(s => s.estado !== 'en curso' && encargos.has(s.n)).map(s => ({ n: s.n, titulo: corto(s.titulo, 40) })),
-    listo: subs.length > 0 && subs.every(s => s.estado === 'hecha') ? (await read($, plan))!.objetivo : undefined,
+    relanzables: subs.filter(s => s.estado !== 'en_proceso' && s.estado !== 'realizado' && encargos.has(s.n)).map(s => ({ n: s.n, titulo: corto(s.titulo, 40) })),
+    listo: subs.length > 0 && subs.every(s => s.estado === 'solucionado') ? (await read($, plan))!.objetivo : undefined,
   }
   const chat = etiquetaChat(carpetaProyecto, nombreChat)
   // Lado a lado, cada figura recibe un ancho proporcional a su relación de aspecto: así las dos miden lo mismo de alto.
@@ -824,7 +871,7 @@ async function intentar(
   const t0 = Date.now()
   const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, clasificacion: input.clasificacion, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
-  await marcar($, input.subtarea, { estado: 'en curso', quien })
+  await update($, plan, p => p ? { ...p, subtareas: p.subtareas.map(s => s.n === input.subtarea ? { ...s, estado: 'en_proceso', quien } : s) } : p)
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
   // Publica cada 1,5 s lo último que escribió el agente: el panel lo muestra como su terminal.
   let crudo = ''
@@ -1154,6 +1201,8 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   let r: Intento | undefined
   let elegido = cola[0]
   let anadidas: string[] = []
+  let avisoArchivo: string | undefined
+  let reservaHecha = false
   for (const c of cola) {
     if (cambios.length > MAX_CAMBIOS) break
     const k = clave(c.trabajador, c.modelo)
@@ -1161,6 +1210,16 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     if (!esLocal(c) && salud.get(c.trabajador)?.ok === false) continue
     elegido = c
     ocupados.set(k, (ocupados.get(k) ?? 0) + 1)
+    if (!reservaHecha && input.subtarea !== undefined) {
+      const reserva = await reservarSubtarea($, input.subtarea)
+      if (reserva.error) {
+        ocupados.set(k, (ocupados.get(k) ?? 1) - 1)
+        if (copia && 'carpeta' in copia) await borrarCopia($, copia)
+        return { subtarea: input.subtarea, error: reserva.error }
+      }
+      reservaHecha = true
+      avisoArchivo = reserva.aviso_archivo
+    }
     try {
       const leeSkills = c.trabajador !== 'ollama' && c.trabajador !== 'aider'
       const extra = leeSkills && automaticas.length ? (await instruccionSkills($, automaticas)) + (input.cwd && automaticas.some(n => CON_MAPA.includes(n)) ? await mapaDelCodigo($, input.cwd) : '') : ''
@@ -1193,9 +1252,11 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   }
   if (!r) {
     if (copia && 'carpeta' in copia) await borrarCopia($, copia)
-    return { subtarea: input.subtarea, error: 'Todos los modelos posibles fallaron hace poco. Prueba otro trabajador o espera unos minutos.' }
+    const avisoEstado = await marcar($, input.subtarea, { estado: 'pendiente' })
+    return { subtarea: input.subtarea, error: 'Todos los modelos posibles fallaron hace poco. Prueba otro trabajador o espera unos minutos.', ...(avisoArchivo ?? avisoEstado ? { aviso_archivo: avisoArchivo ?? avisoEstado } : {}) }
   }
-  if (!r.ok) await marcar($, input.subtarea, { estado: 'pendiente' })
+  const avisoEstado = await marcar($, input.subtarea, { estado: r.ok ? 'realizado' : 'pendiente' })
+  avisoArchivo ??= avisoEstado
   const quienFue = clave(elegido.trabajador, elegido.modelo)
   const aislado = copia && 'carpeta' in copia ? await cerrarCopia($, copia, `mst: subtarea ${input.subtarea ?? '-'} (${quienFue})`) : copia
   const verificacion = r.ok && input.verificar?.trim() ? await verificarEn($, input.cwd, input.verificar.trim()) : undefined
@@ -1209,6 +1270,7 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     segundos: Math.round(r.ms / 1000),
     tokens: { entrada: r.s.tokensIn, salida: r.s.tokensOut },
     ...(cambios.length ? { cambios } : {}),
+    ...(avisoArchivo ? { aviso_archivo: avisoArchivo } : {}),
     ...(aislado ? { copia: aislado } : {}),
     ...(verificacion ? { verificacion } : {}),
     salida: r.s.texto.slice(0, 60_000) || '(sin salida)',
@@ -1230,6 +1292,7 @@ async function cambiosGit($: EngineInterface, cwd: string) {
   return r && r.exitCode === 0 ? archivosCambiados(r.stdout) : null
 }
 async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, sinBloqueo = false) {
+  if (input.subtarea !== undefined && (await read($, plan))?.subtareas.some(s => s.n === input.subtarea && s.manual)) return { error: `La subtarea ${input.subtarea} es manual y no se delega` }
   if (!input.cwd || input.aislar) return delegarSinCerrojo($, modelos, input, timeoutMs, sinBloqueo)
   const llave = llaveCarpeta(input.cwd)
   const t0 = Date.now()
@@ -1327,10 +1390,15 @@ export const register: Register = (on, options) => {
         type: 'object',
         properties: {
           objetivo: { type: 'string', description: 'Resultado final en una frase' },
+          cwd: { type: 'string', description: 'Carpeta del proyecto donde vive mst-tareas.json; por defecto la carpeta de la sesión' },
           subtareas: { type: 'array', items: { type: 'string' }, description: 'Títulos cortos, en orden' },
           dependencias: { type: 'object', description: 'Opcional. Qué subtareas espera cada una, p. ej. {"3": [1, 2]}: la 3 no se puede lanzar hasta que la 1 y la 2 estén hechas' },
+          manuales: { type: 'array', items: { type: 'number' }, description: 'Posiciones de subtareas manuales que no se delegan' },
+          tarea: { type: 'string', description: 'Id de tarea guardada para cargar, p. ej. T2' },
+          agregar: { type: 'array', description: 'Títulos u objetos { titulo, depende_de: ["T3.1"], manual } para añadir a la tarea actual', items: { oneOf: [{ type: 'string' }, { type: 'object', properties: { titulo: { type: 'string' }, depende_de: { type: 'array', items: { type: 'string' } }, manual: { type: 'boolean' } }, required: ['titulo'] }] } },
+          ajustar: { type: 'object', description: 'Ajustes por id de subtarea pendiente, p. ej. {"T3.2": { titulo, depende_de }}' },
+          reabrir: { type: 'array', items: { type: 'string' }, description: 'Devuelve esas subtareas a pendiente para rehacerlas (y reabre su tarea si estaba solucionada). Úsalo cuando una tarea solucionada no cumplía lo pedido; si cumplía y hay trabajo nuevo, crea una tarea nueva con planificar.' },
         },
-        required: ['objetivo', 'subtareas'],
       },
     })
     await $.tool.register({
@@ -1396,7 +1464,7 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'registrar_auditoria',
-      description: 'Guarda el puntaje (1-10) de tu auditoría a un trabajo delegado, para que el centro aprenda qué trabajador sirve para cada categoría. Con 6 o más, su subtarea queda hecha.',
+      description: 'Guarda el puntaje (1-10) de tu auditoría a un trabajo delegado, para que el centro aprenda qué trabajador sirve para cada categoría. Con 6 o más, su subtarea queda solucionada.',
       isDeferred: false,
       inputSchema: {
         type: 'object',
@@ -1410,7 +1478,7 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'cerrar_subtarea',
-      description: 'Marca como hecha una subtarea que hiciste tú como jefe (p. ej. juntar ramas o revisar el conjunto), sin trabajo de un agente que auditar.',
+      description: 'Marca como solucionada una subtarea que hiciste tú como jefe (p. ej. juntar ramas o revisar el conjunto), sin trabajo de un agente que auditar.',
       isDeferred: false,
       inputSchema: {
         type: 'object',
@@ -1427,6 +1495,7 @@ export const register: Register = (on, options) => {
       isDeferred: false,
       inputSchema: { type: 'object', properties: { categoria: { type: 'string' } } },
     })
+    await $.tool.register({ name: 'tareas_estado', description: 'Resumen corto de las tareas del proyecto (mst-tareas.json): cada tarea con su estado y, de la activa, sus subtareas. Úsala en vez de leer el archivo entero.', isDeferred: false, inputSchema: { type: 'object', properties: { cwd: { type: 'string', description: 'Carpeta del proyecto donde vive mst-tareas.json; por defecto la carpeta de la sesión' } } } })
     await $.tool.register({
       name: 'cerebro',
       description: 'Consulta el cerebro global: qué agente y modelo lo hicieron mejor en tareas parecidas de cualquier chat, y los casos más parecidos. Devuelve también el enlace web de este chat.',
@@ -1533,14 +1602,80 @@ ${protocolo(modelos)}`
 
   on('tool.call', { tool: 'mcp__centro-agentes__planificar' }, async ($, e) => {
     try {
-      const { objetivo, subtareas, dependencias } = args(e) as { objetivo: string; subtareas: string[] | string; dependencias?: unknown }
-      // Algunos clientes mandan el array como texto JSON.
-      const titulos: unknown[] = typeof subtareas === 'string' ? JSON.parse(subtareas) : (subtareas ?? [])
-      const dep = leerDependencias(dependencias, titulos.length)
-      const nuevo: Plan = {
-        objetivo: corto(String(objetivo), 120),
-        subtareas: titulos.map((titulo, i) => ({ n: i + 1, titulo: corto(String(titulo), 80), estado: 'pendiente', ...(dep.has(i + 1) ? { espera: dep.get(i + 1) } : {}) })),
+      const a = args(e) as any
+      const modos = ['tarea', 'agregar', 'ajustar', 'reabrir'].filter(k => a[k] !== undefined)
+      const crear = a.objetivo !== undefined || a.subtareas !== undefined
+      if (modos.length + Number(crear) !== 1) return res({ error: 'Elige un solo modo: objetivo/subtareas, tarea, agregar, ajustar o reabrir.' })
+      let nuevo: Plan | undefined
+      let archivo: any
+      let aviso_archivo: string | undefined
+      let metaArchivo: any
+      let reabiertas: string[] | undefined
+      const actualPrevio = await read($, plan)
+      const raiz = typeof a.cwd === 'string' ? a.cwd : actualPrevio?.raiz ?? rutaProyecto
+      if (!raiz) {
+        if (!crear) return res({ error: 'No hay una carpeta de proyecto para acceder al archivo de tareas.' })
       }
+      const montar = (t: Tarea): Plan => ({
+        objetivo: t.titulo, tarea: t.id, raiz,
+        subtareas: t.subtareas.map(s => ({ id: s.id, n: Number(s.id.split('.').at(-1)), titulo: s.titulo, estado: s.estado === 'cerrado' ? 'solucionado' : s.estado, ...(s.depende_de.length ? { espera: s.depende_de.map(d => Number(d.split('.').at(-1))) } : {}), ...(s.manual ? { manual: true } : {}) })),
+      })
+      if (crear) {
+        if (typeof a.objetivo !== 'string' || !Array.isArray(typeof a.subtareas === 'string' ? JSON.parse(a.subtareas) : a.subtareas)) return res({ error: 'El modo crear requiere objetivo y subtareas (una lista).' })
+        const titulos: unknown[] = typeof a.subtareas === 'string' ? JSON.parse(a.subtareas) : a.subtareas
+        const dep = leerDependencias(a.dependencias, titulos.length)
+        nuevo = { objetivo: corto(a.objetivo, 120), subtareas: titulos.map((titulo, i) => ({ n: i + 1, titulo: corto(String(titulo), 80), estado: 'pendiente', ...(dep.has(i + 1) ? { espera: dep.get(i + 1) } : {}), ...(Array.isArray(a.manuales) && a.manuales.includes(i + 1) ? { manual: true } : {}) })) }
+        if (raiz) {
+          const r = await tareasArchivo($, 'aplicar', raiz, { tipo: 'crear_tarea', titulo: nuevo.objetivo, subtareas: nuevo.subtareas.map(s => ({ titulo: s.titulo, depende_de: s.espera, manual: s.manual })) })
+          if (r.ok && r.archivo) { archivo = r.archivo; const t = archivo.tareas.find((x: Tarea) => x.id === (r.cambios?.[0]?.match(/(?:crea|reutiliza) (T\d+)/)?.[1])); if (t) nuevo = montar(t); metaArchivo = { ...(r.creado ? { creado: true } : {}), ...(r.gitignore ? { gitignore: r.gitignore } : {}), ...(r.avisos?.length ? { avisos: r.avisos } : {}) } }
+          else aviso_archivo = r.mensaje ?? 'No se pudo guardar el plan en el archivo'
+        }
+      } else if (modos[0] === 'tarea') {
+        if (typeof a.tarea !== 'string') return res({ error: 'El modo tarea requiere un id, p. ej. T2.' })
+        const r = raiz ? await tareasArchivo($, 'leer', raiz) : { archivo: null }
+        const t = r.archivo?.tareas?.find((x: Tarea) => x.id === a.tarea)
+        if (!t) return res({ error: `No existe la tarea ${a.tarea} en mst-tareas.json.` })
+        nuevo = montar(t); metaArchivo = { ...(r.avisos?.length ? { avisos: r.avisos } : {}) }
+      } else if (modos[0] === 'agregar') {
+        if (!Array.isArray(a.agregar) || !a.agregar.length) return res({ error: 'El modo agregar requiere una lista de títulos u objetos.' })
+        const actual = actualPrevio
+        if (!actual?.tarea) return res({ error: 'No hay una tarea activa del archivo; carga una con planificar { tarea: "Tn" }.' })
+        const subs = a.agregar.map((x: any) => typeof x === 'string' ? { titulo: x } : x)
+        if (subs.some((x: any) => !x || typeof x.titulo !== 'string')) return res({ error: 'Cada elemento de agregar necesita un título.' })
+        const r = await tareasArchivo($, 'aplicar', raiz || actual.raiz || '', { tipo: 'agregar', tarea: actual.tarea, subtareas: subs })
+        if (r.ok) { archivo = r.archivo; nuevo = montar(archivo.tareas.find((x: Tarea) => x.id === actual.tarea)); metaArchivo = { ...(r.avisos?.length ? { avisos: r.avisos } : {}) } } else aviso_archivo = r.mensaje
+      } else if (modos[0] === 'ajustar') {
+        if (!a.ajustar || typeof a.ajustar !== 'object' || !Object.keys(a.ajustar).length) return res({ error: 'El modo ajustar requiere un objeto con ids y cambios.' })
+        const actual = actualPrevio
+        if (!actual?.tarea) return res({ error: 'No hay una tarea activa del archivo; carga una con planificar { tarea: "Tn" }.' })
+        for (const [id, cambio] of Object.entries(a.ajustar)) {
+          const r = await tareasArchivo($, 'aplicar', raiz || actual.raiz || '', { tipo: 'ajustar', id, ...(cambio as object) })
+          if (!r.ok) { aviso_archivo = r.mensaje; break }
+          archivo = r.archivo; metaArchivo = { ...(r.avisos?.length ? { avisos: r.avisos } : {}) }
+        }
+        if (archivo) nuevo = montar(archivo.tareas.find((x: Tarea) => x.id === actual.tarea))
+      } else {
+        if (!Array.isArray(a.reabrir) || !a.reabrir.length || a.reabrir.some((id: unknown) => typeof id !== 'string')) return res({ error: 'El modo reabrir requiere una lista de ids de tarea o subtareas.' })
+        const ids: string[] = a.reabrir
+        const tareas = ids.map(id => /^(T[1-9]\d*)(?:\.([1-9]\d*))?$/.exec(id)?.[1])
+        if (tareas.some(id => !id)) return res({ error: 'Cada id de reabrir debe ser una tarea o subtarea válida, p. ej. T2.3.' })
+        if (new Set(tareas).size !== 1) return res({ error: 'Reabre subtareas de una sola tarea por llamada.' })
+        if (!raiz) return res({ error: 'No hay una carpeta de proyecto para acceder al archivo de tareas.' })
+        reabiertas = []
+        for (const id of ids) {
+          const r = await tareasArchivo($, 'aplicar', raiz, { tipo: 'estado', id, estado: 'pendiente' })
+          if (!r.ok) return res({ error: `No se pudo reabrir ${id}: ${r.mensaje}. Reabiertas: ${reabiertas.join(', ') || 'ninguna'}.` })
+          reabiertas.push(id)
+          archivo = r.archivo
+          metaArchivo = { ...(r.avisos?.length ? { avisos: r.avisos } : {}) }
+        }
+        const recarga = await tareasArchivo($, 'leer', raiz)
+        const tarea = recarga.archivo?.tareas?.find((t: Tarea) => t.id === tareas[0])
+        if (!tarea) return res({ error: `No se pudo recargar la tarea ${tareas[0]} tras reabrir ${reabiertas.join(', ')}.` })
+        nuevo = montar(tarea)
+        metaArchivo = { ...(recarga.avisos?.length ? { avisos: recarga.avisos } : {}) }
+      }
+      if (!nuevo) return res({ error: aviso_archivo ?? 'No se pudo construir el plan.' })
       // El plan que se deja pasa al historial (salvo que sea el mismo objetivo: sigue siendo el mismo grupo) y, si el nuevo
       // objetivo ya estaba en el historial, sale de él: el grupo se reactiva con los trabajos que ya tenía.
       const anterior = await read($, plan)
@@ -1550,8 +1685,12 @@ ${protocolo(modelos)}`
       void $.ui.open({ id: PANE, title: TITULO })
       return res({
         guardado: true,
-        subtareas: nuevo.subtareas.map(s => ({ n: s.n, titulo: s.titulo, ...(s.espera ? { espera: s.espera } : {}) })),
+        ...(nuevo.tarea ? { tarea: nuevo.tarea, ids: nuevo.subtareas.map(s => s.id) } : {}),
+        ...(metaArchivo ? { archivo: metaArchivo } : {}),
+        ...(aviso_archivo ? { aviso_archivo } : {}),
+        subtareas: nuevo.subtareas.map(s => ({ n: s.n, titulo: s.titulo, estado: s.estado, ...(s.espera ? { espera: s.espera } : {}), ...(s.manual ? { manual: true } : {}) })),
         lanzar_ya: listas(nuevo.subtareas).map(s => s.n),
+        ...(reabiertas ? { reabiertas } : {}),
       })
     } catch (err) {
       return res({ error: `planificar falló: ${String(err)}` })
@@ -1612,12 +1751,12 @@ ${protocolo(modelos)}`
     await update($, trabajos, l => (l ?? []).map(x => (x.id === id ? { ...x, puntaje: p } : x)))
     await puntuarEnHistorial($, id, p)
     await anotarCerebro($, t, p, nota)
-    await marcar($, t.subtarea, { estado: p >= 6 ? 'hecha' : 'pendiente', quien: t.trabajador, puntaje: p })
+    const avisoArchivo = await marcar($, t.subtarea, { estado: p >= 6 ? 'solucionado' : 'pendiente', quien: t.trabajador, puntaje: p })
     await avisarSiTermino($)
     if (p < 6) $.ui.toast(`${t.trabajador} sacó ${p}/10 en ${t.categoria}${nota ? `: ${corto(nota, 40)}` : ''}`)
     const subs = (await read($, plan))?.subtareas ?? []
     const progreso = {
-      hechas: subs.filter(s => s.estado === 'hecha').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'hecha').map(s => s.n),
+      hechas: subs.filter(s => s.estado === 'solucionado').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'solucionado').map(s => s.n),
       // Las pendientes cuyas dependencias ya están hechas: lánzalas ahora.
       lanzar_ya: listas(subs).map(s => s.n),
     }
@@ -1627,6 +1766,7 @@ ${protocolo(modelos)}`
       : undefined
     return res({
       guardado: true, categoria: t.categoria, trabajador: t.trabajador, puntaje: p, progreso,
+      ...(avisoArchivo ? { aviso_archivo: avisoArchivo } : {}),
       ...(siguiente ? { siguiente, aviso: `Rinde poco: vuelve a delegar con trabajador "${siguiente.trabajador}" y modelo "${siguiente.modelo}" (o déjalos vacíos y el centro elige).` } : {}),
     })
   }).catch(async (_$, _e, next) => res({ error: `registrar_auditoria falló: ${String(next.error)}` }))
@@ -1636,10 +1776,10 @@ ${protocolo(modelos)}`
     const n = Number(subtarea)
     const subs0 = (await read($, plan))?.subtareas ?? []
     if (!subs0.some(s => s.n === n)) return res({ error: `No existe la subtarea ${subtarea} en el plan` })
-    await marcar($, n, { estado: 'hecha', quien: 'jefe' })
+    const avisoArchivo = await marcar($, n, { estado: 'solucionado', quien: 'jefe' })
     await avisarSiTermino($)
     const subs = (await read($, plan))?.subtareas ?? []
-    return res({ hecha: n, progreso: { hechas: subs.filter(s => s.estado === 'hecha').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'hecha').map(s => s.n), lanzar_ya: listas(subs).map(s => s.n) } })
+    return res({ hecha: n, ...(avisoArchivo ? { aviso_archivo: avisoArchivo } : {}), progreso: { hechas: subs.filter(s => s.estado === 'solucionado').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'solucionado').map(s => s.n), lanzar_ya: listas(subs).map(s => s.n) } })
   }).catch(async (_$, _e, next) => res({ error: `cerrar_subtarea falló: ${String(next.error)}` }))
 
   on('tool.call', { tool: 'mcp__centro-agentes__buscar_skills' }, async ($, e) => {
@@ -1672,6 +1812,14 @@ ${protocolo(modelos)}`
       }))
     return res(filas.length ? filas : { sinDatos: true })
   })
+
+  on('tool.call', { tool: 'mcp__centro-agentes__tareas_estado' }, async ($, e) => {
+    const a = args(e) as { cwd?: string }
+    const raiz = a.cwd ?? (await read($, plan))?.raiz ?? rutaProyecto
+    if (!raiz) return res({ existe: false, aviso: 'Aún no hay plan guardado: se crea con el primer planificar.' })
+    const r = await tareasArchivo($, 'resumen', raiz)
+    return res(r?.ok === false ? r : r?.existe === false ? { existe: false, aviso: 'Aún no hay plan guardado: se crea con el primer planificar.' } : r)
+  }).catch(async (_$, _e, next) => res({ error: `tareas_estado falló: ${String(next.error)}` }))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)

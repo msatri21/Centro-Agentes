@@ -30,10 +30,10 @@ function ejemplo(ahora) {
     plan: {
       objetivo: 'Calculadora completa hecha por varios agentes (ejemplo)',
       subtareas: [
-        sub(1, 'Función cubo en productos.py', 'hecha', 'opencode:ollama/gpt-oss:120b-cloud', 9),
-        sub(2, 'Resumen del README', 'hecha', 'hermes:ollama-local/beam:cloud', 8),
-        sub(3, 'Tests de la calculadora', 'en curso', 'aider:ollama_chat/gemma4:31b-cloud'),
-        sub(4, 'Función raíz con validación', 'en curso', 'opencode:ollama/gpt-oss:120b-cloud'),
+        sub(1, 'Función cubo en productos.py', 'solucionado', 'opencode:ollama/gpt-oss:120b-cloud', 9),
+        sub(2, 'Resumen del README', 'solucionado', 'hermes:ollama-local/beam:cloud', 8),
+        sub(3, 'Tests de la calculadora', 'en_proceso', 'aider:ollama_chat/gemma4:31b-cloud'),
+        sub(4, 'Función raíz con validación', 'en_proceso', 'opencode:ollama/gpt-oss:120b-cloud'),
         sub(5, 'Revisar y entregar', 'pendiente', undefined, undefined, [3, 4]),
       ],
     },
@@ -503,8 +503,8 @@ function crearTarea(s, i, n) {
   return tar
 }
 function pintarTarea(tar, s) {
-  tar.el.className = `pieza tarea ${s.estado === 'hecha' ? 'hecha' : s.estado === 'en curso' ? 'en-curso' : ''}`
-  tar.estado.textContent = s.estado
+  tar.el.className = `pieza tarea ${s.estado === 'solucionado' ? 'hecha' : s.estado === 'en_proceso' || s.estado === 'realizado' ? 'en-curso' : ''}`
+  tar.estado.textContent = s.estado === 'realizado' ? 'en_proceso' : s.estado
   tar.cuerpo.replaceChildren(el('p', 'titulo', s.titulo), el('div', 'estado', [s.quien ? `con ${s.quien.split(':')[0]}` : 'sin asignar', s.puntaje !== undefined ? `nota ${s.puntaje}/10` : '', s.espera?.length ? `espera a ${s.espera.join(', ')}` : ''].filter(Boolean).join(' · ')))
 }
 
@@ -668,7 +668,7 @@ function pintarDetalle() {
       const fase = faseDe(d)
       const subs = d.plan?.subtareas ?? []
       detalle.append(cabecera('Paso actual', fase.indice < 0 ? 'reposo' : `fase ${fase.indice + 1} / 8`), el('p', 'titulo', fase.titulo), el('div', 'estado', fase.texto))
-      detalle.append(ficha([['Objetivo', d.plan?.objetivo ?? '—'], ['Subtareas', `${subs.filter(s => s.estado === 'hecha').length} de ${subs.length} hechas`], ...cifras(d.trabajos)]))
+      detalle.append(ficha([['Objetivo', d.plan?.objetivo ?? '—'], ['Subtareas', `${subs.filter(s => s.estado === 'solucionado').length} de ${subs.length} hechas`], ...cifras(d.trabajos)]))
       detalle.append(el('div', 'rotulo', 'Las 8 fases'))
       FASES.forEach((f, i) => {
         const fila = el('div', `fase-fila${i === fase.indice ? ' actual' : i < fase.indice ? ' pasada' : ''}`)
@@ -686,7 +686,7 @@ function pintarDetalle() {
         detalle.append(ficha(cifras(conNota)), el('div', 'rotulo', `Notas puestas (${conNota.length})`))
         if (!conNota.length) detalle.append(el('p', 'vacio', 'Todavía no hay notas.'))
         for (const x of [...conNota].reverse()) detalle.append(el('div', `trabajo${x.puntaje < 6 ? ' mal' : ''}`, `${x.puntaje}/10 · ${x.trabajador}${x.subtarea !== undefined ? ` · tarea ${x.subtarea}` : ''}`))
-      } else if (abierto.clave === 'pipe-juntar') detalle.append(ficha([['Subtareas hechas', `${subs.filter(s => s.estado === 'hecha').length} de ${subs.length}`], ['En curso', subs.filter(s => s.estado === 'en curso').length], ['Pendientes', subs.filter(s => s.estado === 'pendiente').length]]))
+      } else if (abierto.clave === 'pipe-juntar') detalle.append(ficha([['Subtareas hechas', `${subs.filter(s => s.estado === 'solucionado').length} de ${subs.length}`], ['En curso', subs.filter(s => s.estado === 'en_proceso' || s.estado === 'realizado').length], ['Pendientes', subs.filter(s => s.estado === 'pendiente').length]]))
       else detalle.append(ficha([['Plan', d.plan?.objetivo ?? '—'], ['Tokens', `${mil(suma(d.trabajos, x => x.tokensIn))} leídos · ${mil(suma(d.trabajos, x => x.tokensOut))} escritos`], ['Tiempo de trabajo', seg(suma(d.trabajos.filter(x => x.ms !== undefined), x => x.ms))], ...(typeof d.ahorro === 'number' ? [['Ahorro frente a Claude', `$${d.ahorro.toFixed(2)}`]] : [])]))
     } else if (abierto.tipo === 'terminal') {
       const t = terminalDe(abierto.clave)
