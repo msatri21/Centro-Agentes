@@ -59,6 +59,70 @@ El centro puede darles a los agentes que programan la skill [ponytail](https://g
 - Las copias sin cambios, o de un encargo que falló del todo, se borran solas.
 - Todos los encargos piden respuesta en español.
 
+## Seguimiento de tareas: mst-tareas.json
+
+El plan se guarda en `mst-tareas.json`, en la raíz de la carpeta del proyecto: la de la sesión o la que pases en `cwd`. Se crea con el primer `planificar` y lo leen igual Claude y OpenCode como jefe. Al lado queda `mst-tareas-cerradas.md`, el historial de las tareas que salen del archivo.
+
+**Git lo ignora.** La primera vez que se crea el archivo, el centro añade la línea `mst-tareas*` al `.gitignore` del proyecto (lo crea si no existe) y no hace commit. Si `mst-tareas.json` ya estaba versionado, el resultado lo avisa en `archivo.gitignore.aviso` y no se toca: sácalo tú con `git rm --cached mst-tareas.json`.
+
+**Formato en dos niveles.** Una tarea (`T2`) agrupa subtareas (`T2.1`, `T2.2`). Cada nivel tiene `id`, `titulo`, `estado`, `depende_de`, `enlaces`, `creada` y `cerrada`; la tarea añade `solucionada` y la lista `subtareas`. La raíz guarda `proyecto`, `formato`, `actualizado`, `siguiente_tarea`, `estados`, `reglas` y `tareas`:
+
+```json
+{
+  "proyecto": "mi-web",
+  "formato": "mst-tareas v1",
+  "actualizado": "2026-10-23",
+  "siguiente_tarea": 3,
+  "estados": ["pendiente", "en_proceso", "realizado", "solucionado", "cerrado"],
+  "reglas": ["..."],
+  "tareas": [
+    {
+      "id": "T2",
+      "titulo": "Revisar la portada",
+      "estado": "en_proceso",
+      "depende_de": [],
+      "enlaces": [],
+      "creada": "2026-10-22",
+      "solucionada": null,
+      "cerrada": null,
+      "subtareas": [
+        {
+          "id": "T2.1",
+          "titulo": "Listar los fallos",
+          "estado": "solucionado",
+          "depende_de": [],
+          "enlaces": [],
+          "creada": "2026-10-22",
+          "cerrada": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Los cinco estados.** `pendiente`, `en_proceso`, `realizado`, `solucionado` y `cerrado`. Los mueve el centro o el jefe, nunca los agentes:
+
+- Al delegar una subtarea, el centro la pasa a `en_proceso` (solo si seguía en `pendiente`); al recibir el resultado, a `realizado`, o de vuelta a `pendiente` si el encargo falló.
+- El jefe la marca `solucionado` al auditarla con 6 o más con `registrar_auditoria`; con menos vuelve a `pendiente` para rehacerla. Las subtareas que hace él (juntar ramas, revisar el conjunto) las cierra con `cerrar_subtarea`.
+- `cerrado` queda para las tareas que pasan al historial.
+
+Los agentes no editan el archivo: si ven trabajo nuevo, lo apuntan al final de su respuesta en una sección «Propuestas:» y el jefe decide.
+
+**Reglas.**
+
+- **Una tarea solo es solucionada si todas sus subtareas lo son.** Su estado se deriva de ellas.
+- **Dependencias solo entre subtareas** (`depende_de`); las tareas no admiten dependencias entre sí. Una subtarea no arranca hasta que las suyas estén solucionadas.
+- **Como máximo 5 tareas solucionadas.** Al llegar la sexta, la más antigua (por fecha `solucionada` y, a igualdad, por número) pasa a `mst-tareas-cerradas.md`.
+- **Los números no se reutilizan.** `siguiente_tarea` da el siguiente `T` y la fecha `solucionada` decide cuál es la más antigua al archivar.
+- **Subtareas manuales** (`manuales` al planificar): no se delegan; las marca el jefe.
+- **Las tareas solucionadas no se editan.** Reabrir una es decisión del jefe: si cumplía lo pedido, crea una tarea nueva; si no, usa `planificar { reabrir: ["T2.3"] }` para devolver a `pendiente` la subtarea que falló.
+- **Los archivos hechos a mano** con menos campos se aceptan y se completan al leerlos: sin `siguiente_tarea` se reconstruye desde los ids y sin `solucionada` queda en `null`.
+
+**Cómo se usa.** `planificar` crea la tarea (`objetivo` y `subtareas`) o reutiliza la que ya tenga ese título y no esté en el historial; `manuales` marca las que no se delegan; `tarea: "T2"` retoma una guardada; `agregar` y `ajustar` pulen el plan; `reabrir: ["T2.3"]` devuelve a pendiente la subtarea que falló; `cwd` elige la carpeta. `tareas_estado` devuelve el resumen corto sin leer el archivo entero. El jefe escribe un borrador en cuanto termina la entrevista y lo pule al repartir. Si un agente propone trabajo nuevo en «Propuestas:», el jefe decide si lo agrega como subtarea hermana o lo planifica como tarea nueva.
+
+**Varios a la vez.** Varios chats o procesos pueden usar el mismo archivo: hay un cerrojo (`mst-tareas.json.lock`), la escritura es atómica (temporal y renombrado) y se guarda una copia `.bak`. Al reservar una subtarea solo pasa a `en_proceso` si sigue en `pendiente`, así dos encargos no toman la misma. Si el archivo no se puede leer o escribir, el plan sigue funcionando en memoria y el resultado lo dice en `aviso_archivo`.
+
 ## Ajustes
 
 En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, proxy y certificado de empresa, presupuesto de tokens de Claude por chat, y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.
@@ -111,6 +175,10 @@ Estilo basado en [anatomy](https://github.com/wheresryan22/anatomy) (MIT, ver `h
 
 Prueba rápida del servidor MCP (sin lanzar agentes): `node mcp/prueba-mcp.mjs`.
 
+Archivo de tareas (creación, cerrojo, concurrencia, historial y archivos hechos a mano): `node mcp/prueba-tareas.mjs`.
+
+Herramientas del jefe por MCP, con un OpenCode falso y sin gastar modelos: `node mcp/prueba-mcp-tareas.mjs`.
+
 Simulación en bucle (sin agentes ni gasto) para ver cómo se comporta el grafo: `node mcp/demo-bucle.mjs`, y abre el chat `demo-bucle` en la web.
 
 ```bash
@@ -123,7 +191,9 @@ claude plugin validate .
 
 ## OpenCode como jefe (cuando se acaba Claude)
 
-El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mismas herramientas: `planificar`, `delegar`, `delegar_varios`, `registrar_auditoria`, `cerrar_subtarea` y `ranking`, más `juntar_copias`, que junta de una vez las ramas de las copias aisladas del chat. Así OpenCode, con un modelo gratis de Ollama, puede hacer de jefe. Reutiliza el código del plugin (`hooks/nucleo.ts`, `hooks/extras.ts`) y necesita Node 24 o más reciente.
+El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mismas herramientas: `planificar`, `tareas_estado`, `delegar`, `delegar_varios`, `registrar_auditoria`, `cerrar_subtarea`, `ranking`, `cerebro`, más `juntar_copias`, que junta de una vez las ramas de las copias aisladas del chat. Así OpenCode, con un modelo gratis de Ollama, puede hacer de jefe. Reutiliza el código del plugin (`hooks/nucleo.ts`, `hooks/extras.ts`) y necesita Node 24 o más reciente.
+
+El plan funciona igual que con Claude de jefe: el mismo `mst-tareas.json`, las mismas reglas y el mismo historial. Sin `cwd`, la carpeta del proyecto es la carpeta desde la que OpenCode lanzó el servidor MCP (`process.cwd()`); pásalo en `planificar` y `tareas_estado` para usar otra.
 
 1. En `~/.config/opencode/opencode.jsonc`, añade el servidor:
 

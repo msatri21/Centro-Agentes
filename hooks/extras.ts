@@ -1,5 +1,7 @@
 import type { Plan, Subtarea, Trabajo } from '../types'
 
+export const estadoSubtareaNuevo = (e: string) => e === 'en curso' ? 'en_proceso' : e === 'hecha' ? 'solucionado' : e
+
 // Dependencias del plan: {"3": [1, 2]} (o ese JSON como texto). Ignora números fuera del plan y las que se esperan a sí mismas.
 export function leerDependencias(dep: unknown, total: number): Map<number, number[]> {
   const obj = typeof dep === 'string' ? JSON.parse(dep || '{}') : (dep ?? {})
@@ -14,9 +16,9 @@ export function leerDependencias(dep: unknown, total: number): Map<number, numbe
 }
 // Lo que aún bloquea a una subtarea: las que espera y no están hechas.
 export const bloqueos = (subs: Subtarea[], n: number) =>
-  (subs.find(s => s.n === n)?.espera ?? []).filter(e => subs.find(s => s.n === e)?.estado !== 'hecha')
-// Subtareas pendientes que ya se pueden lanzar.
-export const listas = (subs: Subtarea[]) => subs.filter(s => s.estado === 'pendiente' && !bloqueos(subs, s.n).length)
+  (subs.find(s => s.n === n)?.espera ?? []).filter(e => subs.find(s => s.n === e)?.estado !== 'solucionado')
+// Subtareas pendientes que ya se pueden lanzar a un agente: las manuales no (las hace el usuario o el jefe) y delegarlas da error.
+export const listas = (subs: Subtarea[]) => subs.filter(s => s.estado === 'pendiente' && !s.manual && !bloqueos(subs, s.n).length)
 
 // Puntajes guardados: categoría → "trabajador:modelo" → suma de notas, nº de trabajos y tiempo total.
 export type Puntajes = Record<string, Record<string, { n: number; suma: number; msTotal: number }>>
@@ -44,7 +46,7 @@ const celda = (t: string) => t.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
 // El informe final de un chat, en Markdown: qué se pidió, quién hizo cada parte, con qué nota y cuánto costó.
 export function informeMarkdown(d: { chat: string; plan: Plan | null; trabajos: Trabajo[]; ahorro: number; fecha: string }): string {
   const subs = d.plan?.subtareas ?? []
-  const hechas = subs.filter(s => s.estado === 'hecha').length
+  const hechas = subs.filter(s => s.estado === 'solucionado').length
   const terminados = d.trabajos.filter(t => t.ms !== undefined)
   const tokIn = terminados.reduce((a, t) => a + (t.tokensIn ?? 0), 0)
   const tokOut = terminados.reduce((a, t) => a + (t.tokensOut ?? 0), 0)

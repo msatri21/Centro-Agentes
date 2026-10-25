@@ -84,4 +84,5 @@ export const PROTOCOLO_AGENTE = [
   'Usa pedir_permiso ANTES de ejecutar comandos destructivos (borrar archivos, formatear, forzar git), de instalar software global, de usar la red de forma inesperada o de escribir fuera de la carpeta de trabajo, indicando la categoría: comando, instalar, red, escribir-fuera, destructivo u otro.',
   'Estas herramientas esperan la respuesta del usuario, así que no las uses para cosas triviales.',
   'Si no recibes respuesta, sigue por lo más seguro y anota tu suposición en el resultado final.',
+  'No edites mst-tareas.json. Si ves trabajo nuevo que no está en tu encargo, no lo hagas: al final de tu respuesta escribe una sección «Propuestas:» con una línea por propuesta.',
 ].join(' ')

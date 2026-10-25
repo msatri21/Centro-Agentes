@@ -3,11 +3,12 @@ import { expect, mock, test } from 'claude-code/testing'
 import { MAX_EXPERIENCIAS, consultar, preferir, recomendar, registrar } from './cerebro'
 import type { Cerebro } from './cerebro'
 import { colaDeLineas, figura, pagina, tablero } from './figura'
+import { bloqueos, estadoSubtareaNuevo, leerDependencias, listas } from './extras'
 import { buscarSkills, conSkills, costoComoClaude, esErrorDeCuenta, esMasNueva, etiquetaChat, leerFrontmatter, nombreDesdeMensaje, recuperar } from './register'
 
 test('al recuperar un chat, lo que estaba en marcha queda interrumpido y su subtarea vuelve a pendiente', async () => {
   const g = {
-    plan: { objetivo: 'o', subtareas: [{ n: 1, titulo: 'a', estado: 'hecha' as const }, { n: 2, titulo: 'b', estado: 'en curso' as const }] },
+    plan: { objetivo: 'o', subtareas: [{ n: 1, titulo: 'a', estado: 'solucionado' as const }, { n: 2, titulo: 'b', estado: 'en_proceso' as const }] },
     trabajos: [
       { id: 't1', trabajador: 'ollama:x', categoria: 'c', tarea: 'a', estado: 'listo' as const, inicio: 1, subtarea: 1 },
       { id: 't2', trabajador: 'hermes:y', categoria: 'c', tarea: 'b', estado: 'corriendo' as const, inicio: 2, subtarea: 2 },
@@ -16,10 +17,28 @@ test('al recuperar un chat, lo que estaba en marcha queda interrumpido y su subt
   }
   const r = recuperar(g)
   expect(r.interrumpidos).toBe(1)
-  expect(r.plan!.subtareas.map(s => s.estado)).toEqual(['hecha', 'pendiente'])
+  expect(r.plan!.subtareas.map(s => s.estado)).toEqual(['solucionado', 'pendiente'])
   expect(r.trabajos.map(t => t.estado)).toEqual(['listo', 'error'])
   expect(r.trabajos[1].salida).toContain('interrumpido')
   expect(r.encargos).toEqual(g.encargos)
+})
+
+test('migra nombres antiguos de estado de subtarea', async () => {
+  expect(['en curso', 'hecha', 'realizado', 'pendiente'].map(estadoSubtareaNuevo)).toEqual(['en_proceso', 'solucionado', 'realizado', 'pendiente'])
+  const r = recuperar({
+    plan: { objetivo: 'actual', subtareas: [{ n: 1, titulo: 'a', estado: 'hecha' }] },
+    planes: [{ objetivo: 'anterior', subtareas: [{ n: 1, titulo: 'b', estado: 'en curso' }] }],
+    trabajos: [], encargos: [],
+  } as any)
+  expect(r.plan!.subtareas[0].estado).toBe('solucionado')
+  expect(r.planes[0].subtareas[0].estado).toBe('en_proceso')
+})
+
+test('realizado no cuenta como hecho ni desbloquea dependencias', async () => {
+  const subs = [{ n: 1, titulo: 'a', estado: 'realizado' }, { n: 2, titulo: 'b', estado: 'pendiente', espera: [1] }] as any
+  expect(subs.filter(s => s.estado === 'solucionado')).toHaveLength(0)
+  expect(bloqueos(subs, 2)).toEqual([1])
+  expect(listas(subs)).toEqual([])
 })
 
 test('el nombre del chat sale de su primer mensaje (o de la tarea de /mst) y va en la cabecera', async () => {
@@ -482,7 +501,7 @@ test('la figura marca quién trabaja y cabe en el límite de Svg con muchas subt
       { nombre: 'opencode', tokens: 900, trabajando: true },
       { nombre: 'claude', modelo: 'sonnet', tokens: 50_000, trabajando: false },
     ],
-    subtareas: Array.from({ length: 30 }, (_, i) => (i % 3 === 0 ? 'hecha' : i % 3 === 1 ? 'en curso' : 'pendiente')),
+    subtareas: Array.from({ length: 30 }, (_, i) => (i % 3 === 0 ? 'solucionado' : i % 3 === 1 ? 'en_proceso' : 'pendiente')),
     contexto: 40,
     titulo: 'demo <x>',
     lectura: '10/30 hechas',
@@ -624,13 +643,13 @@ test('rendimiento por modelo, informe en Markdown, tema de ntfy y estado de agen
   expect(grafica(r)).toContain('Rendimiento por modelo')
   const md = informeMarkdown({
     chat: 'proyecto · chat',
-    plan: { objetivo: 'web', subtareas: [{ n: 1, titulo: 'a|b', estado: 'hecha', quien: 'aider:m', puntaje: 8 }] },
+    plan: { objetivo: 'web', subtareas: [{ n: 1, titulo: 'a|b', estado: 'solucionado', quien: 'aider:m', puntaje: 8 }] },
     trabajos: [{ id: 't', trabajador: 'aider:m', categoria: 'c', tarea: 'x', estado: 'listo', inicio: 0, ms: 61_000, puntaje: 4, tokensIn: 10, tokensOut: 2 }],
     ahorro: 0.5,
     fecha: 'hoy',
   })
   expect(md).toContain('1 de 1 subtareas hechas')
-  expect(md).toContain('| 1 | a\\|b | hecha | aider:m | 8/10 |')
+  expect(md).toContain('| 1 | a\\|b | solucionado | aider:m | 8/10 |')
   expect(md).toContain('1 min 1 s')
   expect(md).toContain('Se rehicieron 1 trabajo(s)')
   expect(temaNtfyValido('mst-avisos-x7q2')).toBe(true)
@@ -647,8 +666,6 @@ test('la página enseña el estado de los agentes, la Fig 3 y el enlace a todos 
   expect(html).toContain('<section class="ancho"><svg id="fig3"></svg></section>')
 })
 
-import { leerDependencias, listas } from './extras'
-
 test('dependencias: planificar las guarda, delegar no lanza una bloqueada y la auditoría dice cuáles ya se pueden lanzar', async ($, on) => {
   expect([...leerDependencias('{"3": [1, 2, 3, 9]}', 3)]).toEqual([[3, [1, 2]]])
   base(on)
@@ -661,7 +678,7 @@ test('dependencias: planificar las guarda, delegar no lanza una bloqueada y la a
   const d2 = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'x', tarea: 't', subtarea: 2 } }))
   expect(out(await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d1.id, puntaje: 8 } })).progreso.lanzar_ya).toEqual([])
   expect(out(await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d2.id, puntaje: 8 } })).progreso.lanzar_ya).toEqual([3])
-  expect(listas([{ n: 1, titulo: 'a', estado: 'hecha' }, { n: 2, titulo: 'b', estado: 'pendiente', espera: [1] }]).map(s => s.n)).toEqual([2])
+  expect(listas([{ n: 1, titulo: 'a', estado: 'solucionado' }, { n: 2, titulo: 'b', estado: 'pendiente', espera: [1] }]).map(s => s.n)).toEqual([2])
 })
 
 test('aislar crea una copia git para el agente, guarda sus cambios en su rama y verificar ejecuta los tests allí', async ($, on) => {
@@ -907,19 +924,19 @@ test('la fase del grafo sale del plan y de los trabajos: reposo, plan, reparto, 
   const subs = (...e: string[]) => ({ subtareas: e.map((estado, i) => ({ n: i + 1, titulo: 't', estado })) })
   expect(faseDe({ plan: null, trabajos: [], ahora: 5000 }).indice).toBe(-1)
   expect(faseDe({ plan: subs('pendiente', 'pendiente'), trabajos: [], ahora: 5000 }).indice).toBe(1)
-  expect(faseDe({ plan: subs('en curso', 'en curso'), trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('b', 'hermes:m', 2, 'corriendo')], ahora: 2000 }).indice).toBe(2)
-  expect(faseDe({ plan: subs('en curso', 'en curso'), trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('b', 'hermes:m', 2, 'corriendo')], ahora: 30_000 }).indice).toBe(3)
+  expect(faseDe({ plan: subs('en_proceso', 'en_proceso'), trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('b', 'hermes:m', 2, 'corriendo')], ahora: 2000 }).indice).toBe(2)
+  expect(faseDe({ plan: subs('en_proceso', 'en_proceso'), trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('b', 'hermes:m', 2, 'corriendo')], ahora: 30_000 }).indice).toBe(3)
   const fallo = [trab('e', 'ollama:m', 2, 'error', { ms: 2000 }), trab('f', 'hermes:m', 2, 'corriendo', { inicio: 4000 })]
-  expect(faseDe({ plan: subs('en curso', 'en curso'), trabajos: fallo, ahora: 8000 }).indice).toBe(4)
-  expect(faseDe({ plan: subs('en curso'), trabajos: [trab('a', 'opencode:m', 1, 'listo', { ms: 5000 })], ahora: 60_000 }).indice).toBe(5)
-  expect(faseDe({ plan: subs('hecha', 'pendiente'), trabajos: [trab('a', 'opencode:m', 1, 'listo', { ms: 5000, puntaje: 9 })], ahora: 60_000 }).indice).toBe(6)
-  expect(faseDe({ plan: subs('hecha', 'hecha'), trabajos: [], ahora: 60_000 }).indice).toBe(7)
+  expect(faseDe({ plan: subs('en_proceso', 'en_proceso'), trabajos: fallo, ahora: 8000 }).indice).toBe(4)
+  expect(faseDe({ plan: subs('en_proceso'), trabajos: [trab('a', 'opencode:m', 1, 'listo', { ms: 5000 })], ahora: 60_000 }).indice).toBe(5)
+  expect(faseDe({ plan: subs('solucionado', 'pendiente'), trabajos: [trab('a', 'opencode:m', 1, 'listo', { ms: 5000, puntaje: 9 })], ahora: 60_000 }).indice).toBe(6)
+  expect(faseDe({ plan: subs('solucionado', 'solucionado'), trabajos: [], ahora: 60_000 }).indice).toBe(7)
 })
 
 test('los eventos del grafo salen de comparar dos lecturas: encargo, cambio de modelo, resultado, nota y cierre; sin lectura previa, ninguno', () => {
-  const antes: any = { plan: { subtareas: [{ n: 1, titulo: 't', estado: 'en curso' }, { n: 2, titulo: 't', estado: 'pendiente' }] }, trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('e', 'ollama:m', 2, 'corriendo')] }
+  const antes: any = { plan: { subtareas: [{ n: 1, titulo: 't', estado: 'en_proceso' }, { n: 2, titulo: 't', estado: 'pendiente' }] }, trabajos: [trab('a', 'opencode:m', 1, 'corriendo'), trab('e', 'ollama:m', 2, 'corriendo')] }
   const despues: any = {
-    plan: { subtareas: [{ n: 1, titulo: 't', estado: 'hecha', quien: 'jefe' }, { n: 2, titulo: 't', estado: 'en curso' }] },
+    plan: { subtareas: [{ n: 1, titulo: 't', estado: 'solucionado', quien: 'jefe' }, { n: 2, titulo: 't', estado: 'en_proceso' }] },
     trabajos: [trab('a', 'opencode:m', 1, 'listo', { ms: 5000, puntaje: 9 }), trab('e', 'ollama:m', 2, 'error', { ms: 1000 }), trab('f', 'hermes:m', 2, 'corriendo', { inicio: 3000 })],
   }
   expect(eventosEntre(null, despues)).toEqual([])
@@ -945,7 +962,7 @@ test('las gráficas nuevas dibujan con datos y se quedan en blanco con mensaje s
   expect(graficaNotas(trabajos)).toContain('mínimo para pasar')
   expect(graficaTokens([])).toContain('aún no hay')
   const html = paginaCentro({
-    clave: 'k', chat: 'c', jefe: 'OpenCode', plan: { objetivo: '</script><b>x', subtareas: [{ n: 1, titulo: 't', estado: 'hecha' }] }, trabajos, agentes: [], modelos: {}, rendimiento: [], ahorro: 0.1,
+    clave: 'k', chat: 'c', jefe: 'OpenCode', plan: { objetivo: '</script><b>x', subtareas: [{ n: 1, titulo: 't', estado: 'solucionado' }] }, trabajos, agentes: [], modelos: {}, rendimiento: [], ahorro: 0.1,
     cancelables: [{ id: 'a', titulo: 'x' }], relanzables: [], version: '1', extra: '<svg id="extra"></svg>', ahora: 20_000,
   })
   expect(html).toContain('id="grafo-montaje"')
@@ -959,7 +976,7 @@ test('las gráficas nuevas dibujan con datos y se quedan en blanco con mensaje s
 test('las cards: una por trabajo, en orden cronológico, y el modelo con : y / separado bien del agente', () => {
   const d: any = {
     ahora: 30_000,
-    plan: { subtareas: [{ n: 1, titulo: 'primera', estado: 'en curso' }, { n: 2, titulo: 'segunda', estado: 'pendiente' }] },
+    plan: { subtareas: [{ n: 1, titulo: 'primera', estado: 'en_proceso' }, { n: 2, titulo: 'segunda', estado: 'pendiente' }] },
     trabajos: [
       trab('b', 'opencode:qwen3:8b/instruct', 2, 'corriendo', { inicio: 5000 }),
       trab('a', 'ollama:llama3', 1, 'corriendo', { inicio: 1000 }),
@@ -1031,7 +1048,7 @@ test('las cards: la pregunta o el permiso pendientes ponen su alarma, y mandan s
 test('unirChats: junta los chats en un solo grafo, con el nombre del chat en cada plan y los ids como chat|id', () => {
   const sub = (n: number, titulo: string, estado = 'pendiente') => ({ n, titulo, estado })
   const trabajo = (id: string, plan: string | undefined, extra: any = {}) => ({ id, trabajador: 'opencode:m', categoria: 'x', tarea: 't', estado: 'corriendo', inicio: 1000, ultimaActividad: 1000, plan, ...extra })
-  const a = { id: 'c1', nombre: 'Tienda', en: 10, datos: { plan: { objetivo: 'Carrito', subtareas: [sub(1, 'Botón'), sub(2, 'Cupón')] }, planes: [{ objetivo: 'Login', subtareas: [sub(1, 'Formulario', 'hecha')] }], trabajos: [trabajo('t1', 'Carrito', { subtarea: 2 }), trabajo('t2', undefined)], pendientes: [{ id: 't1', consulta: 'q1', agente: 'opencode', tipo: 'pregunta', texto: '¿?' }], agentes: [{ nombre: 'opencode', ok: true }] } }
+  const a = { id: 'c1', nombre: 'Tienda', en: 10, datos: { plan: { objetivo: 'Carrito', subtareas: [sub(1, 'Botón'), sub(2, 'Cupón')] }, planes: [{ objetivo: 'Login', subtareas: [sub(1, 'Formulario', 'solucionado')] }], trabajos: [trabajo('t1', 'Carrito', { subtarea: 2 }), trabajo('t2', undefined)], pendientes: [{ id: 't1', consulta: 'q1', agente: 'opencode', tipo: 'pregunta', texto: '¿?' }], agentes: [{ nombre: 'opencode', ok: true }] } }
   const b = { id: 'c2', nombre: 'Blog', en: 20, datos: { plan: { objetivo: 'Carrito', subtareas: [sub(1, 'Otra cosa')] }, planes: [], trabajos: [trabajo('t1', 'Carrito', { subtarea: 1 })], pendientes: [], agentes: [{ nombre: 'hermes', ok: true }] } }
   const d: any = unirChats([a, b], 5000)
   // Dos chats con el mismo objetivo no se mezclan: cada plan lleva el nombre de su chat.
@@ -1161,9 +1178,9 @@ test('gruposDe: un grupo por plan; los trabajos con plan van a su grupo y los qu
   const ahora = 100_000
   const d = {
     ahora,
-    plan: { objetivo: 'Objetivo A', subtareas: [{ n: 1, titulo: 't1', estado: 'en curso' }, { n: 2, titulo: 't2', estado: 'pendiente' }] },
+    plan: { objetivo: 'Objetivo A', subtareas: [{ n: 1, titulo: 't1', estado: 'en_proceso' }, { n: 2, titulo: 't2', estado: 'pendiente' }] },
     planes: [
-      { objetivo: 'Objetivo B', subtareas: [{ n: 1, titulo: 't1', estado: 'hecha' }] },
+      { objetivo: 'Objetivo B', subtareas: [{ n: 1, titulo: 't1', estado: 'solucionado' }] },
       { objetivo: 'Objetivo A', subtareas: [{ n: 1, titulo: 't1', estado: 'pendiente' }] }, // mismo objetivo que actual -> no duplica
     ],
     trabajos: [
@@ -1247,7 +1264,7 @@ test('faseDeGrupo: los 7 casos y progreso hechas/total', () => {
   const baseGrupo = (subtareas, trabajos) => ({
     subtareas,
     trabajos,
-    hechas: subtareas.filter(s => s.estado === 'hecha').length,
+    hechas: subtareas.filter(s => s.estado === 'solucionado').length,
     total: subtareas.length,
   })
 
@@ -1255,39 +1272,42 @@ test('faseDeGrupo: los 7 casos y progreso hechas/total', () => {
   expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'pendiente' }], []), ahora)).toEqual({ indice: 0, nombre: 'Planeación' })
 
   // 2. Reparto: un trabajo corriendo recién lanzado (< 6s, ninguno terminado)
-  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 99_000 })]), ahora)).toEqual({ indice: 1, nombre: 'Reparto' })
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en_proceso' }], [trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 99_000 })]), ahora)).toEqual({ indice: 1, nombre: 'Reparto' })
 
   // 3. En proceso: trabajo corriendo desde hace 20s
-  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 80_000 })]), ahora)).toEqual({ indice: 2, nombre: 'En proceso' })
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en_proceso' }], [trabN('t1', 'opencode:m', 1, 'corriendo', { inicio: 80_000 })]), ahora)).toEqual({ indice: 2, nombre: 'En proceso' })
 
   // 4. Verificación: todos listos sin nota
-  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }], [trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000 })]), ahora)).toEqual({ indice: 3, nombre: 'Verificación' })
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en_proceso' }], [trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000 })]), ahora)).toEqual({ indice: 3, nombre: 'Verificación' })
+
+  // Verificación: los agentes entregaron y el jefe aún no auditó.
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'realizado' }, { n: 2, estado: 'solucionado' }], []), ahora)).toEqual({ indice: 3, nombre: 'Verificación' })
 
   // 5. Auditoría: mezcla listos con y sin nota
-  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en curso' }, { n: 2, estado: 'en curso' }], [
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'en_proceso' }, { n: 2, estado: 'en_proceso' }], [
     trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
     trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000 }),
   ]), ahora)).toEqual({ indice: 4, nombre: 'Auditoría' })
 
   // 6. Juntar: solo quedan subtareas sin trabajos (nadie las delegó)
-  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'pendiente' }], [
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'solucionado' }, { n: 2, estado: 'pendiente' }], [
     trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
   ]), ahora)).toEqual({ indice: 5, nombre: 'Juntar' })
 
   // 7. En proceso: subtarea con trabajos no está hecha (falló o sacó poca nota)
-  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'en curso' }], [
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'solucionado' }, { n: 2, estado: 'en_proceso' }], [
     trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
     trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000, puntaje: 3 }),
   ]), ahora)).toEqual({ indice: 2, nombre: 'En proceso' })
 
   // 8. Informe: todas hechas
-  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'hecha' }], [
+  expect(faseDeGrupo(baseGrupo([{ n: 1, estado: 'solucionado' }, { n: 2, estado: 'solucionado' }], [
     trabN('t1', 'opencode:m', 1, 'listo', { inicio: 80_000, ms: 5000, puntaje: 8 }),
     trabN('t2', 'ollama:m', 2, 'listo', { inicio: 85_000, ms: 3000, puntaje: 9 }),
   ]), ahora)).toEqual({ indice: 6, nombre: 'Informe' })
 
   // Progreso
-  const g = baseGrupo([{ n: 1, estado: 'hecha' }, { n: 2, estado: 'pendiente' }, { n: 3, estado: 'en curso' }], [])
+  const g = baseGrupo([{ n: 1, estado: 'solucionado' }, { n: 2, estado: 'pendiente' }, { n: 3, estado: 'en_proceso' }], [])
   expect(faseDeGrupo(g, ahora).indice).toBe(0) // Planeación (sin trabajos)
   expect(g.hechas).toBe(1)
   expect(g.total).toBe(3)

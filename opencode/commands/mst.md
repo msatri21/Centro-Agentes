@@ -6,5 +6,7 @@ model: opencode/deepseek-v4.1-flash-free
 
 Sigue el protocolo del Centro de agentes MST con esta tarea. Trabaja en la carpeta actual del proyecto.
 
+Guarda el plan en mst-tareas.json: crea un borrador con planificar al tener objetivo y subtareas iniciales, y púlelo al repartir con agregar y ajustar. Usa manuales para el trabajo que no se delega y tareas_estado para consultar el progreso; planificar con tarea retoma una tarea existente. Los agentes no editan mst-tareas.json: escriben el trabajo nuevo al final bajo «Propuestas:» y tú decides qué agregar o convertir en tarea nueva. Si una tarea solucionada cumplía lo pedido, crea otra para el trabajo adicional; si no lo cumplía, usa planificar { reabrir: ["T2.3"] } para devolver a pendiente la subtarea que falló.
+
 TAREA:
 $ARGUMENTS
