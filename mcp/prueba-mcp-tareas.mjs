@@ -8,6 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { llamarHastaTerminar } from './ayuda-prueba.mjs'
 
 const servidor = fileURLToPath(new URL('./centro-mcp.mjs', import.meta.url))
 const temporal = fs.mkdtempSync(path.join(os.tmpdir(), 'centro-tareas-'))
@@ -79,7 +80,9 @@ function cliente() {
 }
 
 const jefe = cliente()
-const llamar = (nombre, args = {}) => jefe.llamar(nombre, { cwd: raiz, ...args })
+const llamar = (nombre, args = {}) => nombre === 'delegar' || nombre === 'delegar_varios'
+  ? llamarHastaTerminar((n, a) => jefe.llamar(n, { cwd: raiz, ...a }), nombre, args)
+  : jefe.llamar(nombre, { cwd: raiz, ...args })
 const archivoDeTareas = () => JSON.parse(fs.readFileSync(path.join(raiz, 'mst-tareas.json'), 'utf8'))
 const lanzamientos = () => (fs.existsSync(marca) ? fs.readFileSync(marca, 'utf8').length : 0)
 
@@ -211,6 +214,6 @@ assert.equal(corrupto.corrupto, true)
 
 // La lista exacta de herramientas del jefe incluye tareas_estado (los trabajadores solo ven preguntar y pedir_permiso).
 const nombres = (await jefe.pedir('tools/list')).result.tools.map(t => t.name)
-assert.deepEqual(nombres, ['planificar', 'tareas_estado', 'delegar', 'delegar_varios', 'registrar_auditoria', 'cerrar_subtarea', 'juntar_copias', 'cerebro', 'ranking', 'modelos'])
+assert.deepEqual(nombres, ['planificar', 'tareas_estado', 'estado', 'delegar', 'delegar_varios', 'registrar_auditoria', 'cerrar_subtarea', 'juntar_copias', 'cerebro', 'ranking', 'modelos'])
 jefe.cerrar()
 console.log('ok: integración de tareas del servidor MCP')

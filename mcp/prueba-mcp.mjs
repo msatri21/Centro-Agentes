@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { llamarHastaTerminar } from './ayuda-prueba.mjs'
 
 const servidor = fileURLToPath(new URL('./centro-mcp.mjs', import.meta.url))
 const proyectoPrueba = fs.mkdtempSync(path.join(os.tmpdir(), 'centro-mcp-proyecto-'))
@@ -35,14 +36,14 @@ const jefe = cliente({ CENTRO_CEREBRO: cerebroPrueba })
 const ini = await jefe.pedir('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'prueba', version: '1' } })
 assert.equal(ini.result.serverInfo.name, 'centro-agentes')
 const nombres = (await jefe.pedir('tools/list')).result.tools.map(t => t.name)
-assert.deepEqual(nombres, ['planificar', 'tareas_estado', 'delegar', 'delegar_varios', 'registrar_auditoria', 'cerrar_subtarea', 'juntar_copias', 'cerebro', 'ranking', 'modelos'])
+assert.deepEqual(nombres, ['planificar', 'tareas_estado', 'estado', 'delegar', 'delegar_varios', 'registrar_auditoria', 'cerrar_subtarea', 'juntar_copias', 'cerebro', 'ranking', 'modelos'])
 const memoria = JSON.parse((await jefe.pedir('tools/call', { name: 'cerebro', arguments: { consulta: 'estilos con animaciones para una página', area: 'css' } })).result.content[0].text)
 assert.match(memoria.web, /^http:\/\/127\.0\.0\.1:\d+\/\?t=/, 'el cerebro devuelve el enlace del chat')
 assert.equal(memoria.recomendacion.agente, 'hermes')
 assert.equal(memoria.similares.length, 2)
 const plan = JSON.parse((await jefe.pedir('tools/call', { name: 'planificar', arguments: { cwd: proyectoPrueba, objetivo: 'prueba', subtareas: ['a', 'b'], dependencias: { 2: [1] } } })).result.content[0].text)
 assert.deepEqual(plan.lanzar_ya, [1])
-const bloqueada = JSON.parse((await jefe.pedir('tools/call', { name: 'delegar', arguments: { cwd: proyectoPrueba, categoria: 'x', tarea: 't', subtarea: 2 } })).result.content[0].text)
+const bloqueada = await llamarHastaTerminar(async (name, args) => JSON.parse((await jefe.pedir('tools/call', { name, arguments: args })).result.content[0].text), 'delegar', { cwd: proyectoPrueba, categoria: 'x', tarea: 't', subtarea: 2 })
 assert.match(bloqueada.error, /espera a 1/)
 const cierre = JSON.parse((await jefe.pedir('tools/call', { name: 'cerrar_subtarea', arguments: { subtarea: 1 } })).result.content[0].text)
 assert.deepEqual(cierre.progreso.lanzar_ya, [2])

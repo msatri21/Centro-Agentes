@@ -15,6 +15,7 @@ import { CATEGORIAS, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE, abiertas, permitidaS
 import { detectarNecesidades, entradaDe, filasModelos, filtrarPorCapacidad } from '../hooks/catalogo.ts'
 import { transaccion, leer as leerTareas, resumenDe } from './tareas.mjs'
 import { actualizar as actualizarCatalogo, leerCatalogo } from './catalogo.mjs'
+import { FALLOS_SEGUIDOS_ESCALA, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, esErrorDeArranque, esMasiva, inactivo, resumenEstado, textoAvisoGrupo } from '../hooks/asincrono.ts'
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8').replace(/^﻿/, '')).version
 const CASA = path.join(os.homedir(), '.centro-agentes')
@@ -50,6 +51,8 @@ const TIMEOUT_MS = Math.min(10, Math.max(1, Number(CONFIG.timeoutMin ?? 8))) * 6
 const SILENCIO_MS = 120_000
 const MAX_CAMBIOS = 2
 const CAIDO_MS = 10 * 60_000
+const LIMITE_INACTIVIDAD_MS = Number(process.env.CENTRO_INACTIVIDAD_MS) || Math.min(120, Math.max(10, Number(CONFIG.inactividadMin ?? INACTIVIDAD_MIN_POR_DEFECTO))) * 60_000
+const VIGILANTE_MS = Number(process.env.CENTRO_VIGILANTE_MS) || 60_000
 
 // ---------- Catálogo de modelos ----------
 // Se refresca en segundo plano al arrancar y se lee del disco como mucho una vez por minuto;
@@ -89,11 +92,17 @@ let plan = null
 // Los planes anteriores de este chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
 let planes = []
 const trabajos = []
+const escaladasVigilante = new Set()
+const escaladasMasivas = new Set()
 const encargos = new Map()
 // Cómo cortar cada trabajo en marcha (para el botón Cancelar de la web) y lo que pasó mientras el jefe no miraba.
 const cortadores = new Map()
 const CANCELADO = 'cancelado desde la web'
 const avisosWeb = []
+let avisosVersion = 0
+const avisarWeb = aviso => { avisosWeb.push(aviso); avisosVersion++ }
+const registro = new Registro()
+const semaforoAgentes = new Semaforo(MAX_PARALELO)
 const caidos = new Map()
 const motivo = new Map()
 const ocupados = new Map()
@@ -171,7 +180,8 @@ function correr(argv, { cwd, stdin, env, timeoutMs = TIMEOUT_MS, silencioMs = SI
       // OpenCode toma su carpeta de PWD, no de cwd: sin esto trabajaría en la carpeta del jefe y no en la suya.
       // En Windows, un CLI que no es un .exe (el acceso directo .cmd de npm o de pnpm) solo arranca a través de cmd.
       // Solo se entrecomillan los argumentos con espacios o símbolos; si traen saltos de línea, cmd los cortaría, así que se aplanan.
-      const porCmd = process.platform === 'win32' && !/\.exe$/i.test(argv[0])
+      // git es un .exe aunque aquí se nombre sin extensión: por cmd, el mensaje de un commit con espacios se rompe.
+      const porCmd = process.platform === 'win32' && !/\.exe$/i.test(argv[0]) && argv[0] !== 'git'
       const orden = porCmd ? ['cmd', ['/d', '/s', '/c', argv.map((a, i) => (i === 0 || !/[\s"&|<>^%]/.test(a) ? a : `"${a.replace(/"/g, "'").replace(/\r?\n/g, ' ')}"`)).join(' ')]] : [argv[0], argv.slice(1)]
       p = spawn(orden[0], orden[1], { cwd, env: { ...process.env, ...(cwd ? { PWD: cwd } : {}), ...env }, windowsHide: true })
     } catch (e) {
@@ -263,14 +273,43 @@ async function cerrarCopia(c, mensaje) {
     return { rama: c.rama, cambios: 'el agente no cambió ningún archivo; la copia se borró' }
   }
   const stat = await git(c.carpeta, ['diff', '--stat', 'HEAD~1', 'HEAD'])
+  const nameStatus = await git(c.carpeta, ['diff', '--name-status', 'HEAD~1', 'HEAD'])
+  const cambios = contarCambios(nameStatus.stdout)
+  const masiva = esMasiva(cambios)
   porJuntar.push(c)
   return {
     carpeta: c.carpeta,
     rama: c.rama,
+    ...cambios,
+    ...(masiva.masiva ? { escalar: ['masiva'], aviso_masiva: masiva.motivo } : {}),
     cambios: stat.stdout.trim().slice(-2000),
     juntar: `git -C "${c.repo}" merge ${c.rama} && git -C "${c.repo}" worktree remove "${c.carpeta}"`,
   }
 }
+
+function vigilar(ahora = Date.now()) {
+  const pendientes = abiertas(leerDir('consultas.jsonl'), leerDir('respuestas.jsonl'), leerDir('permisos.json'))
+    .filter(c => trabajos.some(t => t.id === c.trabajo && t.estado === 'corriendo'))
+  const esperando = new Set(pendientes.map(c => c.trabajo))
+  for (const t of trabajos) {
+    if (t.estado !== 'corriendo' || esperando.has(t.id) || !inactivo(t, ahora, LIMITE_INACTIVIDAD_MS)) continue
+    const clave = `${t.id}:inactivo`
+    if (escaladasVigilante.has(clave)) continue
+    escaladasVigilante.add(clave)
+    const min = Math.floor((ahora - (t.ultimaActividad ?? t.inicio)) / 60_000)
+    avisarWeb(`[Centro de agentes MST] ESCALADA (inactivo): ${t.trabajador} (trabajo ${t.id}${t.subtarea === undefined ? '' : `, subtarea ${t.subtarea}`}) lleva ${min} min sin dar señales. Puedes esperar o relanzar la subtarea con delegar usando otro modelo; el usuario también puede cancelarlo desde la web.`)
+  }
+  for (const p of pendientes) {
+    if (p.tipo !== 'permiso') continue
+    const t = trabajos.find(x => x.id === p.trabajo)
+    if (!t) continue
+    const clave = `${p.trabajo}:permiso:${p.id}`
+    if (escaladasVigilante.has(clave)) continue
+    escaladasVigilante.add(clave)
+    avisarWeb(`[Centro de agentes MST] ESCALADA (permiso): ${t.trabajador.split(':')[0]} pide permiso (${p.categoria}): "${p.texto}". La decisión es del USUARIO en la web: no la apruebes ni actúes tú; sigue con otra cosa.`)
+  }
+}
+if (!ES_TRABAJADOR) setInterval(vigilar, VIGILANTE_MS).unref()
 async function verificarEn(cwd, comando) {
   // Va en un archivo: como argumento, las comillas del comando llegan rotas a cmd.
   fs.mkdirSync(DIR, { recursive: true })
@@ -321,6 +360,7 @@ async function intentar(c, input) {
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
   const trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, ultimaActividad: t0, plan: plan?.objetivo }
+  input.alLanzar?.(id)
   trabajos.push(trabajo)
   marcar(input.subtarea, { estado: 'en_proceso', quien })
   guardar()
@@ -337,9 +377,9 @@ async function intentar(c, input) {
   }
   let ultimo = 0
   const r = await correr(argv, { cwd: input.cwd, stdin, env, esperando: () => esperaUsuario(id) }, crudo => {
-    if (Date.now() - ultimo < 1500) return
-    ultimo = Date.now()
-    trabajo.ultimaActividad = ultimo
+    trabajo.ultimaActividad = Date.now()
+    if (trabajo.ultimaActividad - ultimo < 1500) return
+    ultimo = trabajo.ultimaActividad
     trabajo.salida = vistaDe(c.trabajador, crudo).slice(-1500)
     guardar()
   }, cortar => cortadores.set(id, cortar))
@@ -409,9 +449,10 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     const estado = await transaccion(plan.raiz, path.basename(plan.raiz), { tipo: 'estado', id: `${plan.tarea}.${input.subtarea}`, estado: 'en_proceso', solo_si: 'pendiente' })
     if (!estado.ok) {
       if (estado.codigo === 'conflicto') return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} ya está en proceso (otro encargo u otro chat); no se lanza otra vez` }
-      if (estado.codigo === 'bloqueada') return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} espera a ${estado.mensaje.match(/Faltan dependencias: (.*)/)?.[1] ?? 'sus dependencias'}: lánzala cuando estén hechas.` }
+      if (estado.codigo === 'bloqueada' && sinBloqueo) plan.subtareas = plan.subtareas.map(s => s.n === input.subtarea ? { ...s, estado: 'en_proceso' } : s)
+      else if (estado.codigo === 'bloqueada') return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} espera a ${estado.mensaje.match(/Faltan dependencias: (.*)/)?.[1] ?? 'sus dependencias'}: lánzala cuando estén hechas.` }
       if (estado.codigo === 'manual') return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} es manual y no se delega` }
-      aviso_archivo = estado.mensaje
+      if (estado.codigo !== 'bloqueada' || !sinBloqueo) aviso_archivo = estado.mensaje
     } else plan.subtareas = plan.subtareas.map(s => s.n === input.subtarea ? { ...s, estado: 'en_proceso' } : s)
   }
   if (input.subtarea !== undefined) encargos.set(input.subtarea, { ...input })
@@ -432,8 +473,10 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
   const copia = input.aislar && input.cwd ? await crearCopia(input.cwd, `s${input.subtarea ?? 'x'}-${Date.now().toString(36)}`) : undefined
   if (copia?.carpeta) copia.subtarea = input.subtarea
   const cwd = copia?.carpeta ?? input.cwd
+  input.alReservar?.()
 
   const cambios = []
+  const reintentos = []
   let r
   let elegido = cola[0]
   for (const c of cola) {
@@ -442,7 +485,17 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     const k = clave(c.trabajador, c.modelo)
     ocupados.set(k, (ocupados.get(k) ?? 0) + 1)
     try {
-      r = await intentar(c, { ...input, categoria, tarea, cwd })
+      let reintento = 0
+      do {
+        if (reintento) {
+          reintentos.push(`${k} reintento ${reintento}: error de arranque`)
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        }
+        const liberar = await semaforoAgentes.tomar()
+        try { r = await intentar(c, { ...input, categoria, tarea, cwd }) } finally { liberar() }
+        if (r.ok || !esErrorDeArranque(r.s.texto) || reintento >= REINTENTOS_ARRANQUE) break
+        reintento++
+      } while (true)
     } finally {
       ocupados.set(k, (ocupados.get(k) ?? 1) - 1)
     }
@@ -473,6 +526,10 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
   }
   const quien = clave(elegido.trabajador, elegido.modelo)
   const aislado = copia?.carpeta ? await cerrarCopia(copia, `mst: subtarea ${input.subtarea ?? '-'} (${quien})`) : copia
+  if (aislado?.escalar?.includes('masiva') && !escaladasMasivas.has(r.id)) {
+    escaladasMasivas.add(r.id)
+    avisarWeb(`[Centro de agentes MST] ESCALADA (modificación masiva): ${quien}: ${aislado.aviso_masiva}. No conviene juntar la rama sin revisarla.`)
+  }
   const verificacion = r.ok && input.verificar?.trim() ? await verificarEn(cwd, input.verificar.trim()) : undefined
   // El modelo pedido a propósito se usa aunque el catálogo no le confirme la capacidad; se avisa para que el jefe lo sepa.
   const modeloDe = forzado ?? todos.find(c => c.modelo === modeloPedido) ?? elegido
@@ -495,7 +552,10 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     ...(necesidades.length && input.necesita === undefined ? { detectada: true } : {}),
     ...(avisoCapacidad ? { aviso_capacidad: avisoCapacidad } : {}),
     ...(cambios.length ? { cambios } : {}),
+    ...(reintentos.length ? { reintentos } : {}),
+    ...(input.tras ? { tras: input.tras } : {}),
     ...(aislado ? { copia: aislado } : {}),
+    ...(aislado?.escalar ? { escalar: aislado.escalar, aviso_masiva: aislado.aviso_masiva } : {}),
     ...(verificacion ? { verificacion } : {}),
     salida: r.s.texto.slice(0, 30_000) || '(sin salida)',
     ...(aviso_archivo ? { aviso_archivo } : {}),
@@ -540,28 +600,69 @@ async function delegarUno(input, sinBloqueo = false) {
   }
 }
 
-async function delegarVarios(lista) {
-  // Una subtarea que espera a otras del mismo lote arranca sola cuando esas terminan bien.
-  const subs = plan?.subtareas ?? []
-  const porN = new Map(lista.filter(t => t.subtarea !== undefined).map(t => [t.subtarea, t]))
-  const enMarcha = new Map()
-  const lanzar = (t, camino = new Set()) => {
-    const n = t.subtarea
-    if (n === undefined) return delegarUno(t)
-    if (enMarcha.has(n)) return enMarcha.get(n)
-    const espera = bloqueos(subs, n)
-    const enLote = espera.filter(e => porN.has(e) && !camino.has(e))
-    const p = (async () => {
-      if (!espera.length || enLote.length < espera.length) return delegarUno(t)
-      const previas = await Promise.all(enLote.map(e => lanzar(porN.get(e), new Set([...camino, n]))))
-      const mal = previas.filter(r => !r.exito || r.verificacion?.ok === false).map(r => r.subtarea)
-      if (mal.length) return { subtarea: n, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${n}.` }
-      return { ...(await delegarUno(t, true)), tras: enLote }
-    })()
-    enMarcha.set(n, p)
-    return p
+function avisarFinGrupo(grupo) {
+  if (registro.avisarGrupo(grupo) && registro.delGrupo(grupo).some(e => e.trabajoId)) {
+    const encargos = registro.delGrupo(grupo)
+    avisarWeb(textoAvisoGrupo(grupo, encargos.map(e => ({ id: e.id, trabajoId: e.trabajoId, estado: e.estado, resultado: e.resultado }))))
   }
-  return Promise.all(lista.map(t => lanzar(t)))
+}
+
+function lanzarEncargo(input, grupo, encargo, sinBloqueo = false) {
+  let reservar
+  const reservado = new Promise(resolve => { reservar = () => resolve(true) })
+  const promesa = delegarUno({ ...input, alReservar: () => { reservar(); input.alReservar?.() }, alLanzar: id => { registro.marcar(encargo.id, 'corriendo', {}, Date.now()); input.alLanzar?.(id) } }, sinBloqueo).then(resultado => {
+    registro.marcar(encargo.id, resultado?.id ? (resultado.exito ? 'terminado' : 'fallido') : 'fallido', { trabajoId: resultado?.id, resultado }, Date.now())
+    if (encargo.trabajoId) {
+      const fallos = registro.registrarFin(input.subtarea, Boolean(resultado?.id && resultado?.exito))
+      if (!resultado?.exito && fallos === FALLOS_SEGUIDOS_ESCALA) avisarWeb(`[Centro de agentes MST] ESCALADA (fallos): la subtarea ${input.subtarea} lleva ${fallos} fallos seguidos. Modelos probados: ${Array.isArray(resultado?.cambios) && resultado.cambios.length ? resultado.cambios.join(', ') : resultado?.trabajador}. No la relances igual: cambia el enfoque o pregunta al usuario.`)
+    }
+    avisarFinGrupo(grupo)
+    return resultado
+  }, error => {
+    const resultado = { error: String(error) }
+    registro.marcar(encargo.id, 'fallido', { resultado }, Date.now())
+    if (encargo.trabajoId) {
+      const fallos = registro.registrarFin(input.subtarea, false)
+      if (fallos === FALLOS_SEGUIDOS_ESCALA) avisarWeb(`[Centro de agentes MST] ESCALADA (fallos): la subtarea ${input.subtarea} lleva ${fallos} fallos seguidos. Modelos probados: ${input.trabajador ?? 'trabajador'}. No la relances igual: cambia el enfoque o pregunta al usuario.`)
+    }
+    avisarFinGrupo(grupo)
+    return resultado
+  })
+  return { encargo, reservado, promesa }
+}
+
+function delegarVarios(lista) {
+  const grupo = registro.nuevoGrupo(), subs = plan?.subtareas ?? []
+  const encargos = lista.map(t => registro.nuevoEncargo({ grupo, subtarea: t.subtarea }, Date.now()))
+  const enMarcha = new Map()
+  const iniciar = (i, camino = new Set()) => {
+    if (enMarcha.has(i)) return enMarcha.get(i)
+    const t = lista[i], deps = t.subtarea === undefined ? [] : bloqueos(subs, t.subtarea)
+    const lote = deps.map(n => lista.findIndex(x => x.subtarea === n)).filter(j => j >= 0 && j !== i && !camino.has(j))
+    const p = (async () => {
+      if (!deps.length || lote.length < deps.length) return lanzarEncargo(t, grupo, encargos[i])
+      const previos = await Promise.all(lote.map(async j => ({ resultado: await (await iniciar(j, new Set([...camino, i]))).promesa, subtarea: lista[j].subtarea })))
+      const mal = previos.filter(x => !x.resultado?.exito || x.resultado?.verificacion?.ok === false).map(x => x.subtarea)
+      if (mal.length) {
+        const resultado = { subtarea: t.subtarea, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${t.subtarea}.` }
+        registro.marcar(encargos[i].id, 'fallido', { resultado }, Date.now()); avisarFinGrupo(grupo)
+        return { encargo: encargos[i], promesa: Promise.resolve(resultado), iniciado: Promise.resolve(false), resultadoInmediato: resultado }
+      }
+      return lanzarEncargo({ ...t, tras: lote.map(j => lista[j].subtarea) }, grupo, encargos[i], true)
+    })()
+    enMarcha.set(i, p); return p
+  }
+  const respuesta = Promise.all(lista.map(async (t, i) => {
+    const deps = t.subtarea === undefined ? [] : bloqueos(subs, t.subtarea)
+    const enLote = deps.some(n => lista.some(x => x.subtarea === n))
+    const lanzamiento = iniciar(i)
+    if (enLote) return { encargo: encargos[i].id, ...(t.subtarea === undefined ? {} : { subtarea: t.subtarea }), estado: 'en_espera' }
+    const actual = await lanzamiento
+    const inmediato = await Promise.race([actual.reservado.then(() => undefined), actual.promesa])
+    const error = inmediato?.error
+    return { encargo: encargos[i].id, ...(t.subtarea === undefined ? {} : { subtarea: t.subtarea }), estado: error ? 'fallido' : 'lanzado', ...(error ? { error } : {}) }
+  }))
+  return { grupo, encargos, respuesta }
 }
 
 function progreso() {
@@ -651,21 +752,21 @@ function atenderAcciones() {
     try { a = JSON.parse(linea) } catch { continue }
     if (a.tipo === 'cancelar' && typeof a.id === 'string' && cortadores.has(a.id)) {
       cortadores.get(a.id)(CANCELADO)
-      avisosWeb.push(`Cancelaste desde la web el trabajo ${a.id}.`)
+      avisarWeb(`Cancelaste desde la web el trabajo ${a.id}.`)
     }
-    if (a.tipo === 'jefe' && typeof a.texto === 'string' && a.texto.trim()) avisosWeb.push(`El usuario te escribe desde el tablero: "${a.texto}". Respóndele en el chat y, si pide algo, hazlo.`)
+    if (a.tipo === 'jefe' && typeof a.texto === 'string' && a.texto.trim()) avisarWeb(`El usuario te escribe desde el tablero: "${a.texto}". Respóndele en el chat y, si pide algo, hazlo.`)
     // Una propuesta de modelo desde la web: se le pasa al jefe para que la pruebe cuando encaje.
     if (a.tipo === 'proponer' && typeof a.agente === 'string' && TRABAJADORES.includes(a.agente) && typeof a.modelo === 'string' && /^[\w.:\/@+-]{1,120}$/.test(a.modelo) && (MODELOS[a.agente] ?? []).includes(a.modelo))
-      avisosWeb.push(`[Centro de agentes MST] El usuario propone probar el modelo ${a.modelo} (agente ${a.agente}) en la próxima tarea que le encaje. Compruébalo con la herramienta modelos, úsalo con delegar (campo modelo) cuando corresponda y puntúalo al auditar para que el cerebro aprenda.`)
+      avisarWeb(`[Centro de agentes MST] El usuario propone probar el modelo ${a.modelo} (agente ${a.agente}) en la próxima tarea que le encaje. Compruébalo con la herramienta modelos, úsalo con delegar (campo modelo) cuando corresponda y puntúalo al auditar para que el cerebro aprenda.`)
     if (a.tipo === 'encargar' && TRABAJADORES.includes(a.agente) && typeof a.texto === 'string' && a.texto.trim()) {
       const sub = Number.isInteger(a.n) ? plan?.subtareas.find(x => x.n === a.n) : undefined
       const tarea = sub ? `${a.texto}\n\nContexto: esto es parte de la subtarea ${sub.n} del plan: "${sub.titulo}".` : a.texto
-      avisosWeb.push(`El usuario le encargó a ${a.agente} desde el tablero${sub ? ` la subtarea ${sub.n}` : ''}: "${corto(a.texto, 200)}". Cuando termine, audítalo con registrar_auditoria.`)
-      void delegarUno({ trabajador: a.agente, modelo: a.modelo, categoria: 'manual', tarea, subtarea: sub?.n, cwd: process.cwd() }).then(r => avisosWeb.push(`Resultado del encargo a ${a.agente} (id ${r.id ?? '-'}, ${r.exito ? 'terminó' : 'falló'}): audítalo con registrar_auditoria.`))
+      avisarWeb(`El usuario le encargó a ${a.agente} desde el tablero${sub ? ` la subtarea ${sub.n}` : ''}: "${corto(a.texto, 200)}". Cuando termine, audítalo con registrar_auditoria.`)
+      void delegarUno({ trabajador: a.agente, modelo: a.modelo, categoria: 'manual', tarea, subtarea: sub?.n, cwd: process.cwd() }).then(r => avisarWeb(`Resultado del encargo a ${a.agente} (id ${r.id ?? '-'}, ${r.exito ? 'terminó' : 'falló'}): audítalo con registrar_auditoria.`))
     }
     if (a.tipo === 'relanzar' && Number.isInteger(a.n) && encargos.has(a.n)) {
-      avisosWeb.push(`Relanzando la subtarea ${a.n} desde la web: cuando termine, verifica su resultado y puntúalo.`)
-      void delegarUno({ ...encargos.get(a.n) }).then(r => avisosWeb.push(`Resultado del relanzamiento de la subtarea ${a.n} (id ${r.id ?? '-'}, ${r.exito ? 'terminó' : 'falló'}): audítalo con registrar_auditoria.`))
+      avisarWeb(`Relanzando la subtarea ${a.n} desde la web: cuando termine, verifica su resultado y puntúalo.`)
+      void delegarUno({ ...encargos.get(a.n) }).then(r => avisarWeb(`Resultado del relanzamiento de la subtarea ${a.n} (id ${r.id ?? '-'}, ${r.exito ? 'terminó' : 'falló'}): audítalo con registrar_auditoria.`))
     }
   }
 }
@@ -722,14 +823,15 @@ const HERRAMIENTAS = [
     },
   },
   { name: 'tareas_estado', description: 'Resumen de mst-tareas.json del proyecto; solo lectura.', inputSchema: { type: 'object', properties: { cwd: { type: 'string', description: 'Carpeta del proyecto' } } } },
+  { name: 'estado', description: 'Devuelve el estado y resultados de encargos recientes o filtrados por grupo o ids. esperar_seg espera como máximo 60 segundos y termina al completarse un encargo consultado o llegar un aviso web.', inputSchema: { type: 'object', properties: { grupo: { type: 'string', description: 'Grupo devuelto por delegar o delegar_varios' }, ids: { type: 'array', items: { type: 'string' }, description: 'Ids eN devueltos al lanzar' }, esperar_seg: { type: 'number', minimum: 0, maximum: 60, description: 'Segundos de espera; por defecto 0' } } } },
   {
     name: 'delegar',
-    description: 'Delega una tarea a un agente (opencode, ollama, hermes, aider) con modelos gratis de Ollama y devuelve su salida, tiempo y tokens. El resultado NO está verificado: debes auditarlo.',
+    description: 'Lanza una tarea en segundo plano y devuelve su id de encargo al instante. Consulta estado y audita el resultado al terminar.',
     inputSchema: { type: 'object', properties: CAMPOS_ENCARGO, required: ['categoria', 'tarea'] },
   },
   {
     name: 'delegar_varios',
-    description: 'Lanza VARIAS subtareas a la vez, cada una a un agente distinto. Una subtarea que espera a otras del mismo lote arranca sola cuando esas terminan bien. Devuelve todos los resultados al terminar.',
+    description: 'Lanza varias tareas en segundo plano y devuelve sus ids al instante. Las dependencias del mismo lote arrancan cuando sus previas terminan bien; consulta estado para ver resultados.',
     inputSchema: { type: 'object', properties: { tareas: { type: 'array', items: { type: 'object', properties: CAMPOS_ENCARGO, required: ['tarea', 'categoria'] } } }, required: ['tareas'] },
   },
   {
@@ -925,17 +1027,45 @@ async function llamar(nombre, a) {
     return r.existe ? r : { existe: false, aviso: 'Aún no hay plan guardado: se crea con el primer planificar.' }
   }
   if (nombre === 'delegar') {
-    await asegurarWeb()
-    return delegarUno(a)
+    void asegurarWeb().catch(() => undefined)
+    const grupo = registro.nuevoGrupo()
+    const encargo = registro.nuevoEncargo({ grupo, subtarea: a.subtarea }, Date.now())
+    const lanzamiento = lanzarEncargo(a, grupo, encargo)
+    const primero = await Promise.race([lanzamiento.reservado.then(() => 'lanzado'), lanzamiento.promesa.then(resultado => ({ resultado }))])
+    if (primero !== 'lanzado') return primero.resultado
+    return { encargo: encargo.id, grupo, ...(a.subtarea === undefined ? {} : { subtarea: a.subtarea }), estado: 'lanzado', aviso: 'Trabajando en segundo plano. Recibirás UN aviso cuando termine el grupo; consulta estado si necesitas el resultado.' }
   }
   if (nombre === 'delegar_varios') {
     const tareas = lista(a.tareas)
     if (!tareas.length) return { error: 'Pasa al menos una tarea en "tareas".' }
-    await asegurarWeb()
-    return { resultados: await delegarVarios(tareas), aviso: 'Resultados sin verificar. Audita cada uno y llama a registrar_auditoria con su id.' }
+    void asegurarWeb().catch(() => undefined)
+    const lote = delegarVarios(tareas)
+    return { grupo: lote.grupo, encargos: await lote.respuesta, aviso: 'Trabajando en segundo plano. Recibirás UN aviso cuando termine todo el grupo; consulta estado si necesitas los resultados.' }
+  }
+  if (nombre === 'estado') {
+    const segundos = Math.max(0, Math.min(60, Number(a.esperar_seg) || 0))
+    const seleccionar = () => {
+      const todos = registro.todos()
+      return a.ids?.length ? todos.filter(e => a.ids.includes(e.id)) : a.grupo ? todos.filter(e => e.grupo === a.grupo) : todos.slice(-30)
+    }
+    // Espera a que termine OTRO encargo más (o llegue un aviso): si ya había terminado alguno, volver al instante haría que el jefe sondeara en bucle.
+    const acabados = () => seleccionar().filter(e => e.estado === 'terminado' || e.estado === 'fallido').length
+    const acabadosAntes = acabados()
+    const avisosAntes = avisosVersion
+    if (segundos > 0 && acabadosAntes < seleccionar().length) {
+      const fin = Date.now() + segundos * 1000
+      while (Date.now() < fin) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(100, fin - Date.now())))
+        if (acabados() > acabadosAntes || avisosVersion > avisosAntes) break
+      }
+    }
+    const encargos = seleccionar()
+    return { encargos: resumenEstado(encargos, Date.now()), corriendo: encargos.filter(e => e.estado === 'corriendo').length, en_cola: encargos.filter(e => e.estado === 'en_cola').length, terminados: encargos.filter(e => e.estado === 'terminado').length, fallidos: encargos.filter(e => e.estado === 'fallido').length }
   }
   if (nombre === 'registrar_auditoria') {
-    const t = trabajos.find(x => x.id === a.id)
+    const encargo = /^e\d+$/.test(a.id) ? registro.obtener(a.id) : undefined
+    if (/^e\d+$/.test(a.id) && encargo && !encargo.trabajoId) return { error: `El encargo ${a.id} todavía no terminó` }
+    const t = trabajos.find(x => x.id === (encargo?.trabajoId ?? a.id))
     if (!t) return { error: `No existe el trabajo ${a.id}` }
     const p = Math.max(1, Math.min(10, Math.round(Number(a.puntaje))))
     const tabla = puntajes()

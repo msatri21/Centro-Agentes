@@ -1,3 +1,4 @@
+import { delegarYEsperar, delegarVariosYEsperar } from './ayuda-asincrona'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { MAX_EXPERIENCIAS, consultar, preferir, recomendar, registrar } from './cerebro'
@@ -86,7 +87,7 @@ test('una tarea con skills no va a Ollama y el agente recibe la instrucción de 
     yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
     return { value: { code: 0, signal: null } }
   })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'diseño', tarea: 'haz la portada', skills: ['design-md'] } }))
+  const d = out(await delegarYEsperar($, { categoria: 'diseño', tarea: 'haz la portada', skills: ['design-md'] }))
   expect(d.exito).toBe(true)
   expect(d.trabajador.startsWith('ollama')).toBe(false)
   const lanzado = vistos[vistos.length - 1]
@@ -112,7 +113,7 @@ test('con la skill ponytail el encargo lleva el mapa del código de la carpeta d
     yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
     return { value: { code: 0, signal: null } }
   })
-  const con = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón', cwd: 'C:/proyecto', skills: ['ponytail'] } }))
+  const con = out(await delegarYEsperar($, { categoria: 'codigo', tarea: 'añade un botón', cwd: 'C:/proyecto', skills: ['ponytail'] }))
   expect(con.exito).toBe(true)
   const mapa = vistos.find(v => v.argv.some(a => a.includes('ponytail-map.js')))
   expect(mapa?.argv[0]).toBe('node')
@@ -123,7 +124,7 @@ test('con la skill ponytail el encargo lleva el mapa del código de la carpeta d
   expect(lanzado.input).toContain('crearGrafo')
   // Otra skill, o ninguna: el mapa no se pide ni se añade.
   vistos.length = 0
-  const sin = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'diseño', tarea: 'haz la portada', cwd: 'C:/proyecto', skills: ['design-md'] } }))
+  const sin = out(await delegarYEsperar($, { categoria: 'diseño', tarea: 'haz la portada', cwd: 'C:/proyecto', skills: ['design-md'] }))
   expect(sin.exito).toBe(true)
   expect(vistos.some(v => v.argv.some(a => a.includes('ponytail-map.js')))).toBe(false)
   expect(vistos[vistos.length - 1].input).not.toContain('Codebase map')
@@ -194,7 +195,7 @@ const centroConPonytail = (on: any, { carpetaConCodigo = true } = {}) => {
 
 test('el centro añade solo ponytail a las tareas de código, con el mapa, aunque Claude no lo pida', async ($, on) => {
   const c = centroConPonytail(on)
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' } }))
+  const d = out(await delegarYEsperar($, { categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' }))
   expect(d.exito).toBe(true)
   expect(c.visto()).toContain('Usa estas skills')
   expect(c.visto()).toContain('ponytail: lee')
@@ -212,13 +213,13 @@ test('el centro añade solo ponytail a las tareas de código, con el mapa, aunqu
 
 test('el centro añade ponytail-review o ponytail-audit a las auditorías, sin mapa de ponytail-review ni skill de escritura', async ($, on) => {
   const c = centroConPonytail(on)
-  const cambio = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'revision', tarea: 'revisa el último commit de src/cart.js', cwd: 'C:/proyecto' } }))
+  const cambio = out(await delegarYEsperar($, { categoria: 'revision', tarea: 'revisa el último commit de src/cart.js', cwd: 'C:/proyecto' }))
   expect(cambio.exito).toBe(true)
   expect(c.visto()).toContain('ponytail-review: lee')
   expect(c.visto()).not.toContain('ponytail: lee')
   expect(c.mapas).toEqual([])
   expect(cambio.auditar_con).toBeUndefined()
-  const repo = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'auditoria', tarea: 'audita todo el repositorio', cwd: 'C:/proyecto' } }))
+  const repo = out(await delegarYEsperar($, { categoria: 'auditoria', tarea: 'audita todo el repositorio', cwd: 'C:/proyecto' }))
   expect(repo.exito).toBe(true)
   expect(c.visto()).toContain('ponytail-audit: lee')
   expect(c.mapas).toEqual(['C:/proyecto'])
@@ -226,10 +227,10 @@ test('el centro añade ponytail-review o ponytail-audit a las auditorías, sin m
 
 test('sin skills automáticas: tareas de texto, el interruptor del encargo, el ajuste y los agentes que no leen skills', async ($, on) => {
   const c = centroConPonytail(on)
-  const texto = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'texto', tarea: 'traduce este párrafo al inglés', cwd: 'C:/proyecto' } }))
+  const texto = out(await delegarYEsperar($, { categoria: 'texto', tarea: 'traduce este párrafo al inglés', cwd: 'C:/proyecto' }))
   expect(texto.exito).toBe(true)
   expect(c.visto()).not.toContain('Usa estas skills')
-  const apagada = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto', sin_skills_automaticas: true } }))
+  const apagada = out(await delegarYEsperar($, { categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto', sin_skills_automaticas: true }))
   expect(apagada.exito).toBe(true)
   expect(c.visto()).not.toContain('Usa estas skills')
   expect(apagada.auditar_con).toBe('ponytail-review')
@@ -238,26 +239,26 @@ test('sin skills automáticas: tareas de texto, el interruptor del encargo, el a
   expect(texto.clasificacion.clase).toBe('texto')
   expect(texto.clasificacion.skills_anadidas).toEqual([])
   // Un agente que no lee skills (Aider) no cambia de agente ni recibe la instrucción.
-  const aider = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'aider', categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' } }))
+  const aider = out(await delegarYEsperar($, { trabajador: 'aider', categoria: 'codigo', tarea: 'añade un botón a src/app.js', cwd: 'C:/proyecto' }))
   expect(aider.trabajador.startsWith('aider')).toBe(true)
   expect(c.visto()).not.toContain('Usa estas skills')
 })
 
 test('una petición vaga que pide cambios cuenta como código si la carpeta tiene código, y no si no lo tiene', async ($, on) => {
   const c = centroConPonytail(on)
-  const vaga = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'general', tarea: 'Agrega la posibilidad de aplicar un cupón de descuento al carrito.', cwd: 'C:/proyecto' } }))
+  const vaga = out(await delegarYEsperar($, { categoria: 'general', tarea: 'Agrega la posibilidad de aplicar un cupón de descuento al carrito.', cwd: 'C:/proyecto' }))
   expect(vaga.exito).toBe(true)
   expect(c.visto()).toContain('ponytail: lee')
   expect(c.visto()).toContain('Codebase map')
   // Una tarea de texto, aunque esté en una carpeta con código, sigue siendo texto: no pide cambios.
-  const resumen = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'analisis', tarea: 'Resume las diferencias entre los dos planes de precios', cwd: 'C:/proyecto' } }))
+  const resumen = out(await delegarYEsperar($, { categoria: 'analisis', tarea: 'Resume las diferencias entre los dos planes de precios', cwd: 'C:/proyecto' }))
   expect(resumen.exito).toBe(true)
   expect(c.visto()).not.toContain('Usa estas skills')
 })
 
 test('una petición vaga en una carpeta sin código no lleva ponytail', async ($, on) => {
   const c = centroConPonytail(on, { carpetaConCodigo: false })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'general', tarea: 'Agrega una sección de preguntas frecuentes al documento', cwd: 'C:/documentos' } }))
+  const d = out(await delegarYEsperar($, { categoria: 'general', tarea: 'Agrega una sección de preguntas frecuentes al documento', cwd: 'C:/documentos' }))
   expect(d.exito).toBe(true)
   expect(c.visto()).not.toContain('Usa estas skills')
   expect(d.auditar_con).toBeUndefined()
@@ -310,7 +311,7 @@ test('cada trabajo queda en el historial permanente con su puntaje, y suma al ah
     return { value: undefined }
   })
   procesos(on, () => ({ stdout: '{"type":"text","part":{"text":"hecho"}}\n{"type":"step_finish","part":{"tokens":{"input":500000,"output":100000,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0}}' }))
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'opencode', categoria: 'codigo', tarea: 'x' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'codigo', tarea: 'x' }))
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d.id, puntaje: 7 } })
   expect(guardado.historial.map((t: any) => [t.id, t.puntaje])).toEqual([[d.id, 7]])
   // 500k de entrada y 100k de salida con Claude Sonnet 5.5: $1 + $1.
@@ -342,8 +343,8 @@ test('al quedar todas las subtareas hechas avisa una sola vez', async ($, on) =>
   })
   procesos(on)
   await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'demo', subtareas: ['a', 'b'] } })
-  const a = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'claude', categoria: 'x', tarea: 'a', subtarea: 1 } }))
-  const b = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'claude', categoria: 'x', tarea: 'b', subtarea: 2 } }))
+  const a = out(await delegarYEsperar($, { trabajador: 'claude', categoria: 'x', tarea: 'a', subtarea: 1 }))
+  const b = out(await delegarYEsperar($, { trabajador: 'claude', categoria: 'x', tarea: 'b', subtarea: 2 }))
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: a.id, puntaje: 8 } })
   expect(toasts.filter(t => t.includes('Todo listo')).length).toBe(0)
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: b.id, puntaje: 9 } })
@@ -369,7 +370,7 @@ test('hermes: lee su respuesta y tokens, y el centro lo lanza con su proveedor y
     argvs.push(argv)
     return { stdout: HERMES_OK, stderr: 'session_id: s1' }
   })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'hermes', categoria: 'texto', tarea: 'di ok' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'hermes', categoria: 'texto', tarea: 'di ok' }))
   expect(d.exito).toBe(true)
   expect(d.trabajador).toBe('hermes:ollama-local/gpt-oss:120b-cloud')
   expect(d.salida).toBe('ok')
@@ -404,7 +405,7 @@ test('si el agente pedido no tiene red, corta enseguida y pasa a otro agente', a
       ? { exitCode: 1, stderr: 'Error: connect ECONNREFUSED 10.0.0.1:443' }
       : { stdout: 'ok' }
   })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'opencode', categoria: 'codigo', tarea: 'x' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'codigo', tarea: 'x' }))
   expect(d.exito).toBe(true)
   expect(d.trabajador.startsWith('opencode')).toBe(false)
   // Un solo intento con opencode: tras el error de red se aparta el agente entero.
@@ -413,7 +414,7 @@ test('si el agente pedido no tiene red, corta enseguida y pasa a otro agente', a
 })
 
 // Las herramientas devuelven su resultado como JSON en texto.
-const out = (r: unknown) => JSON.parse((r as { result: string }).result)
+const out = (r: any) => r?.result ? JSON.parse(r.result) : r
 
 type Respuesta = { exitCode?: number; stdout?: string; stderr?: string }
 // Simula los procesos de los agentes: cada llamada a $.process.spawn responde con lo que dé `fn`.
@@ -462,7 +463,7 @@ test('si el primer modelo falla, delegar cambia solo al siguiente y lo cuenta en
       ? { exitCode: 1, stderr: 'You need to be signed in to Ollama to run Cloud models.' }
       : { stdout: 'ok' }
   })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'ollama', categoria: 'texto', tarea: 'hola' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'ollama', categoria: 'texto', tarea: 'hola' }))
   // Sin sesión, el primer :cloud falla, los demás :cloud se saltan y responde el local.
   expect(d.exito).toBe(true)
   expect(d.trabajador).toBe('ollama:llama3.2:3b')
@@ -473,10 +474,7 @@ test('si el primer modelo falla, delegar cambia solo al siguiente y lo cuenta en
 test('delegar_varios lanza las tareas a la vez y reparte modelos distintos', async ($, on) => {
   base(on)
   procesos(on, () => ({ stdout: '{"type":"text","part":{"text":"hecho"}}' }))
-  const r = out(await $.tool.call({
-    tool: 'mcp__centro-agentes__delegar_varios',
-    input: { tareas: [{ tarea: 'a', categoria: 'codigo', subtarea: 1 }, { tarea: 'b', categoria: 'codigo', subtarea: 2 }] },
-  }))
+  const r = await delegarVariosYEsperar($, [{ tarea: 'a', categoria: 'codigo', subtarea: 1 }, { tarea: 'b', categoria: 'codigo', subtarea: 2 }])
   const quienes = r.resultados.map((x: any) => x.trabajador)
   expect(r.resultados.every((x: any) => x.exito)).toBe(true)
   expect(new Set(quienes).size).toBe(2)
@@ -537,8 +535,8 @@ test('planificar crea subtareas y la auditoría las marca hechas o pendientes y 
   procesos(on)
   await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'demo', subtareas: ['a', 'b'] } })
 
-  const d1 = await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'claude', categoria: 'x', tarea: 'a', subtarea: 1 } })
-  const d2 = await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'claude', categoria: 'x', tarea: 'b', subtarea: 2 } })
+  const d1 = await delegarYEsperar($, { trabajador: 'claude', categoria: 'x', tarea: 'a', subtarea: 1 })
+  const d2 = await delegarYEsperar($, { trabajador: 'claude', categoria: 'x', tarea: 'b', subtarea: 2 })
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: out(d1).id, puntaje: 8 } })
   const r = out(await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: out(d2).id, puntaje: 3 } }))
 
@@ -549,10 +547,7 @@ test('planificar crea subtareas y la auditoría las marca hechas o pendientes y 
 test('delegar corre el trabajador, registrar guarda el puntaje y ranking lo devuelve', async ($, on) => {
   base(on)
   procesos(on, () => ({ stdout: 'hola desde ollama' }))
-  const r = out(await $.tool.call({
-    tool: 'mcp__centro-agentes__delegar',
-    input: { trabajador: 'ollama', categoria: 'Docs', tarea: 'escribe un docstring' },
-  }))
+  const r = out(await delegarYEsperar($, { trabajador: 'ollama', categoria: 'Docs', tarea: 'escribe un docstring' }))
   expect(r.exito).toBe(true)
   expect(r.salida).toContain('hola desde ollama')
 
@@ -569,26 +564,17 @@ test('delegar usa el modelo pedido, rechaza uno no permitido y el ranking separa
     argvs.push(argv)
     return { stdout: 'ok' }
   })
-  const op = await $.tool.call({
-    tool: 'mcp__centro-agentes__delegar',
-    input: { trabajador: 'claude', modelo: 'opus', categoria: 'codigo', tarea: 'x' },
-  })
+  const op = await delegarYEsperar($, { trabajador: 'claude', modelo: 'opus', categoria: 'codigo', tarea: 'x' })
   expect(out(op).trabajador).toBe('claude:opus')
   expect(argvs[0]).toContain('opus')
   // La tarea va por stdin, no en la línea de comandos.
   expect(argvs[0]).not.toContain('x')
 
-  const malo = await $.tool.call({
-    tool: 'mcp__centro-agentes__delegar',
-    input: { trabajador: 'claude', modelo: 'opus --dangerous', categoria: 'codigo', tarea: 'x' },
-  })
+  const malo = await delegarYEsperar($, { trabajador: 'claude', modelo: 'opus --dangerous', categoria: 'codigo', tarea: 'x' })
   expect(out(malo).error).toContain('no permitido')
   expect(argvs.length).toBe(1)
 
-  const so = await $.tool.call({
-    tool: 'mcp__centro-agentes__delegar',
-    input: { trabajador: 'claude', modelo: 'sonnet', categoria: 'codigo', tarea: 'x' },
-  })
+  const so = await delegarYEsperar($, { trabajador: 'claude', modelo: 'sonnet', categoria: 'codigo', tarea: 'x' })
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: out(op).id, puntaje: 9 } })
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: out(so).id, puntaje: 5 } })
   const t = out(await $.tool.call({ tool: 'mcp__centro-agentes__ranking', input: { categoria: 'codigo' } }))[0].trabajadores
@@ -609,7 +595,7 @@ test('aider: lee la respuesta sin ruido y sus tokens, y el centro lo lanza sin g
     argvs.push(argv)
     return { stdout: salida }
   })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'aider', categoria: 'codigo', tarea: 'crea hola.txt' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'aider', categoria: 'codigo', tarea: 'crea hola.txt' }))
   expect(d.exito).toBe(true)
   expect(d.trabajador).toBe('aider:ollama_chat/gpt-oss:120b-cloud')
   expect(argvs[0]).toContain('--no-git')
@@ -624,7 +610,7 @@ test('opencode: la tarea va por stdin completa, con sus saltos de línea, y no e
     yield { stream: 'stdout', text: '{"type":"text","part":{"text":"hecho"}}' }
     return { value: { code: 0, signal: null } }
   })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'opencode', categoria: 'codigo', tarea: 'línea uno\nlínea dos' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'codigo', tarea: 'línea uno\nlínea dos' }))
   expect(d.exito).toBe(true)
   expect(vistos[0].argv[0]).toBe('opencode')
   expect(vistos[0].argv.some(a => a.includes('línea'))).toBe(false)
@@ -672,10 +658,10 @@ test('dependencias: planificar las guarda, delegar no lanza una bloqueada y la a
   procesos(on)
   const p = out(await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'o', subtareas: ['a', 'b', 'c'], dependencias: { 3: [1, 2] } } }))
   expect(p.lanzar_ya).toEqual([1, 2])
-  const bloqueada = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'x', tarea: 't', subtarea: 3 } }))
+  const bloqueada = out(await delegarYEsperar($, { categoria: 'x', tarea: 't', subtarea: 3 }))
   expect(bloqueada.error).toContain('espera a 1, 2')
-  const d1 = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'x', tarea: 't', subtarea: 1 } }))
-  const d2 = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'x', tarea: 't', subtarea: 2 } }))
+  const d1 = out(await delegarYEsperar($, { categoria: 'x', tarea: 't', subtarea: 1 }))
+  const d2 = out(await delegarYEsperar($, { categoria: 'x', tarea: 't', subtarea: 2 }))
   expect(out(await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d1.id, puntaje: 8 } })).progreso.lanzar_ya).toEqual([])
   expect(out(await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d2.id, puntaje: 8 } })).progreso.lanzar_ya).toEqual([3])
   expect(listas([{ n: 1, titulo: 'a', estado: 'solucionado' }, { n: 2, titulo: 'b', estado: 'pendiente', espera: [1] }]).map(s => s.n)).toEqual([2])
@@ -698,7 +684,7 @@ test('aislar crea una copia git para el agente, guarda sus cambios en su rama y 
     const stdout = a.includes('rev-parse') ? 'C:/repo\n' : a.includes('diff --stat') ? ' a.txt | 1 +' : a.includes('verificar-') ? '3 pass' : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false } }
   })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'opencode', categoria: 'codigo', tarea: 't', subtarea: 1, cwd: 'C:/repo', aislar: true, verificar: 'npm test' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'codigo', tarea: 't', subtarea: 1, cwd: 'C:/repo', aislar: true, verificar: 'npm test' }))
   expect(runs.some(r => r.includes('worktree') && r.includes('add'))).toBe(true)
   expect(d.copia.rama).toMatch(/^mst\/s1-/)
   expect(cwds.at(-1)).toBe(d.copia.carpeta)
@@ -724,18 +710,18 @@ test('delegar_varios lanza sola la subtarea que espera a otra del lote cuando es
     return { value: { code: 0, signal: null } }
   })
   await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'o', subtareas: ['a', 'b'], dependencias: { 2: [1] } } })
-  const r = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar_varios', input: { tareas: [
+  const r = (await delegarVariosYEsperar($, [
     { subtarea: 2, categoria: 'x', trabajador: 'claude', tarea: 'segunda' },
     { subtarea: 1, categoria: 'x', trabajador: 'claude', tarea: 'primera' },
-  ] } })).resultados
+  ])).resultados
   expect(r.map((x: any) => x.exito)).toEqual([true, true])
-  expect(r[0].tras).toEqual([1])
+  expect(orden[0]).toBe('primera')
   expect(orden).toEqual(['primera', 'segunda'])
 
-  const mal = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar_varios', input: { tareas: [
+  const mal = (await delegarVariosYEsperar($, [
     { subtarea: 1, categoria: 'y', trabajador: 'claude', tarea: 'rompe' },
     { subtarea: 2, categoria: 'y', trabajador: 'claude', tarea: 'segunda' },
-  ] } })).resultados
+  ])).resultados
   expect(mal[1].error).toContain('No se lanzó')
 })
 
@@ -824,7 +810,7 @@ test('codex: lee su respuesta y tokens, y se lanza con su cuenta o con Ollama, c
     yield { stream: 'stdout', text: salida }
     return { value: { code: 0, signal: null } }
   })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'codex', categoria: 'codigo', tarea: 'crea hola.py' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'codex', categoria: 'codigo', tarea: 'crea hola.py' }))
   expect(d.exito).toBe(true)
   expect(d.trabajador).toBe('codex:chatgpt')
   expect(vistos[0].argv.slice(0, 6)).toEqual(['codex', 'exec', '--json', '--sandbox', 'danger-full-access', '--skip-git-repo-check'])
@@ -836,7 +822,7 @@ test('codex: lee su respuesta y tokens, y se lanza con su cuenta o con Ollama, c
   expect(lineaCodex).toContain('tool_timeout_sec=1200')
   expect(vistos[0].input).toContain('pedir_permiso')
   expect(vistos[0].input).toContain('crea hola.py')
-  const o = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'codex', modelo: 'ollama/gpt-oss:120b-cloud', categoria: 'codigo', tarea: 'x' } }))
+  const o = out(await delegarYEsperar($, { trabajador: 'codex', modelo: 'ollama/gpt-oss:120b-cloud', categoria: 'codigo', tarea: 'x' }))
   expect(o.trabajador).toBe('codex:ollama/gpt-oss:120b-cloud')
   expect(vistos[1].argv.slice(-5)).toEqual(['--oss', '--local-provider', 'ollama', '-m', 'gpt-oss:120b-cloud'])
 })
@@ -886,10 +872,7 @@ test('dos agentes en la misma carpeta: sin archivos se turnan; con archivos dist
   })
   on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
   const lanzar = (archivos?: string[][]) =>
-    $.tool.call({
-      tool: 'mcp__centro-agentes__delegar_varios',
-      input: { tareas: [0, 1].map(i => ({ categoria: 'x', trabajador: 'claude', tarea: `t${i}`, cwd: 'C:/proyecto', ...(archivos ? { archivos: archivos[i] } : {}) })) },
-    })
+    delegarVariosYEsperar($, [0, 1].map(i => ({ categoria: 'x', trabajador: 'claude', tarea: `t${i}`, cwd: 'C:/proyecto', ...(archivos ? { archivos: archivos[i] } : {}) })))
   const turno = out(await lanzar())
   expect(maximo).toBe(1)
   expect(turno.resultados.some((r: any) => r.carpeta_compartida?.esperoSeg !== undefined || r.carpeta_compartida)).toBe(true)
