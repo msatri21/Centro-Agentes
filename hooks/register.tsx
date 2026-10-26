@@ -12,7 +12,7 @@ import type { Cerebro } from './cerebro'
 import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 import { agregarRendimiento, bloqueos, estadoSubtareaNuevo, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
-import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
+import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualizacion, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
@@ -484,11 +484,11 @@ async function rutaWeb($: EngineInterface) {
 }
 let web: { cancel(): void } | undefined
 
-// --- Autoactualización: las sesiones cargan una copia instalada del plugin; si la carpeta del proyecto tiene una
-// versión más nueva, se actualiza la copia para las sesiones que se abran después. ---
+// --- Autoactualización: las sesiones cargan una copia instalada del plugin; si el repositorio publicado (el marketplace
+// centro-mst) tiene una versión más nueva, se actualiza la copia para las sesiones que se abran después. ---
 
-// shortcut: la carpeta del proyecto está fija; si el plugin se mueve o se comparte, pasarla a un ajuste.
-const FUENTE = 'C:\\Users\\User\\Documents\\centro-agentes\\centro-agentes'
+const MARKETPLACE = 'centro-mst'
+const ULTIMA_BUSQUEDA_KEY = 'ultimaBusquedaActualizacion'
 
 export function esMasNueva(a: string, b: string): boolean {
   const pa = a.split('.').map(Number)
@@ -503,12 +503,19 @@ async function autoactualizar($: EngineInterface) {
   // Sin la marca BOM: algunos editores de Windows la ponen y JSON.parse falla con ella.
   const version = (texto: string) => (JSON.parse(texto.replace(/^﻿/, '')) as { version?: string }).version ?? '0'
   const mia = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).then(version).catch(() => undefined)
-  const fuente = await $.fs.read(`${FUENTE}\\.claude-plugin\\plugin.json`).then(version).catch(() => undefined)
-  // Cargado directamente desde la carpeta del proyecto (desarrollo), o sin acceso a ella: nada que hacer.
-  if (!mia || !fuente || !esMasNueva(fuente, mia)) return
+  // Cargado directamente desde la carpeta del proyecto (desarrollo), o buscado hace poco: nada que hacer.
+  const ultima = await $.store.get(ULTIMA_BUSQUEDA_KEY).catch(() => undefined)
+  if (!mia || !debeBuscarActualizacion($.plugin.root, typeof ultima === 'number' ? ultima : undefined, Date.now())) return
+  await $.store.set(ULTIMA_BUSQUEDA_KEY, Date.now())
   const ok = (r: { exitCode: number | null }) => r.exitCode === 0
-  const mk = await $.process.run(['claude', 'plugin', 'marketplace', 'update', 'centro-mst'], { timeoutMs: 120_000 }).then(ok).catch(() => false)
-  const up = mk && (await $.process.run(['claude', 'plugin', 'update', 'centro-agentes@centro-mst'], { timeoutMs: 120_000 }).then(ok).catch(() => false))
+  // Sin internet o sin acceso al repositorio: se sigue con lo que hay, sin avisar.
+  if (!(await $.process.run(['claude', 'plugin', 'marketplace', 'update', MARKETPLACE], { timeoutMs: 120_000 }).then(ok).catch(() => false))) return
+  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  if (!casa) return
+  // La versión publicada es la que trae la copia del marketplace que se acaba de refrescar.
+  const fuente = await $.fs.read(`${casa}/.claude/plugins/marketplaces/${MARKETPLACE}/.claude-plugin/plugin.json`).then(version).catch(() => undefined)
+  if (!fuente || !esMasNueva(fuente, mia)) return
+  const up = await $.process.run(['claude', 'plugin', 'update', `centro-agentes@${MARKETPLACE}`], { timeoutMs: 120_000 }).then(ok).catch(() => false)
   $.ui.toast(up
     ? `${TITULO} actualizado de ${mia} a ${fuente}: reinicia esta sesión para usar lo nuevo.`
     : `${TITULO}: hay una versión nueva (${fuente}) pero no se pudo actualizar; ejecuta claude plugin update centro-agentes@centro-mst.`)
@@ -1357,7 +1364,7 @@ export const register: Register = (on, options) => {
     red = entornoDeRed(opt.proxy?.trim() || proxyEntorno || proxyWindows, opt.certificadoCA?.trim() || undefined)
     salud.clear()
     // Se espera a que termine: en segundo plano, una sesión corta se cerraría antes de acabar de actualizar.
-    // Solo tarda cuando hay versión nueva; si no, son dos lecturas de archivo.
+    // Busca en internet como mucho una vez cada 6 horas; el resto de sesiones solo leen un valor guardado.
     await autoactualizar($).catch(() => undefined)
     await $.command.register({ name: 'mst', description: 'Centro de agentes MST: abre el panel y la web; con una tarea, Claude la reparte entre los agentes y la verifica' })
     await $.command.register({ name: 'centro', description: 'Reparte una tarea entre Ollama/OpenCode/Claude (y sus modelos) y Claude la audita' })
