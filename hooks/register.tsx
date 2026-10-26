@@ -14,6 +14,8 @@ import { agregarRendimiento, bloqueos, estadoSubtareaNuevo, informeMarkdown, lee
 import type { Fila, Seccion, Tono } from './figura'
 import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualizacion, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
+import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
+import type { Capacidad, Catalogo } from './catalogo'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -48,6 +50,7 @@ type Opciones = {
   certificadoCA?: string
   esperaInicialSeg?: number
   ponytailAutomatico?: boolean
+  catalogoEnLinea?: boolean
   abrirAlIniciar?: boolean
   modoJefe?: boolean
 }
@@ -80,6 +83,7 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 ${ANTES(url)}
 
 Protocolo:
+El centro tiene un catálogo de modelos con sus capacidades; consúltalo con modelos. Si la tarea necesita ver imágenes, se detecta sola o pasa necesita: ['imagen']. Si no hay modelo capaz, no se lanza: no pruebes otro a ciegas, díselo al usuario. Si el usuario propone un modelo («prueba con tal modelo»), comprueba con modelos que existe, úsalo con modelo en delegar y puntúalo al auditar. Si recibes un mensaje que empieza por «[Centro de agentes MST] El usuario propone probar el modelo», haz lo mismo en la próxima tarea que encaje.
 El plan se guarda en mst-tareas.json de la carpeta del proyecto (git lo ignora) y se crea con el primer planificar: planifica un BORRADOR al tener objetivo y subtareas de primer vistazo y púlelo al repartir con planificar { agregar } y { ajustar }. Usa manuales para lo que no se delegas (instalar, respaldar). tareas_estado muestra el estado; planificar { tarea: 'T2' } retoma una tarea. Los agentes no editan mst-tareas.json: anotan trabajo nuevo al final bajo «Propuestas:» y tú decides si agregarlo como hermana o planificarlo como tarea nueva. Reabrir una tarea solucionada es decisión tuya: si cumplía lo pedido crea una nueva; si no, usa planificar { reabrir: ["T2.3"] } para devolver a pendiente la subtarea que falló.
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
 2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo delegar_varios: arrancan solas cuando terminan bien aquellas de las que dependen.
@@ -537,6 +541,44 @@ async function carpetaWeb($: EngineInterface) {
   return casa ? `${casa}/.centro-agentes` : `${$.plugin.root}/web`
 }
 
+let catalogoMemoria: Catalogo | undefined
+let catalogoLeidoEn = 0
+let catalogoLeyendo: Promise<Catalogo | undefined> | undefined
+// Solo para pruebas: olvida el catálogo leído para que cada una lea el suyo del disco simulado.
+export function reiniciarCatalogoParaPruebas(): void {
+  catalogoMemoria = undefined
+  catalogoLeidoEn = 0
+  catalogoLeyendo = undefined
+}
+export async function leerCatalogoPlugin($: EngineInterface): Promise<Catalogo | undefined> {
+  // Las tareas en paralelo comparten la misma lectura: si una vuelve antes que otra, cambia el reparto de modelos.
+  if (catalogoLeyendo) return catalogoLeyendo
+  if (Date.now() - catalogoLeidoEn < 60_000) return catalogoMemoria
+  catalogoLeidoEn = Date.now()
+  catalogoLeyendo = (async () => {
+    try {
+      const c = JSON.parse(await $.fs.read(`${await carpetaWeb($)}/catalogo.json`))
+      catalogoMemoria = c?.version === 1 ? c : undefined
+    } catch { catalogoMemoria = undefined }
+    finally { catalogoLeyendo = undefined }
+    return catalogoMemoria
+  })()
+  return catalogoLeyendo
+}
+
+export async function refrescarCatalogo($: EngineInterface, modelos: Modelos, enLinea: boolean): Promise<void> {
+  try {
+    let raiz = ''
+    try { raiz = $.plugin.root } catch {}
+    const flujo = $.process.spawn({ argv: ['node', `${raiz}/mcp/catalogo.mjs`, 'actualizar', ...(!enLinea ? ['--sin-linea'] : [])], input: JSON.stringify(modelos) })
+    for await (const _parte of flujo) {}
+    await flujo.result
+  } catch {}
+  catalogoLeidoEn = 0
+  catalogoLeyendo = undefined
+  await leerCatalogoPlugin($).catch(() => undefined)
+}
+
 // --- El cerebro global: lo aprendido en todos los chats (~/.centro-agentes/cerebro.json) ---
 async function leerCerebro($: EngineInterface): Promise<Cerebro> {
   try {
@@ -695,7 +737,8 @@ async function lanzarServidor($: EngineInterface) {
 }
 
 // Lee las órdenes nuevas de la web. Cada sesión ejecuta solo las de sus propios trabajos y subtareas.
-async function atenderAcciones($: EngineInterface) {
+// Exportada para las pruebas.
+export async function atenderAcciones($: EngineInterface) {
   const texto = await $.fs.read(`${await carpetaChat($)}/acciones.jsonl`).catch(() => '')
   if (leidoHasta < 0) {
     // Al arrancar se ignoran las órdenes viejas.
@@ -716,6 +759,12 @@ async function atenderAcciones($: EngineInterface) {
     if (a.tipo === 'encargar' && a.agente && a.texto && TRABAJADORES.includes(a.agente) && contexto) void encargarDesdeWeb($, a.agente, a.texto, a.n, a.modelo)
     // Un mensaje para el jefe: entra en esta sesión de Claude como un mensaje más (espera a que la sesión esté libre).
     if (a.tipo === 'jefe' && a.texto) void $.prompt.submit({ text: `[Mensaje del usuario desde el tablero] ${a.texto}` }).catch(() => undefined)
+    // Una propuesta de modelo desde la web: se la pasa al jefe para que la pruebe cuando encaje.
+    // El patrón se comprueba siempre; si ya hay contexto, además el modelo debe estar en la lista del agente.
+    if (a.tipo === 'proponer' && a.agente && a.modelo && TRABAJADORES.includes(a.agente) && /^[\w.:\/@+-]{1,120}$/.test(a.modelo) && (!contexto || (contexto.modelos[a.agente] ?? []).includes(a.modelo))) {
+      $.ui.toast(`Propuesta enviada al jefe: ${a.agente}:${a.modelo}`)
+      void $.prompt.submit({ text: `[Centro de agentes MST] El usuario propone probar el modelo ${a.modelo} (agente ${a.agente}) en la próxima tarea que le encaje. Compruébalo con la herramienta modelos, úsalo con delegar (campo modelo) cuando corresponda y puntúalo al auditar para que el cerebro aprenda.` }).catch(() => undefined)
+    }
   }
 }
 
@@ -785,6 +834,8 @@ async function escribirWeb($: EngineInterface) {
   const alto = (svg: string) => Number(svg.match(/viewBox="0 0 [\d.]+ ([\d.]+)"/)?.[1] ?? 380)
   const ahorro = lista.filter(t => !t.trabajador.startsWith('claude:')).reduce((s, t) => s + costoComoClaude(t.tokensIn, t.tokensOut), 0)
   const tablaPuntajes = ((await $.store.get(STORE_KEY)) ?? {}) as Puntajes
+  // La caché de leerCatalogoPlugin (60 s) evita leer el archivo en cada refresco de 2 s.
+  const catalogo = await leerCatalogoPlugin($)
   await $.fs.write(await rutaWeb($), paginaCentro({
     clave: controles.clave,
     chat,
@@ -799,6 +850,12 @@ async function escribirWeb($: EngineInterface) {
     cancelables: controles.cancelables,
     relanzables: controles.relanzables,
     pendientes: await pendientesDe($, lista),
+    // Sin catálogo la página muestra "Aún no hay catálogo" en lugar de la sección de modelos.
+    catalogo: {
+      ...(catalogo?.generado ? { generado: catalogo.generado } : {}),
+      filas: filasModelos(catalogo, tablaPuntajes),
+      fallos: (catalogo?.fuentes ?? []).filter(f => !f.ok).map(f => `${f.nombre}: ${f.nota ?? 'sin respuesta'}`),
+    },
     version: await versionDelPlugin($),
     extra: a.figuraSvg + a.tableroSvg,
     columnasExtra: `${(640 / alto(a.figuraSvg)).toFixed(3)}fr ${(640 / alto(a.tableroSvg)).toFixed(3)}fr`,
@@ -1083,7 +1140,7 @@ async function avisoPonytail($: EngineInterface): Promise<string> {
 }
 
 type Encargo = {
-  trabajador?: Trabajador | 'auto'; modelo?: string; categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]
+  trabajador?: Trabajador | 'auto'; modelo?: string; categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]; necesita?: Capacidad[]
   /** No añadir solas las skills de ponytail a este encargo (el centro las pone según la clase de tarea) */
   sin_skills_automaticas?: boolean
   /** Trabajar en una copia aislada (git worktree) del repo de cwd, en su propia rama */
@@ -1145,6 +1202,7 @@ const ocupados = new Map<string, number>()
 // Elige el mejor modelo para el encargo, lo ejecuta y, si falla, cambia solo al siguiente.
 async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, sinBloqueo = false) {
   const categoria = String(input.categoria ?? '').toLowerCase().trim() || 'general'
+  const necesidades = input.necesita !== undefined ? input.necesita : detectarNecesidades(input.tarea, categoria)
   if (input.subtarea !== undefined && !sinBloqueo) {
     const faltan = bloqueos((await read($, plan))?.subtareas ?? [], input.subtarea)
     if (faltan.length) return { subtarea: input.subtarea, error: `La subtarea ${input.subtarea} espera a ${faltan.join(', ')}: lánzala cuando estén hechas.` }
@@ -1166,6 +1224,18 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   const automaticas: string[] = []
   for (const n of skillsAutomaticas(clase)) if (!conSkills.includes(n) && (await rutaSkill($, n))) automaticas.push(n)
   let todos = todosLosCandidatos(modelos).filter(c => !conSkills.length || (c.trabajador !== 'ollama' && c.trabajador !== 'aider'))
+  const catalogo = await leerCatalogoPlugin($)
+  const filtrado = filtrarPorCapacidad(todos, catalogo, necesidades)
+  const pedidoModelo = input.modelo?.trim()
+  const forzado = pedidoModelo ? todos.find(c => c.modelo === pedidoModelo && (!input.trabajador || input.trabajador === 'auto' || c.trabajador === input.trabajador)) : undefined
+  if (necesidades.length && forzado) todos = [forzado, ...todos.filter(c => c !== forzado)]
+  else if (necesidades.length) {
+    todos = filtrado.aptos
+    if (!todos.length) {
+      const nombres = necesidades.join(', ')
+      return { subtarea: input.subtarea, error: `Ningún modelo conocido tiene la capacidad ${nombres}. Se descartaron ${filtrado.excluidos.filter(x => x.motivo === 'no_la_tiene').length} porque no la tienen y ${filtrado.excluidos.filter(x => x.motivo === 'desconocido').length} por capacidad desconocida. Catálogo: ${catalogo?.generado ?? 'aún no hay catálogo'}. Si crees que algún modelo puede hacerlo, fuérzalo con el campo modelo.` }
+    }
+  }
   // Con copia aislada o verificación se esperan cambios en archivos, y Ollama solo devuelve texto.
   if (input.aislar || input.verificar?.trim()) todos = todos.filter(c => c.trabajador !== 'ollama')
   if (conSkills.length) input = { ...input, tarea: input.tarea + (await instruccionSkills($, conSkills)) }
@@ -1190,7 +1260,7 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   // Si el cerebro recuerda que alguien lo hizo muy bien en algo parecido, empieza por él.
   const recuerdo = recomendar(await leerCerebro($), categoria, input.tarea)
   const preparar = (l: Candidato[]) => {
-    const o = preferir(ordenar(tabla, categoria, l, caidosAhora()).filter(alcanzable), recuerdo)
+    const o = preferir(ordenar(tabla, categoria, l, caidosAhora(), catalogo).filter(alcanzable), recuerdo)
     return [...o.filter(libre), ...o.filter(c => !libre(c))]
   }
   // Primero el agente pedido; si no puede, se pasa a otro que sí funcione.
@@ -1268,6 +1338,15 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   const aislado = copia && 'carpeta' in copia ? await cerrarCopia($, copia, `mst: subtarea ${input.subtarea ?? '-'} (${quienFue})`) : copia
   const verificacion = r.ok && input.verificar?.trim() ? await verificarEn($, input.cwd, input.verificar.trim()) : undefined
   const revisor = claseTarea === 'escritura' && r.ok ? await rutaSkill($, 'ponytail-review') : undefined
+  // El modelo pedido a propósito se usa aunque el catálogo no le confirme la capacidad; se avisa para que el jefe lo sepa.
+  const modeloDe = forzado ?? todos.find(c => c.modelo === pedidoModelo) ?? elegido
+  const entradaPedida = pedidoModelo && necesidades.length ? entradaDe(catalogo, modeloDe.trabajador as any, modeloDe.modelo) : undefined
+  const avisoCapacidad = pedidoModelo
+    ? necesidades.map(cap => {
+        const valor = entradaPedida?.capacidades[cap]
+        return valor === true ? '' : `El catálogo no confirma que ${pedidoModelo} tenga ${cap} (${valor === false ? 'no la tiene' : 'se desconoce'}); se usó porque lo pediste.`
+      }).filter(Boolean).join(' ')
+    : ''
 
   return {
     id: r.id,
@@ -1276,6 +1355,9 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     exito: r.ok,
     segundos: Math.round(r.ms / 1000),
     tokens: { entrada: r.s.tokensIn, salida: r.s.tokensOut },
+    ...(necesidades.length ? { necesita: necesidades } : {}),
+    ...(necesidades.length && input.necesita === undefined ? { detectada: true } : {}),
+    ...(avisoCapacidad ? { aviso_capacidad: avisoCapacidad } : {}),
     ...(cambios.length ? { cambios } : {}),
     ...(avisoArchivo ? { aviso_archivo: avisoArchivo } : {}),
     ...(aislado ? { copia: aislado } : {}),
@@ -1350,6 +1432,7 @@ export const register: Register = (on, options) => {
     carpetaProyecto = e.cwd.split(/[\\/]/).filter(Boolean).pop() ?? ''
     rutaProyecto = e.cwd
     await restaurarEstado($).catch(() => undefined)
+    void refrescarCatalogo($, modelos, opt.catalogoEnLinea !== false).catch(() => undefined)
     $.clock.every(2000, () => guardarEstado($))
     // Proxy: el de los ajustes, si no el que ya trae el entorno, si no el de Windows (el que usa el navegador).
     const proxyEntorno = (await $.env.get('HTTPS_PROXY').catch(() => undefined)) ?? (await $.env.get('https_proxy').catch(() => undefined))
@@ -1372,6 +1455,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'centro-panel', description: 'Abre el panel del centro de agentes' })
     await $.command.register({ name: 'centro-web', description: 'Abre el centro de agentes en el navegador (se actualiza solo)' })
     await $.command.register({ name: 'mst-informe', description: 'Escribe el informe final de este chat (Markdown) y lo abre' })
+    await $.command.register({ name: 'mst-modelos', description: 'Lista los modelos que puede usar cada agente y qué sabe hacer cada uno' })
     await $.command.register({ name: 'centro-reset', description: 'Borra los puntajes guardados' })
     // Al empezar cualquier sesión: el panel a la vista y la página web al día; el navegador se abre solo una vez al día.
     if (opt.abrirAlIniciar !== false) {
@@ -1420,6 +1504,7 @@ export const register: Register = (on, options) => {
           modelo: { type: 'string', description: `Modelo del trabajador. Permitidos — ollama: ${ver(modelos.ollama)}; opencode: ${ver(modelos.opencode)}; claude: ${ver(modelos.claude)}. Vacío = el centro elige el mejor de la lista y cambia solo si falla.` },
           categoria: { type: 'string', description: 'Categoría corta de la tarea' },
           tarea: { type: 'string', description: 'Instrucción completa y autocontenida para el trabajador' },
+          necesita: { type: 'array', items: { type: 'string', enum: ['imagen', 'herramientas', 'razonamiento'] }, description: "Capacidades que debe tener el modelo (p. ej. ['imagen'] para transcribir imágenes). Si no lo pones, el centro detecta solo cuando la tarea habla de imágenes; pasa [] para no detectar nada" },
           subtarea: { type: 'number', description: 'Número de la subtarea del plan (de planificar) que cubre este trabajo' },
           cwd: { type: 'string', description: 'Directorio de trabajo (opcional)' },
           aislar: { type: 'boolean', description: 'Si cwd es un repo git: el agente trabaja en su propia copia (git worktree, rama mst/...) y no pisa a los demás. Junta luego con el comando de "copia.juntar"' },
@@ -1445,6 +1530,7 @@ export const register: Register = (on, options) => {
               type: 'object',
               properties: {
                 tarea: { type: 'string', description: 'Instrucción completa y autocontenida' },
+                necesita: { type: 'array', items: { type: 'string', enum: ['imagen', 'herramientas', 'razonamiento'] }, description: "Capacidades que debe tener el modelo (p. ej. ['imagen'] para transcribir imágenes). Si no lo pones, el centro detecta solo cuando la tarea habla de imágenes; pasa [] para no detectar nada" },
                 categoria: { type: 'string' },
                 subtarea: { type: 'number' },
                 trabajador: { type: 'string', enum: [...TRABAJADORES, 'auto'] },
@@ -1550,12 +1636,15 @@ ${protocolo(modelos)}`
     $.clock.after(1500, () => void abrirNavegador($))
     const url = await urlWeb($)
     const aviso = await avisoPonytail($)
-    if (!e.args.trim()) return { text: `${TITULO}: ${url}\nEscribe /mst <tarea> para ponerlo a trabajar.${aviso}` }
+    // La línea de modelos solo aparece con catálogo: sin él, los textos de /mst siguen igual.
+    const catalogo = await leerCatalogoPlugin($)
+    const lineaModelos = catalogo ? `\nModelos: ${catalogo.modelos.length} conocidos, ${catalogo.modelos.filter(e => e.capacidades.imagen === true).length} con imagen. Detalle: /mst-modelos o en la web.` : ''
+    if (!e.args.trim()) return { text: `${TITULO}: ${url}\nEscribe /mst <tarea> para ponerlo a trabajar.${aviso}${lineaModelos}` }
     await update($, plan, () => null)
     // Sin await: el envío espera a que la sesión quede libre, y eso solo pasa cuando este comando ha respondido.
     void $.prompt.submit({ text: `${protocolo(modelos, url)}\n\nTAREA:\n${e.args}` }).catch(() => undefined)
     // Lo primero que ve el usuario es el enlace; el jefe lo repite y le hace sus preguntas.
-    return { text: `${TITULO}: ${url}\nTarea enviada al jefe: antes de planificar te hará unas preguntas.${aviso}` }
+    return { text: `${TITULO}: ${url}\nTarea enviada al jefe: antes de planificar te hará unas preguntas.${aviso}${lineaModelos}` }
   })
 
   on('command.run', { command: 'centro' }, async ($, e) => {
@@ -1600,6 +1689,11 @@ ${protocolo(modelos)}`
     // explorer abre el .md con el programa que tengas para Markdown; necesita la ruta con barras de Windows.
     await $.process.run(['explorer', ruta.replace(/\//g, '\\')]).catch(() => undefined)
     return { text: `Informe guardado en ${ruta}` }
+  })
+
+  on('command.run', { command: 'mst-modelos' }, async $ => {
+    const catalogo = await leerCatalogoPlugin($)
+    return { text: catalogo ? `${textoCatalogo(catalogo)}\n\nPara proponer uno al jefe: dile "prueba con <modelo>" en el chat o pulsa Proponer en la web.` : 'Aún no hay catálogo: se genera al iniciar la sesión (puede tardar unos segundos).' }
   })
 
   on('command.run', { command: 'centro-reset' }, async $ => {
@@ -1762,6 +1856,7 @@ ${protocolo(modelos)}`
     await avisarSiTermino($)
     if (p < 6) $.ui.toast(`${t.trabajador} sacó ${p}/10 en ${t.categoria}${nota ? `: ${corto(nota, 40)}` : ''}`)
     const subs = (await read($, plan))?.subtareas ?? []
+    const catalogo = await leerCatalogoPlugin($)
     const progreso = {
       hechas: subs.filter(s => s.estado === 'solucionado').length, total: subs.length, faltan: subs.filter(s => s.estado !== 'solucionado').map(s => s.n),
       // Las pendientes cuyas dependencias ya están hechas: lánzalas ahora.
@@ -1769,7 +1864,7 @@ ${protocolo(modelos)}`
     }
     // Con nota baja, propone el siguiente modelo mejor clasificado para esa categoría (sin repetir el que falló).
     const siguiente = p < 6
-      ? ordenar(tabla, t.categoria, todosLosCandidatos(modelos), new Set([...caidosAhora(), t.trabajador]))[0]
+      ? ordenar(tabla, t.categoria, todosLosCandidatos(modelos), new Set([...caidosAhora(), t.trabajador]), catalogo)[0]
       : undefined
     return res({
       guardado: true, categoria: t.categoria, trabajador: t.trabajador, puntaje: p, progreso,
@@ -1800,6 +1895,16 @@ ${protocolo(modelos)}`
     const { consulta, area } = args(e) as { consulta?: string; area?: string }
     return res({ web: await urlWeb($), ...consultar(await leerCerebro($), String(consulta ?? ''), area) })
   }).catch(async (_$, _e, next) => res({ error: `cerebro falló: ${String(next.error)}` }))
+
+  on('tool.call', { tool: 'mcp__centro-agentes__modelos' }, async ($, e) => {
+    const a = args(e) as { agente?: any; necesita?: Capacidad[] }
+    const catalogo = await leerCatalogoPlugin($)
+    if (!catalogo) return res({ existe: false, aviso: 'Aún no hay catálogo: se genera al iniciar la sesión (puede tardar unos segundos).' })
+    const tabla = ((await $.store.get(STORE_KEY)) ?? {}) as Puntajes
+    // Filtrar las filas equivale a consultarCatalogo: 'si' es capacidades[cap] === true y el agente no cambia.
+    const modelos = filasModelos(catalogo, tabla).filter(f => (!a.agente || f.agente === a.agente) && (a.necesita ?? []).every(cap => f[cap] === 'si'))
+    return res({ generado: catalogo.generado, fuentes: catalogo.fuentes, total: modelos.length, modelos })
+  }).catch(async (_$, _e, next) => res({ error: `modelos falló: ${String(next.error)}` }))
 
   on('tool.call', { tool: 'mcp__centro-agentes__ranking' }, async ($, e) => {
     const { categoria } = args(e) as { categoria?: string }

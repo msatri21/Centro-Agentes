@@ -5,6 +5,20 @@ import type { Plan, Trabajo } from '../types'
 import { esc, grafica, VINO } from './figura.ts'
 import { graficaAhorro, graficaNotas, graficaTiempo, graficaTokens } from './graficas.ts'
 
+/** Una fila del catálogo de modelos, tal y como la lee la página (sin depender de hooks/catalogo.ts) */
+export type FilaPagina = {
+  agente: string
+  modelo: string
+  imagen: 'si' | 'no' | 'desconocido'
+  herramientas: 'si' | 'no' | 'desconocido'
+  razonamiento: 'si' | 'no' | 'desconocido'
+  contexto?: number
+  origen?: string
+  verificado?: string
+  nota_media?: number
+  veces?: number
+}
+
 export type DatosPagina = {
   clave: string
   chat: string
@@ -39,6 +53,8 @@ export type DatosPagina = {
     opciones?: string[]
     en?: number
   }[]
+  /** Catálogo de modelos; si falta, la página no añade nada (la salida queda igual que antes) */
+  catalogo?: { generado?: string; filas: FilaPagina[]; fallos: string[] }
 }
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
@@ -258,6 +274,24 @@ export function paginaCentro(d: DatosPagina): string {
     .map(t => `<tr class="${t.estado === 'error' ? 'mal' : ''}"><td>${t.estado === 'error' ? '✗' : '✓'}</td><td>${esc(t.trabajador)}${t.skills?.length ? ` <small>✦ ${esc(t.skills.join(', '))}</small>` : ''}</td><td>${t.subtarea ?? ''}</td><td>${seg(t.ms ?? 0)}</td><td>${t.tokensIn !== undefined ? `${miles(t.tokensIn)}→${miles(t.tokensOut ?? 0)}` : ''}</td><td>${t.puntaje !== undefined ? `${t.puntaje}/10` : ''}</td></tr>`)
     .join('')
 
+  // Catálogo de modelos: si no viene, no se añade nada y la página sale igual que antes.
+  const marca = (v: 'si' | 'no' | 'desconocido', que: string) => {
+    const titulo = v === 'si' ? `Sí ${que}` : v === 'no' ? `No ${que}` : `Se desconoce si ${que}`
+    return `<span title="${esc(titulo)}">${v === 'si' ? '✓' : v === 'no' ? '✗' : '?'}</span>`
+  }
+  // 262144 => 262k, 1500000 => 1.5M: cabe en la columna sin perder la escala.
+  const contexto = (n?: number) => n === undefined ? '—' : n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
+  const nota = (f: FilaPagina) => f.nota_media === undefined ? '—' : `${f.nota_media.toFixed(1)}${f.veces === undefined ? '' : ` (${f.veces})`}`
+  const cat = d.catalogo
+  // El Map agrupa aunque las filas lleguen mezcladas.
+  const grupos = new Map<string, FilaPagina[]>()
+  for (const f of cat?.filas ?? []) grupos.set(f.agente, [...(grupos.get(f.agente) ?? []), f])
+  const tablaCatalogo = [...grupos].map(([agente, lista]) => `<tr><td colspan="7"><strong>${esc(agente)}</strong></td></tr>${lista.map(f => `<tr><td>${esc(f.modelo)}${f.origen ? ` <small>${esc(f.origen)}</small>` : ''}${f.verificado ? ` <small>${esc(f.verificado)}</small>` : ''}</td><td>${marca(f.imagen, 'admite imágenes')}</td><td>${marca(f.herramientas, 'usa herramientas')}</td><td>${marca(f.razonamiento, 'razona')}</td><td>${contexto(f.contexto)}</td><td>${nota(f)}</td><td>${boton('Proponer', { tipo: 'proponer', agente: f.agente, modelo: f.modelo })}</td></tr>`).join('')}`).join('')
+  const catalogo = cat ? `
+<h2 class="seccion">Modelos disponibles</h2>
+<p>Qué sabe hacer cada modelo según el catálogo. ✓ sí · ✗ no · ? se desconoce. Si crees que alguno rendiría mejor, pulsa Proponer y el jefe lo probará en la próxima tarea que le encaje.</p>
+${cat.generado ? `<p class="vacio">Generado ${esc(cat.generado)}</p>` : ''}${cat.fallos.length ? `<p class="vacio">Fallos: ${esc(cat.fallos.join(' · '))}</p>` : ''}
+${tablaCatalogo ? `<table>${tablaCatalogo}</table>` : '<p class="vacio">Aún no hay catálogo: se genera al iniciar la sesión.</p>'}` : ''
   // Solo lo necesario para el grafo; la salida se recorta para que la página no pese.
   const datos = {
     jefe: d.jefe,
@@ -295,7 +329,7 @@ ${listo ? `<div class="listo">✓ Todo listo · ${esc(listo)}</div>` : ''}<div c
 ${d.extra ? `<h2 class="seccion">Detalles del chat</h2><div class="detalles" style="--cols:${d.columnasExtra ?? '1fr 1fr'}">${d.extra}</div>` : ''}
 <h2 class="seccion">Gráficas</h2><div class="rejilla">${graficas}</div>
 <h2 class="seccion">Subtareas</h2>${filasPlan ? `<table>${filasPlan}</table>` : '<p class="vacio">El jefe aún no ha hecho el plan.</p>'}
-<h2 class="seccion">Historial</h2>${historial ? `<table>${historial}</table>` : '<p class="vacio">Sin trabajos terminados.</p>'}
+<h2 class="seccion">Historial</h2>${historial ? `<table>${historial}</table>` : '<p class="vacio">Sin trabajos terminados.</p>'}${catalogo}
 </div>
 <footer>Centro de agentes MST ${esc(d.version)} · se actualiza cada 2 s sin recargar</footer>
 <script type="module">

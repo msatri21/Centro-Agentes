@@ -1,6 +1,9 @@
 // Piezas puras del centro: leer la salida de cada agente, ordenar modelos por su historial y reconocer errores.
 // Las usan el plugin de Claude Code (register.tsx) y el servidor MCP para usar OpenCode como jefe (mcp/centro-mcp.mjs).
 import type { Trabajador } from '../types'
+import type { Catalogo } from './catalogo.ts'
+// Con la extensión: este archivo también lo carga Node directamente (servidor MCP y terminales del tablero), que no resuelve rutas sin ella.
+import { entradaDe, puntosCatalogo } from './catalogo.ts'
 
 export type Celda = { n: number; suma: number; msTotal: number }
 export type Puntajes = Record<string, Record<string, Celda>>
@@ -182,16 +185,19 @@ export type Candidato = { trabajador: Trabajador; modelo: string }
 const PREVIO = 6.5
 // Claude headless gasta del plan de Claude: solo gana si rinde claramente mejor que los gratis.
 const RECARGO_CLAUDE = 1.5
-export function ordenar(tabla: Puntajes, categoria: string, candidatos: Candidato[], excluidos: Set<string>): Candidato[] {
+export function ordenar(tabla: Puntajes, categoria: string, candidatos: Candidato[], excluidos: Set<string>, catalogo?: Catalogo): Candidato[] {
   const fila = tabla[categoria] ?? {}
   const nota = (c: Candidato) => {
     const celda = fila[clave(c.trabajador, c.modelo)]
     return (celda && celda.n > 0 ? celda.suma / celda.n : PREVIO) - (c.trabajador === 'claude' ? RECARGO_CLAUDE : 0)
   }
+  const usos = (c: Candidato) => Object.values(tabla).reduce((s, fila) => s + (fila[clave(c.trabajador, c.modelo)]?.n ?? 0), 0)
+  // Sin catálogo no hay capacidades que desempaten: el orden debe ser el de siempre (nota y, a igual nota, la lista).
+  const puntos = (c: Candidato) => (catalogo ? puntosCatalogo(entradaDe(catalogo, c.trabajador as any, c.modelo)) : 0)
   return candidatos
-    .map((c, i) => ({ c, i, n: nota(c) }))
+    .map((c, i) => ({ c, i, n: nota(c), puntos: puntos(c), usos: usos(c) }))
     .filter(x => !excluidos.has(clave(x.c.trabajador, x.c.modelo)))
-    .sort((a, b) => b.n - a.n || a.i - b.i)
+    .sort((a, b) => b.n - a.n || b.puntos - a.puntos || a.usos - b.usos || a.i - b.i)
     .map(x => x.c)
 }
 

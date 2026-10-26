@@ -211,6 +211,6 @@ assert.equal(corrupto.corrupto, true)
 
 // La lista exacta de herramientas del jefe incluye tareas_estado (los trabajadores solo ven preguntar y pedir_permiso).
 const nombres = (await jefe.pedir('tools/list')).result.tools.map(t => t.name)
-assert.deepEqual(nombres, ['planificar', 'tareas_estado', 'delegar', 'delegar_varios', 'registrar_auditoria', 'cerrar_subtarea', 'juntar_copias', 'cerebro', 'ranking'])
+assert.deepEqual(nombres, ['planificar', 'tareas_estado', 'delegar', 'delegar_varios', 'registrar_auditoria', 'cerrar_subtarea', 'juntar_copias', 'cerebro', 'ranking', 'modelos'])
 jefe.cerrar()
 console.log('ok: integración de tareas del servidor MCP')

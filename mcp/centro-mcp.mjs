@@ -12,7 +12,9 @@ import { paginaCentro } from '../hooks/vista.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
 import { consultar as consultarCerebro, preferir, recomendar, registrar } from '../hooks/cerebro.ts'
 import { CATEGORIAS, ESPERA_RESPUESTA_MS, PROTOCOLO_AGENTE, abiertas, permitidaSiempre, respuestaDe, resultadoParaAgente } from '../hooks/consultas.ts'
+import { detectarNecesidades, entradaDe, filasModelos, filtrarPorCapacidad } from '../hooks/catalogo.ts'
 import { transaccion, leer as leerTareas, resumenDe } from './tareas.mjs'
+import { actualizar as actualizarCatalogo, leerCatalogo } from './catalogo.mjs'
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8').replace(/^﻿/, '')).version
 const CASA = path.join(os.homedir(), '.centro-agentes')
@@ -48,6 +50,35 @@ const TIMEOUT_MS = Math.min(10, Math.max(1, Number(CONFIG.timeoutMin ?? 8))) * 6
 const SILENCIO_MS = 120_000
 const MAX_CAMBIOS = 2
 const CAIDO_MS = 10 * 60_000
+
+// ---------- Catálogo de modelos ----------
+// Se refresca en segundo plano al arrancar y se lee del disco como mucho una vez por minuto;
+// si falla (sin red, Ollama apagado) el servidor sigue con lo que ya hubiera guardado.
+let catalogoMemoria
+let catalogoLeidoEn = 0
+let catalogoLeyendo
+function catalogoDelDisco() {
+  try { catalogoMemoria = leerCatalogo() } catch { catalogoMemoria = undefined }
+  return catalogoMemoria
+}
+async function leerCatalogoJefe() {
+  // Las tareas en paralelo comparten la misma lectura: si una vuelve antes que otra, cambia el reparto de modelos.
+  if (catalogoLeyendo) return catalogoLeyendo
+  if (Date.now() - catalogoLeidoEn < 60_000) return catalogoMemoria
+  catalogoLeidoEn = Date.now()
+  catalogoLeyendo = Promise.resolve().then(catalogoDelDisco).finally(() => { catalogoLeyendo = undefined })
+  return catalogoLeyendo
+}
+// La página se escribe sin await: usa lo último leído o lo lee ahora si la caché ya venció.
+function catalogoParaPagina() {
+  if (Date.now() - catalogoLeidoEn < 60_000) return catalogoMemoria
+  catalogoLeidoEn = Date.now()
+  return catalogoDelDisco()
+}
+// CENTRO_SIN_CATALOGO=1: pruebas sin red ni Ollama, con el catálogo que ellas mismas dejen en disco.
+// Los agentes que lanza el centro también cargan este servidor: ellos no lo refrescan (lo haría cada trabajo).
+if (process.env.CENTRO_SIN_CATALOGO !== '1' && !ES_TRABAJADOR)
+  void actualizarCatalogo({ modelos: MODELOS, enLinea: CONFIG.catalogoEnLinea !== false }).then(() => { catalogoLeidoEn = 0 }).catch(() => undefined)
 
 // ---------- Estado de este chat ----------
 const ID = 'opencode-' + new Date().toISOString().replace(/\D/g, '').slice(0, 14)
@@ -348,11 +379,29 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
   }
   const pedido = input.trabajador && input.trabajador !== 'auto' ? input.trabajador : undefined
   if (pedido && !TRABAJADORES.includes(pedido)) return { error: `Trabajador desconocido: ${pedido}` }
+  const necesidades = input.necesita !== undefined ? input.necesita : detectarNecesidades(input.tarea, categoria)
+  const catalogo = await leerCatalogoJefe()
   let todos = candidatos()
   // Copia aislada o verificación = se esperan cambios en archivos, y Ollama solo devuelve texto.
   if (input.aislar || input.verificar?.trim()) todos = todos.filter(c => c.trabajador !== 'ollama')
-  const elegibles = todos.filter(c => !pedido || c.trabajador === pedido)
+  const filtrado = filtrarPorCapacidad(todos, catalogo, necesidades)
   const modeloPedido = input.modelo?.trim()
+  const forzado = modeloPedido ? todos.find(c => c.modelo === modeloPedido && (!pedido || c.trabajador === pedido)) : undefined
+  // Un modelo pedido a propósito se usa aunque el catálogo no le confirme la capacidad; sin modelo, solo pasan los aptos.
+  if (necesidades.length && forzado) todos = [forzado, ...todos.filter(c => c !== forzado)]
+  else if (necesidades.length) {
+    todos = filtrado.aptos
+    if (!todos.length) {
+      const nombres = necesidades.join(', ')
+      return {
+        subtarea: input.subtarea,
+        error: `Ningún modelo conocido tiene la capacidad ${nombres}. Se descartaron ${filtrado.excluidos.filter(x => x.motivo === 'no_la_tiene').length} porque no la tienen y ${filtrado.excluidos.filter(x => x.motivo === 'desconocido').length} por capacidad desconocida. Catálogo: ${catalogo?.generado ?? 'aún no hay catálogo'}. Si crees que algún modelo puede hacerlo, fuérzalo con el campo modelo.`,
+        necesita: necesidades,
+        detectada: input.necesita === undefined,
+      }
+    }
+  }
+  const elegibles = todos.filter(c => !pedido || c.trabajador === pedido)
   if (modeloPedido && !elegibles.some(c => c.modelo === modeloPedido))
     return { error: `Modelo no permitido: ${modeloPedido}. Usa uno de: ${elegibles.map(c => clave(c.trabajador, c.modelo)).join(', ')}` }
   // La marca en el archivo va después de validar el encargo: si no se lanza nada, la subtarea no queda en proceso.
@@ -371,7 +420,7 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
   // Si el cerebro recuerda que alguien lo hizo muy bien en algo parecido, empieza por él.
   const recuerdo = recomendar(leerCerebro(), categoria, input.tarea)
   const preparar = l => {
-    const o = preferir(ordenar(tabla, categoria, l, caidosAhora()), recuerdo)
+    const o = preferir(ordenar(tabla, categoria, l, caidosAhora(), catalogo), recuerdo)
     return [...o.filter(libre), ...o.filter(c => !libre(c))]
   }
   let cola = [...preparar(elegibles), ...(pedido ? preparar(todos.filter(c => c.trabajador !== pedido)) : [])]
@@ -425,6 +474,15 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
   const quien = clave(elegido.trabajador, elegido.modelo)
   const aislado = copia?.carpeta ? await cerrarCopia(copia, `mst: subtarea ${input.subtarea ?? '-'} (${quien})`) : copia
   const verificacion = r.ok && input.verificar?.trim() ? await verificarEn(cwd, input.verificar.trim()) : undefined
+  // El modelo pedido a propósito se usa aunque el catálogo no le confirme la capacidad; se avisa para que el jefe lo sepa.
+  const modeloDe = forzado ?? todos.find(c => c.modelo === modeloPedido) ?? elegido
+  const entradaPedida = modeloPedido && necesidades.length ? entradaDe(catalogo, modeloDe.trabajador, modeloDe.modelo) : undefined
+  const avisoCapacidad = modeloPedido
+    ? necesidades.map(cap => {
+        const valor = entradaPedida?.capacidades[cap]
+        return valor === true ? '' : `El catálogo no confirma que ${modeloPedido} tenga ${cap} (${valor === false ? 'no la tiene' : 'se desconoce'}); se usó porque lo pediste.`
+      }).filter(Boolean).join(' ')
+    : ''
   guardar()
   return {
     id: r.id,
@@ -433,6 +491,9 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     exito: r.ok,
     segundos: Math.round(r.ms / 1000),
     tokens: { entrada: r.s.tokensIn, salida: r.s.tokensOut },
+    ...(necesidades.length ? { necesita: necesidades } : {}),
+    ...(necesidades.length && input.necesita === undefined ? { detectada: true } : {}),
+    ...(avisoCapacidad ? { aviso_capacidad: avisoCapacidad } : {}),
     ...(cambios.length ? { cambios } : {}),
     ...(aislado ? { copia: aislado } : {}),
     ...(verificacion ? { verificacion } : {}),
@@ -556,9 +617,15 @@ function pagina() {
     const fuera = MODELOS[t].every(m => caidosAhora().has(clave(t, m)))
     return { nombre: t, ok: !fuera, nota: fuera ? (motivo.get(t) ?? 'apartado un rato') : `${MODELOS[t].length} modelos` }
   })
+  const catalogo = catalogoParaPagina()
   return paginaCentro({
     clave: claveWeb(), chat: CARPETA, jefe: 'OpenCode', plan, planes, trabajos, agentes: estadoAgente, modelos: MODELOS,
     rendimiento: agregarRendimiento(puntajes(), 8), ahorro, version: VERSION,
+    catalogo: {
+      ...(catalogo?.generado ? { generado: catalogo.generado } : {}),
+      filas: filasModelos(catalogo, puntajes()),
+      fallos: (catalogo?.fuentes ?? []).filter(f => !f.ok).map(f => `${f.nombre}: ${f.nota ?? 'sin respuesta'}`),
+    },
     cancelables: trabajos.filter(t => t.estado === 'corriendo' && cortadores.has(t.id)).map(t => ({ id: t.id, titulo: `${t.trabajador.split(':')[0]} · ${corto(t.tarea, 30)}` })),
     relanzables: (plan?.subtareas ?? []).filter(x => x.estado !== 'en_proceso' && x.estado !== 'realizado' && encargos.has(x.n)).map(x => ({ n: x.n, titulo: corto(x.titulo, 40) })),
     pendientes: abiertas(leerDir('consultas.jsonl'), leerDir('respuestas.jsonl'), leerDir('permisos.json'))
@@ -587,6 +654,9 @@ function atenderAcciones() {
       avisosWeb.push(`Cancelaste desde la web el trabajo ${a.id}.`)
     }
     if (a.tipo === 'jefe' && typeof a.texto === 'string' && a.texto.trim()) avisosWeb.push(`El usuario te escribe desde el tablero: "${a.texto}". Respóndele en el chat y, si pide algo, hazlo.`)
+    // Una propuesta de modelo desde la web: se le pasa al jefe para que la pruebe cuando encaje.
+    if (a.tipo === 'proponer' && typeof a.agente === 'string' && TRABAJADORES.includes(a.agente) && typeof a.modelo === 'string' && /^[\w.:\/@+-]{1,120}$/.test(a.modelo) && (MODELOS[a.agente] ?? []).includes(a.modelo))
+      avisosWeb.push(`[Centro de agentes MST] El usuario propone probar el modelo ${a.modelo} (agente ${a.agente}) en la próxima tarea que le encaje. Compruébalo con la herramienta modelos, úsalo con delegar (campo modelo) cuando corresponda y puntúalo al auditar para que el cerebro aprenda.`)
     if (a.tipo === 'encargar' && TRABAJADORES.includes(a.agente) && typeof a.texto === 'string' && a.texto.trim()) {
       const sub = Number.isInteger(a.n) ? plan?.subtareas.find(x => x.n === a.n) : undefined
       const tarea = sub ? `${a.texto}\n\nContexto: esto es parte de la subtarea ${sub.n} del plan: "${sub.titulo}".` : a.texto
@@ -625,6 +695,7 @@ const CAMPOS_ENCARGO = {
   subtarea: { type: 'number', description: 'Número de la subtarea del plan que cubre este trabajo' },
   trabajador: { type: 'string', enum: [...TRABAJADORES.filter(t => MODELOS[t]?.length), 'auto'], description: 'Vacío o auto: el centro elige el mejor según el ranking' },
   modelo: { type: 'string', description: 'Vacío = el centro elige el mejor modelo y cambia solo si falla' },
+  necesita: { type: 'array', items: { type: 'string', enum: ['imagen', 'herramientas', 'razonamiento'] }, description: "Capacidades que debe tener el modelo (p. ej. ['imagen'] para transcribir imágenes). Si no lo pones, el centro detecta solo cuando la tarea habla de imágenes; pasa [] para no detectar nada" },
   cwd: { type: 'string', description: 'Carpeta de trabajo (existente). Distinta por tarea si varias editan archivos sin aislar' },
   aislar: { type: 'boolean', description: 'Si cwd es un repo git: el agente trabaja en su propia copia (git worktree, rama mst/...). Junta luego con "copia.juntar"' },
   verificar: { type: 'string', description: 'Comando que comprueba el resultado (p. ej. npm test); el centro lo ejecuta donde trabajó el agente' },
@@ -685,6 +756,17 @@ const HERRAMIENTAS = [
     name: 'ranking',
     description: 'Nota media y tiempo medio de cada agente y modelo por categoría.',
     inputSchema: { type: 'object', properties: { categoria: { type: 'string' } } },
+  },
+  {
+    name: 'modelos',
+    description: 'Lista el catálogo de modelos conocidos con sus capacidades (imagen, herramientas, razonamiento), su nota media y cuántas veces se usaron. Filtra con agente o con necesita.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agente: { type: 'string', enum: TRABAJADORES, description: 'Opcional: solo los modelos de ese agente' },
+        necesita: { type: 'array', items: { type: 'string', enum: ['imagen', 'herramientas', 'razonamiento'] }, description: "Opcional: solo los que tengan TODAS esas capacidades (solo cuenta 'sí'; desconocido no vale), p. ej. ['imagen']" },
+      },
+    },
   },
 ]
 
@@ -905,6 +987,13 @@ async function llamar(nombre, a) {
           .map(([trabajador, c]) => ({ trabajador, media: Math.round((c.suma / c.n) * 10) / 10, n: c.n, segundosMedios: Math.round(c.msTotal / c.n / 1000) }))
           .sort((x, y) => y.media - x.media),
       }))
+  }
+  if (nombre === 'modelos') {
+    const catalogo = await leerCatalogoJefe()
+    if (!catalogo) return { existe: false, aviso: 'Aún no hay catálogo: se genera al iniciar la sesión (puede tardar unos segundos).' }
+    // Filtrar las filas equivale a consultar el catálogo: 'si' es capacidades[cap] === true y el agente no cambia.
+    const modelos = filasModelos(catalogo, puntajes()).filter(f => (!a.agente || f.agente === a.agente) && (a.necesita ?? []).every(cap => f[cap] === 'si'))
+    return { generado: catalogo.generado, fuentes: catalogo.fuentes, total: modelos.length, modelos }
   }
   return { error: `Herramienta desconocida: ${nombre}` }
 }

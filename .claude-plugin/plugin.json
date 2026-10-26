@@ -1,6 +1,6 @@
 {
   "name": "centro-agentes",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "description": "Centro de agentes MST: Claude como jefe reparte subtareas entre OpenCode, Ollama, Hermes, Aider y Claude headless, las verifica y lo muestra en vivo.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -86,6 +86,12 @@
       "type": "boolean",
       "title": "Skills de ponytail automáticas",
       "description": "Si ponytail, ponytail-review y ponytail-audit están instaladas, el centro las añade solo según la tarea: ponytail al escribir código, ponytail-review al auditar un cambio y ponytail-audit al auditar un repositorio. Ante la duda, cuenta como código",
+      "default": true
+    },
+    "catalogoEnLinea": {
+      "type": "boolean",
+      "title": "Catálogo público de modelos en línea",
+      "description": "Descarga una vez al día la lista pública de modelos (models.dev, unos 5 MB, solo se guardan los datos necesarios) para saber qué puede hacer cada modelo de OpenCode",
       "default": true
     },
     "esperaInicialSeg": {

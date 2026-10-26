@@ -8,7 +8,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const [puerto, archivoClave, chats, version = '0'] = process.argv.slice(2)
-const TIPOS = new Set(['cancelar', 'relanzar', 'encargar', 'jefe'])
+const TIPOS = new Set(['cancelar', 'relanzar', 'encargar', 'jefe', 'proponer'])
 const AGENTES = new Set(['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude'])
 const claveActual = () => {
   try {
@@ -223,12 +223,14 @@ const servidor = http.createServer((req, res) => {
       const textoBueno = typeof a.texto === 'string' && a.texto.trim().length > 0 && a.texto.length <= 2000
       const modeloMalo = a.modelo !== undefined && !(typeof a.modelo === 'string' && /^[\w.:\/@+-]{1,100}$/.test(a.modelo))
       const encargoMalo = (a.tipo === 'encargar' && !(AGENTES.has(a.agente) && textoBueno && !modeloMalo)) || (a.tipo === 'jefe' && !textoBueno)
+      // En una propuesta el modelo es imprescindible (es lo que se va a lanzar) y no puede llevar caracteres que rompan la shell ni superar 120.
+      const proponerMalo = a.tipo === 'proponer' && !(AGENTES.has(a.agente) && typeof a.modelo === 'string' && /^[\w.:\/@+-]{1,120}$/.test(a.modelo))
       // El usuario contesta una consulta de un agente (pregunta o permiso): no se registra en acciones.jsonl.
       if (a.tipo === 'responder') {
         responder(res, carpeta, a)
         return
       }
-      if (!TIPOS.has(a.tipo) || encargoMalo || (a.id !== undefined && typeof a.id !== 'string') || (a.n !== undefined && !Number.isInteger(a.n))) {
+      if (!TIPOS.has(a.tipo) || encargoMalo || proponerMalo || (a.id !== undefined && typeof a.id !== 'string') || (a.n !== undefined && !Number.isInteger(a.n))) {
         res.writeHead(400).end('acción inválida')
         return
       }

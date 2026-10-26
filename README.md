@@ -123,9 +123,27 @@ Los agentes no editan el archivo: si ven trabajo nuevo, lo apuntan al final de s
 
 **Varios a la vez.** Varios chats o procesos pueden usar el mismo archivo: hay un cerrojo (`mst-tareas.json.lock`), la escritura es atómica (temporal y renombrado) y se guarda una copia `.bak`. Al reservar una subtarea solo pasa a `en_proceso` si sigue en `pendiente`, así dos encargos no toman la misma. Si el archivo no se puede leer o escribir, el plan sigue funcionando en memoria y el resultado lo dice en `aviso_archivo`.
 
+## Catálogo de modelos
+
+**Qué es.** Para cada modelo de cada agente, el centro guarda qué sabe hacer (ver imágenes, usar herramientas y razonar), su contexto y la fecha en que se comprobó. Lo usan el reparto y la web. Un dato desconocido nunca cuenta como que el modelo sepa hacerlo: se muestra como `?` y no pasa un filtro de capacidad.
+
+**Cómo se arma.** Solo, en segundo plano al empezar cada sesión, sin hacer esperar al jefe:
+
+- **Ollama:** con `ollama show` en vivo, para los modelos del agente `ollama` y los `ollama/`, `ollama_chat/` y `ollama-local/` de los demás.
+- **OpenCode:** con la lista pública de models.dev; se guarda en el catálogo y no se vuelve a descargar mientras el catálogo siga vigente (24 h) y la lista de modelos no cambie. Sin red, usa la caché local de OpenCode y la fuente lo anota.
+- **Claude y Codex:** con una tabla fija del plugin (`haiku`, `sonnet`, `opus` y `chatgpt`).
+
+Se guarda en `~/.centro-agentes/catalogo.json`. Se rehace si pasan 24 h o si cambia la lista de modelos; si la última consulta falló, lo reintenta antes (una hora).
+
+**Tareas con imágenes.** El centro detecta solo, por la tarea y su categoría, si habla de capturas, fotos, OCR, png/jpg... (no confunde "imagen de Docker") y entonces solo reparte a modelos que ven imágenes. Se fuerza con `necesita: ['imagen']` y se desactiva con `necesita: []`. Si ningún modelo conocido la tiene, no se lanza: el error dice cuántos se descartaron por no tenerla y cuántos por capacidad desconocida. Un modelo pedido a propósito en `modelo` se usa igual y el resultado trae `aviso_capacidad` con lo que el catálogo no confirma.
+
+**Para consultarlo.** El jefe tiene la herramienta `modelos` (filtra por `agente` o `necesita` y devuelve capacidades, contexto, nota media y veces usado); tú tienes `/mst-modelos`. En la web, la sección **Modelos disponibles** muestra la misma tabla con un botón **Proponer** por modelo. También puedes proponerlo por chat ("prueba con..."): el jefe lo comprueba con `modelos`, lo pasa en el campo `modelo` de `delegar` en la próxima tarea que encaje y lo puntúa al auditar, para que el cerebro aprenda.
+
+**Sin internet.** `catalogoEnLinea` (activo por defecto) controla la descarga de models.dev. Con `false` no se consulta internet: se usa la caché local de OpenCode si la hay y la fuente lo anota. En OpenCode como jefe va en `~/.centro-agentes/opencode-jefe.json` como `catalogoEnLinea`; el resto funciona igual, con el mismo `catalogo.json`.
+
 ## Ajustes
 
-En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, proxy y certificado de empresa, presupuesto de tokens de Claude por chat, y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.
+En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, proxy y certificado de empresa, presupuesto de tokens de Claude por chat, catálogo de modelos en línea (`catalogoEnLinea`, activo por defecto) y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.
 
 ## Cómo arranca /mst y el cerebro global
 
@@ -181,6 +199,8 @@ Herramientas del jefe por MCP, con un OpenCode falso y sin gastar modelos: `node
 
 Simulación en bucle (sin agentes ni gasto) para ver cómo se comporta el grafo: `node mcp/demo-bucle.mjs`, y abre el chat `demo-bucle` en la web.
 
+Catálogo de modelos: `hooks/catalogo*.test.ts` cubre las funciones, el reparto con capacidades, `/mst-modelos` y la tabla de la web. De punta a punta, sin red ni gastar modelos: `node mcp/prueba-catalogo.mjs` (actualizar y guardar), `node mcp/prueba-mcp-catalogo.mjs` (herramienta `modelos` del jefe, capacidades al delegar y propuestas de la web) y `node mcp/prueba-importaciones.mjs` (que los módulos que carga Node se puedan importar).
+
 ```bash
 claude plugin test .
 ```
@@ -191,7 +211,7 @@ claude plugin validate .
 
 ## OpenCode como jefe (cuando se acaba Claude)
 
-El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mismas herramientas: `planificar`, `tareas_estado`, `delegar`, `delegar_varios`, `registrar_auditoria`, `cerrar_subtarea`, `ranking`, `cerebro`, más `juntar_copias`, que junta de una vez las ramas de las copias aisladas del chat. Así OpenCode, con un modelo gratis de Ollama, puede hacer de jefe. Reutiliza el código del plugin (`hooks/nucleo.ts`, `hooks/extras.ts`) y necesita Node 24 o más reciente.
+El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mismas herramientas: `planificar`, `tareas_estado`, `delegar`, `delegar_varios`, `registrar_auditoria`, `cerrar_subtarea`, `ranking`, `cerebro`, `modelos`, más `juntar_copias`, que junta de una vez las ramas de las copias aisladas del chat. Así OpenCode, con un modelo gratis de Ollama, puede hacer de jefe. Reutiliza el código del plugin (`hooks/nucleo.ts`, `hooks/extras.ts`) y necesita Node 24 o más reciente.
 
 El plan funciona igual que con Claude de jefe: el mismo `mst-tareas.json`, las mismas reglas y el mismo historial. Sin `cwd`, la carpeta del proyecto es la carpeta desde la que OpenCode lanzó el servidor MCP (`process.cwd()`); pásalo en `planificar` y `tareas_estado` para usar otra.
 
