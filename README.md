@@ -50,7 +50,11 @@ El centro puede darles a los agentes que programan la skill [ponytail](https://g
 
 ## Cómo trabaja el jefe
 
-- **Dependencias:** `planificar` acepta `{"3": [1, 2]}`; si mandas la 3 en el mismo `delegar_varios` que la 1 y la 2, arranca sola cuando esas terminan bien; si no, el centro la bloquea y avisa en `lanzar_ya`.
+- **Todo es asíncrono:** `delegar` y `delegar_varios` devuelven al instante los ids (`encargo` eN y `grupo` gN) y el trabajo sigue en segundo plano; el jefe puede seguir hablando contigo o haciendo otra cosa. Los errores que se saben antes de ejecutar (subtarea manual o bloqueada, trabajador desconocido, ningún modelo con la capacidad pedida) vuelven en esa misma respuesta. No hay una opción para esperar.
+- **Un solo aviso por grupo:** cuando termina el grupo entero, el centro le escribe UN mensaje al jefe con todos los resultados para que los audite (con el id de trabajo o el de encargo eN). Si ningún encargo del grupo llegó a ejecutarse, no hay aviso. La herramienta `estado` (`grupo` o `ids`) consulta cuando hace falta; el jefe no debe sondear en bucle.
+- **Escaladas:** además del aviso de grupo, el jefe recibe un mensaje `ESCALADA (motivo)` solo cuando algo delicado ocurre, una vez por caso: un agente lleva `inactividadMin` minutos (40 por defecto) sin dar señales de vida, es decir, sin escribir nada (cuenta el tiempo sin actividad, no el total: una tarea larga que sigue trabajando no salta); un agente pide un permiso (lo decides tú en la web, el jefe no debe aprobarlo); la misma subtarea falla dos veces seguidas; una copia aislada cambia más de 15 archivos o borra más de 5; dos copias del mismo grupo tocan los mismos archivos (choque de ramas) o un agente toca archivos que no eran suyos. El límite de 8 minutos por intento sigue aparte: corta ese intento y prueba otro modelo.
+- **Máximo 4 agentes a la vez** (el resto espera su turno) y, si OpenCode no arranca (`Standalone server exited before reporting readiness`), el centro reintenta hasta 2 veces con el mismo modelo antes de cambiar de modelo.
+- **Dependencias:** `planificar` acepta `{"3": [1, 2]}`; si mandas la 3 en el mismo `delegar_varios` que la 1 y la 2, arranca sola cuando esas terminan bien (en la respuesta sale como `en_espera`); si no, el centro la bloquea y avisa en `lanzar_ya`.
 - **Copias aisladas:** con `aislar: true`, cada agente trabaja en un `git worktree` propio (rama `mst/...`); el resultado trae el comando para juntarlo.
 - **Carpeta compartida:** sin `aislar`, varios agentes pueden trabajar en la misma carpeta y rama. Cada uno declara en `archivos` lo que puede tocar: los que tocan cosas distintas trabajan a la vez y los que chocan (o no declaran nada) se turnan. El resultado avisa en `fuera_de_alcance` si un agente tocó archivos que no eran suyos.
 - **Verificación automática:** con `verificar: "npm test"`, el centro ejecuta ese comando donde trabajó el agente y le pasa el resultado al jefe.
@@ -143,7 +147,7 @@ Se guarda en `~/.centro-agentes/catalogo.json`. Se rehace si pasan 24 h o si cam
 
 ## Ajustes
 
-En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, proxy y certificado de empresa, presupuesto de tokens de Claude por chat, catálogo de modelos en línea (`catalogoEnLinea`, activo por defecto) y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.
+En la configuración del plugin: modelos de cada agente, tiempo máximo por tarea, minutos sin señales de vida antes de escalar un agente (`inactividadMin`), proxy y certificado de empresa, presupuesto de tokens de Claude por chat, catálogo de modelos en línea (`catalogoEnLinea`, activo por defecto) y un tema de [ntfy.sh](https://ntfy.sh) opcional para avisos al móvil.
 
 ## Cómo arranca /mst y el cerebro global
 
@@ -211,7 +215,7 @@ claude plugin validate .
 
 ## OpenCode como jefe (cuando se acaba Claude)
 
-El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mismas herramientas: `planificar`, `tareas_estado`, `delegar`, `delegar_varios`, `registrar_auditoria`, `cerrar_subtarea`, `ranking`, `cerebro`, `modelos`, más `juntar_copias`, que junta de una vez las ramas de las copias aisladas del chat. Así OpenCode, con un modelo gratis de Ollama, puede hacer de jefe. Reutiliza el código del plugin (`hooks/nucleo.ts`, `hooks/extras.ts`) y necesita Node 24 o más reciente.
+El centro también funciona como servidor MCP (`mcp/centro-mcp.mjs`), con las mismas herramientas: `planificar`, `tareas_estado`, `estado`, `delegar`, `delegar_varios`, `registrar_auditoria`, `cerrar_subtarea`, `ranking`, `cerebro`, `modelos`, más `juntar_copias`, que junta de una vez las ramas de las copias aisladas del chat. Así OpenCode, con un modelo gratis de Ollama, puede hacer de jefe. Reutiliza el código del plugin (`hooks/nucleo.ts`, `hooks/extras.ts`) y necesita Node 24 o más reciente.
 
 El plan funciona igual que con Claude de jefe: el mismo `mst-tareas.json`, las mismas reglas y el mismo historial. Sin `cwd`, la carpeta del proyecto es la carpeta desde la que OpenCode lanzó el servidor MCP (`process.cwd()`); pásalo en `planificar` y `tareas_estado` para usar otra.
 
@@ -230,7 +234,9 @@ El plan funciona igual que con Claude de jefe: el mismo `mst-tareas.json`, las m
 
    `timeout` es en milisegundos y cubre también la ejecución: repartir y esperar a los agentes tarda minutos, y una consulta de un agente puede esperar hasta 15 min al usuario (por eso son 20 min).
 2. Copia `opencode/agents/jefe.md` y `opencode/commands/mst.md` de este repo a `~/.config/opencode/agents/` y `~/.config/opencode/commands/`: el agente `jefe` (modo `primary`, modelo `opencode/deepseek-v4.1-flash-free`, uno de los gratuitos de OpenCode) lleva el protocolo, y `/mst` le pasa la tarea.
-3. Opcional, en `~/.centro-agentes/opencode-jefe.json`: `{ "ntfyTema": "...", "conClaude": false, "timeoutMin": 8 }`.
+3. Opcional, en `~/.centro-agentes/opencode-jefe.json`: `{ "ntfyTema": "...", "conClaude": false, "timeoutMin": 8, "inactividadMin": 40 }`.
+
+OpenCode no tiene un mensaje que despierte al jefe como el plugin de Claude: el aviso del grupo y las escaladas llegan pegados en el campo `avisos_web` de la siguiente respuesta de cualquier herramienta. Para esperar sin sondear, el jefe usa `estado` con `esperar_seg` (hasta 60): vuelve antes en cuanto termina un encargo consultado o llega un aviso.
 
 Uso: `opencode` en la carpeta del proyecto, cambia al agente **jefe** (tecla Tab) y escribe `/mst <tarea>`. La web es la misma (`http://127.0.0.1:47321`) y el chat aparece en **todos los chats** como `OpenCode jefe`. Con OpenCode como jefe, Claude headless no se usa salvo que pongas `"conClaude": true`, y las skills se ignoran.
 
