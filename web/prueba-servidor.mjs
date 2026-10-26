@@ -24,6 +24,12 @@ try {
   assert.equal(await enviar({ tipo: 'encargar', agente: 'opencode', texto: 'x'.repeat(2001) }), 400, 'texto demasiado largo')
   assert.equal(await enviar({ tipo: 'jefe', texto: 'Cambia el plan' }), 200)
   assert.equal(await enviar({ tipo: 'jefe', texto: '' }), 400, 'mensaje vacío al jefe')
+  assert.equal(await enviar({ tipo: 'proponer', agente: 'opencode', modelo: 'opencode/deepseek-v4.1-flash-free' }), 200, 'propuesta válida')
+  assert.equal(await enviar({ tipo: 'proponer', agente: 'rm -rf', modelo: 'x' }), 400, 'propuesta con agente desconocido')
+  assert.equal(await enviar({ tipo: 'proponer', agente: 'opencode', modelo: 'a b' }), 400, 'propuesta con modelo con espacios')
+  assert.equal(await enviar({ tipo: 'proponer', agente: 'opencode', modelo: 'a; b' }), 400, 'propuesta con modelo con ;')
+  assert.equal(await enviar({ tipo: 'proponer', agente: 'opencode', modelo: '' }), 400, 'propuesta con modelo vacío')
+  assert.equal(await enviar({ tipo: 'proponer', agente: 'opencode', modelo: 'x'.repeat(121) }), 400, 'propuesta con modelo de más de 120')
   assert.equal(await enviar({ tipo: 'borrar-todo' }), 400, 'tipo desconocido')
   // Terminales del tablero: solo se prueba lo que se rechaza y el estado de una nueva (lanzar agentes de verdad gasta modelos).
   const urlT = `http://127.0.0.1:${puerto}/terminal`
@@ -40,8 +46,9 @@ try {
   const res = await fetch(`http://127.0.0.1:${puerto}/accion?t=mala&s=chat1`, { method: 'POST', body: '{}' })
   assert.equal(res.status, 403, 'sin la clave no se acepta nada')
   const lineas = fs.readFileSync(path.join(base, 'chats', 'chat1', 'acciones.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l))
-  assert.deepEqual(lineas.map(l => l.tipo), ['cancelar', 'relanzar', 'encargar', 'encargar', 'jefe'])
+  assert.deepEqual(lineas.map(l => l.tipo), ['cancelar', 'relanzar', 'encargar', 'encargar', 'jefe', 'proponer'])
   assert.equal(lineas[2].texto, 'Añade cuadrado(x)')
+  assert.equal(lineas[5].modelo, 'opencode/deepseek-v4.1-flash-free')
   console.log('ok: servidor web')
 } finally {
   srv.kill()
