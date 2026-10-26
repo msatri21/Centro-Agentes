@@ -58,6 +58,12 @@
       "description": "Máximo 10",
       "default": 8
     },
+    "inactividadMin": {
+      "type": "number",
+      "title": "Avisar si un agente queda inactivo (min)",
+      "description": "Minutos sin salida antes de avisar (10-120)",
+      "default": 40
+    },
     "proxy": {
       "type": "string",
       "title": "Proxy de red",

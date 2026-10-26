@@ -1,3 +1,4 @@
+import { delegarYEsperar, delegarVariosYEsperar } from './ayuda-asincrona'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { construir } from './catalogo'
@@ -6,7 +7,7 @@ import { ordenar } from './nucleo'
 import { refrescarCatalogo, reiniciarCatalogoParaPruebas } from './register'
 import { scriptFalso } from './scriptFalso'
 
-const out = (r: any) => JSON.parse(r.result)
+const out = (r: any) => r?.result ? JSON.parse(r.result) : r
 
 // Los modelos por defecto del plugin que importan a la capacidad de imagen; hermes y aider
 // se dejan vacíos a propósito para que el catálogo no los invente.
@@ -87,7 +88,7 @@ test('una tarea con capturas solo se delega a un modelo con imagen', async ($, o
   conCatalogo(on, catalogoDe())
   const vistos = agentes(on)
 
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'texto', tarea: 'Transcribe el texto de estas capturas de pantalla' } }))
+  const d = out(await delegarYEsperar($, { categoria: 'texto', tarea: 'Transcribe el texto de estas capturas de pantalla' }))
 
   // Un solo proceso: el resto de candidatos sin imagen ni se intentan.
   expect(vistos).toHaveLength(1)
@@ -115,7 +116,7 @@ test('sin modelos con imagen devuelve error y la subtarea sigue pendiente', asyn
   const falso = scriptFalso(on, { agente: () => { lanzados++; return {} } })
 
   await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'demo', subtareas: ['mirar capturas'], cwd: 'C:/proyecto' } })
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'texto', tarea: 'Transcribe estas capturas de pantalla', subtarea: 1 } }))
+  const d = out(await delegarYEsperar($, { categoria: 'texto', tarea: 'Transcribe estas capturas de pantalla', subtarea: 1 }))
 
   expect(lanzados).toBe(0)
   expect(d.error).toContain('imagen')
@@ -131,7 +132,7 @@ test('un modelo pedido sin imagen se usa con aviso_capacidad', async ($, on) => 
   conCatalogo(on, catalogoDe())
   const vistos = agentes(on)
 
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'ollama', modelo: 'gpt-oss:120b-cloud', categoria: 'texto', tarea: 'Lee estas capturas de pantalla' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'ollama', modelo: 'gpt-oss:120b-cloud', categoria: 'texto', tarea: 'Lee estas capturas de pantalla' }))
 
   expect(vistos).toHaveLength(1)
   expect(vistos[0].argv).toEqual(['ollama', 'run', '--verbose', '--nowordwrap', '--hidethinking', 'gpt-oss:120b-cloud'])
@@ -149,7 +150,7 @@ test('necesita vacío desactiva la detección aunque la tarea mencione capturas'
   conCatalogo(on, catalogoDe())
   agentes(on)
 
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { necesita: [], categoria: 'texto', tarea: 'Transcribe estas capturas de pantalla' } }))
+  const d = out(await delegarYEsperar($, { necesita: [], categoria: 'texto', tarea: 'Transcribe estas capturas de pantalla' }))
 
   expect(d.exito).toBe(true)
   expect(d).not.toHaveProperty('necesita')
@@ -163,7 +164,7 @@ test('una tarea sin imágenes no se filtra ni marca necesidades', async ($, on) 
   conCatalogo(on, catalogoDe())
   agentes(on)
 
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'codigo', tarea: 'Corrige la función suma' } }))
+  const d = out(await delegarYEsperar($, { categoria: 'codigo', tarea: 'Corrige la función suma' }))
 
   expect(d.exito).toBe(true)
   expect(d).not.toHaveProperty('necesita')
@@ -178,7 +179,7 @@ test('sin catálogo una tarea de imágenes solo va a Claude o Codex', async ($, 
   on('fs.read', async () => { throw new Error('no hay catálogo') })
   const vistos = agentes(on)
 
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'texto', tarea: 'Transcribe estas capturas de pantalla' } }))
+  const d = out(await delegarYEsperar($, { categoria: 'texto', tarea: 'Transcribe estas capturas de pantalla' }))
 
   expect(vistos).toHaveLength(1)
   expect(vistos[0].argv[0]).toBe('codex')
@@ -202,7 +203,7 @@ test('sin catálogo y sin conexión a claude ni codex devuelve el error claro', 
   base(on, run)
   const vistos = agentes(on)
 
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { categoria: 'texto', tarea: 'Transcribe estas capturas de pantalla' } }))
+  const d = out(await delegarYEsperar($, { categoria: 'texto', tarea: 'Transcribe estas capturas de pantalla' }))
 
   expect(vistos).toHaveLength(0)
   expect(d.error).toContain('Todos los modelos posibles')
@@ -262,7 +263,7 @@ test('la herramienta modelos lista capacidades, filtra y suma la nota guardada',
   expect(porCapacidad.modelos.map((m: any) => m.modelo)).toEqual(['gemma4:31b-cloud'])
 
   // Un trabajo auditado deja su nota en el almacén; modelos la resume con nota_media y veces.
-  const d = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'ollama', modelo: 'gemma4:31b-cloud', categoria: 'texto', tarea: 'Corrige la función suma' } }))
+  const d = out(await delegarYEsperar($, { trabajador: 'ollama', modelo: 'gemma4:31b-cloud', categoria: 'texto', tarea: 'Corrige la función suma' }))
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d.id, puntaje: 8 } })
   const conNota = out(await $.tool.call({ tool: 'mcp__centro-agentes__modelos', input: { agente: 'ollama' } }))
   expect(conNota.modelos.find((m: any) => m.modelo === 'gemma4:31b-cloud')).toMatchObject({ nota_media: 8, veces: 1 })

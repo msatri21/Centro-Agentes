@@ -1,9 +1,10 @@
+import { delegarYEsperar, delegarVariosYEsperar } from './ayuda-asincrona'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { aplicar } from './tareas'
 import { scriptFalso } from './scriptFalso'
 
-const out = (r: any) => JSON.parse(r.result)
+const out = (r: any) => r?.result ? JSON.parse(r.result) : r
 const base = (on: any) => {
   mock.store(on)
   mock.clock(on)
@@ -176,7 +177,7 @@ test('una subtarea manual no se puede delegar y no lanza agente', async ($, on) 
   const falso = scriptFalso(on)
   await llamar($, { objetivo: 'demo', subtareas: ['manual'], manuales: [1] })
   const antes = falso.lanzamientos
-  const r = out(await $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'claude', categoria: 'x', tarea: 'hazlo', subtarea: 1 } }))
+  const r = out(await delegarYEsperar($, { trabajador: 'claude', categoria: 'x', tarea: 'hazlo', subtarea: 1 }))
   expect(r.error).toContain('manual')
   expect(falso.lanzamientos).toBe(antes)
 })

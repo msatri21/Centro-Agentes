@@ -16,6 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualiz
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
+import { FALLOS_SEGUIDOS_ESCALA, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, esErrorDeArranque, esMasiva, inactivo, resumenEstado, textoAvisoGrupo } from './asincrono.ts'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -30,6 +31,8 @@ const ABIERTA_KEY = 'web-abierta-el'
 const TRABAJADORES: readonly Trabajador[] = ['ollama', 'opencode', 'hermes', 'aider', 'codex', 'claude']
 
 let seq = 0
+const registro = new Registro()
+const escaladasMasivas = new Set<string>()
 const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, [] as Trabajo[])
 const plan = atom({ plugin: 'centro-agentes', key: 'plan' } as const, null as Plan | null)
 // Los planes anteriores del chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
@@ -46,6 +49,7 @@ type Opciones = {
   opencodeModels?: string
   claudeModels?: string
   timeoutMin?: number
+  inactividadMin?: number
   proxy?: string
   certificadoCA?: string
   esperaInicialSeg?: number
@@ -86,11 +90,11 @@ Protocolo:
 El centro tiene un catálogo de modelos con sus capacidades; consúltalo con modelos. Si la tarea necesita ver imágenes, se detecta sola o pasa necesita: ['imagen']. Si no hay modelo capaz, no se lanza: no pruebes otro a ciegas, díselo al usuario. Si el usuario propone un modelo («prueba con tal modelo»), comprueba con modelos que existe, úsalo con modelo en delegar y puntúalo al auditar. Si recibes un mensaje que empieza por «[Centro de agentes MST] El usuario propone probar el modelo», haz lo mismo en la próxima tarea que encaje.
 El plan se guarda en mst-tareas.json de la carpeta del proyecto (git lo ignora) y se crea con el primer planificar: planifica un BORRADOR al tener objetivo y subtareas de primer vistazo y púlelo al repartir con planificar { agregar } y { ajustar }. Usa manuales para lo que no se delegas (instalar, respaldar). tareas_estado muestra el estado; planificar { tarea: 'T2' } retoma una tarea. Los agentes no editan mst-tareas.json: anotan trabajo nuevo al final bajo «Propuestas:» y tú decides si agregarlo como hermana o planificarlo como tarea nueva. Reabrir una tarea solucionada es decisión tuya: si cumplía lo pedido crea una nueva; si no, usa planificar { reabrir: ["T2.3"] } para devolver a pendiente la subtarea que falló.
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
-2. Lanza A LA VEZ todas las subtareas que no dependan de otra con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo delegar_varios: arrancan solas cuando terminan bien aquellas de las que dependen.
+2. Lanza las subtareas con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Devuelve ids al instante y el trabajo sigue en segundo plano; el centro avisa UNA vez cuando termina el grupo entero. No esperes resultados ni sondees en bucle: mientras puedes hablar con el usuario o hacer otra cosa; usa estado solo si hace falta. Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo lote: quedan en espera y arrancan solas cuando terminan bien sus previas.
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
    Skills: si una subtarea es de un tipo para el que puede haber una skill (diseño, una plataforma, un formato de archivo, un framework, pruebas en navegador...), llama a mcp__centro-agentes__buscar_skills con unas palabras de la tarea y pasa los nombres que encajen en "skills" del encargo; el agente leerá su SKILL.md y la seguirá (las tareas con skills no van a Ollama, que no lee archivos). Usa tú también tus skills para verificar cuando ayuden (p. ej. un navegador para comprobar una web).
-4. VERIFICA cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
-5. Registra cada verificación con mcp__centro-agentes__registrar_auditoria (puntaje 1-10 honesto). Con 6 o más la subtarea queda solucionada.
+4. Cuando llegue el aviso único de que terminó el grupo, verifica cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
+5. Registra cada verificación con mcp__centro-agentes__registrar_auditoria (puntaje 1-10 honesto), usando el id de trabajo o el id de encargo eN. Con 6 o más la subtarea queda solucionada.
 6. Si el puntaje es < 6, rehazla a partir de lo que está mal: vuelve a delegarla (sola o con otras en delegar_varios) diciendo qué falló exactamente, qué hay que corregir y, si sirve, el resultado anterior. registrar_auditoria te sugiere en "siguiente" otro modelo; úsalo. Máximo 2 reintentos por subtarea.
 7. Las subtareas que hagas tú (juntar ramas, revisar el conjunto) ciérralas con mcp__centro-agentes__cerrar_subtarea. Cuando todo esté hecho, junta las piezas y entrega el resultado final con un informe corto: qué hizo cada agente, su puntaje, qué se rehízo y qué queda pendiente.
 
@@ -107,6 +111,12 @@ const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 
 
 // Una herramienta MCP devuelve texto (o bloques), no objetos: el resultado va como JSON.
 const res = (x: unknown) => ({ result: JSON.stringify(x, null, 1) })
+
+async function avisarGrupo($: EngineInterface, grupo: string) {
+  const encargos = registro.delGrupo(grupo)
+  const text = textoAvisoGrupo(grupo, encargos)
+  void $.prompt.submit({ text }).catch(() => undefined)
+}
 
 // El motor pone los argumentos de la herramienta en e; el harness de tests, en e.input.
 const args = (e: object): unknown => (e as { input?: unknown }).input ?? e
@@ -155,6 +165,8 @@ const SALUD_MS = 3 * 60_000
 const salud = new Map<Trabajador, { ok: boolean; en: number }>()
 let red: Record<string, string> = {}
 let esperaInicialMs = 90_000
+let limiteInactividadMs = INACTIVIDAD_MIN_POR_DEFECTO * 60_000
+const escaladasVigilante = new Set<string>()
 // Las skills de ponytail que el centro añade solo, según la clase de tarea (ajuste ponytailAutomatico).
 let skillsAuto = true
 
@@ -223,6 +235,30 @@ async function pendientesDe($: EngineInterface, lista: Trabajo[]) {
       .map(c => ({ id: c.trabajo, consulta: c.id, agente: vivos.get(c.trabajo)!.trabajador.split(':')[0], tipo: c.tipo, texto: c.texto, detalle: c.detalle, categoria: c.categoria, opciones: c.opciones, en: c.en }))
   } catch {
     return []
+  }
+}
+
+export async function vigilar($: EngineInterface, ahora = Date.now()) {
+  const lista = (await read($, trabajos)) ?? []
+  const pendientes = await pendientesDe($, lista)
+  const esperando = new Set(pendientes.map(p => p.id))
+  for (const t of lista) {
+    if (t.estado !== 'corriendo') continue
+    if (inactivo(t, ahora, limiteInactividadMs) && !esperando.has(t.id)) {
+      const clave = `${t.id}:inactivo`
+      if (!escaladasVigilante.has(clave)) {
+        escaladasVigilante.add(clave)
+        const min = Math.floor((ahora - (t.ultimaActividad ?? t.inicio)) / 60_000)
+        void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (inactivo): ${t.trabajador} (trabajo ${t.id}${t.subtarea === undefined ? '' : `, subtarea ${t.subtarea}`}) lleva ${min} min sin dar señales. Puedes esperar o relanzar la subtarea con delegar usando otro modelo; el usuario también puede cancelarlo desde la web.` }).catch(() => undefined)
+      }
+    }
+  }
+  for (const p of pendientes) {
+    if (p.tipo !== 'permiso') continue
+    const clave = `${p.id}:permiso:${p.consulta}`
+    if (escaladasVigilante.has(clave)) continue
+    escaladasVigilante.add(clave)
+    void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (permiso): ${p.agente} pide permiso (${p.categoria}): "${p.texto}". La decisión es del USUARIO en la web: no la apruebes ni actúes tú; sigue con otra cosa.` }).catch(() => undefined)
   }
 }
 
@@ -1149,6 +1185,7 @@ type Encargo = {
   verificar?: string
   /** Carpeta compartida (sin aislar): archivos o carpetas que este agente puede tocar; sin esto se reserva todo el repo */
   archivos?: string[]
+  alLanzar?: () => void
 }
 
 const git = ($: EngineInterface, cwd: string, a: string[]) => $.process.run(['git', '-C', cwd, ...a], { timeoutMs: 60_000 })
@@ -1180,9 +1217,14 @@ async function cerrarCopia($: EngineInterface, c: { repo: string; carpeta: strin
     return { rama: c.rama, cambios: 'el agente no cambió ningún archivo; la copia se borró' }
   }
   const stat = await git($, c.carpeta, ['diff', '--stat', 'HEAD~1', 'HEAD'])
+  const nameStatus = await git($, c.carpeta, ['diff', '--name-status', 'HEAD~1', 'HEAD'])
+  const cambios = contarCambios(nameStatus.stdout)
+  const masiva = esMasiva(cambios)
   return {
     carpeta: c.carpeta,
     rama: c.rama,
+    ...cambios,
+    ...(masiva.masiva ? { escalar: ['masiva'], aviso_masiva: masiva.motivo } : {}),
     cambios: stat.stdout.trim().slice(-2000),
     juntar: `git -C "${c.repo}" merge ${c.rama} && git -C "${c.repo}" worktree remove "${c.carpeta}"`,
   }
@@ -1198,6 +1240,7 @@ async function verificarEn($: EngineInterface, cwd: string | undefined, comando:
 }
 // Modelos con un trabajo en marcha: un encargo nuevo prefiere otro libre, para repartir el trabajo.
 const ocupados = new Map<string, number>()
+const semaforoAgentes = new Semaforo(MAX_PARALELO)
 
 // Elige el mejor modelo para el encargo, lo ejecuta y, si falla, cambia solo al siguiente.
 async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, sinBloqueo = false) {
@@ -1275,11 +1318,14 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
 
   // Si un modelo falla (sin sesión, sin cuota, caído), se pasa solo al siguiente de la cola.
   const cambios: string[] = []
+  // Aparte de cambios: un reintento con el mismo modelo no gasta el cupo de cambios de modelo (MAX_CAMBIOS).
+  const reintentos: string[] = []
   let r: Intento | undefined
   let elegido = cola[0]
   let anadidas: string[] = []
   let avisoArchivo: string | undefined
   let reservaHecha = false
+  if (input.subtarea === undefined) input.alLanzar?.()
   for (const c of cola) {
     if (cambios.length > MAX_CAMBIOS) break
     const k = clave(c.trabajador, c.modelo)
@@ -1297,13 +1343,30 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
       reservaHecha = true
       avisoArchivo = reserva.aviso_archivo
     }
+    input.alLanzar?.()
     try {
       const leeSkills = c.trabajador !== 'ollama' && c.trabajador !== 'aider'
       const extra = leeSkills && automaticas.length ? (await instruccionSkills($, automaticas)) + (input.cwd && automaticas.some(n => CON_MAPA.includes(n)) ? await mapaDelCodigo($, input.cwd) : '') : ''
       // Lo que el centro decidió y por qué, para estudiar los falsos positivos: solo cuenta lo que este agente recibió de verdad.
       anadidas = extra ? automaticas : []
       const clasificacion = clasificada ? { clase: claseTarea, motivos: clasificada.motivos, anadidas, ...(input.sin_skills_automaticas ? { apagada: true } : {}) } : undefined
-      r = await intentar($, c, { ...input, categoria, clasificacion, ...(extra ? { tarea: input.tarea + extra, skills: [...conSkills, ...automaticas] } : {}) }, timeoutMs)
+      const datos = { ...input, categoria, clasificacion, ...(extra ? { tarea: input.tarea + extra, skills: [...conSkills, ...automaticas] } : {}) }
+      let reintento = 0
+      do {
+        if (reintento) {
+          reintentos.push(`${k} reintento ${reintento}: error de arranque`)
+          // setTimeout y no $.clock.after: el motor de pruebas no avanza el reloj simulado.
+          await new Promise<void>(resolver => setTimeout(resolver, 1000))
+        }
+        const liberar = await semaforoAgentes.tomar()
+        try {
+          r = await intentar($, c, datos, timeoutMs)
+        } finally {
+          liberar()
+        }
+        if (r.ok || !esErrorDeArranque(r.s.texto) || reintento >= REINTENTOS_ARRANQUE) break
+        reintento++
+      } while (true)
     } finally {
       ocupados.set(k, (ocupados.get(k) ?? 1) - 1)
     }
@@ -1336,6 +1399,10 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
   avisoArchivo ??= avisoEstado
   const quienFue = clave(elegido.trabajador, elegido.modelo)
   const aislado = copia && 'carpeta' in copia ? await cerrarCopia($, copia, `mst: subtarea ${input.subtarea ?? '-'} (${quienFue})`) : copia
+  if (aislado && 'escalar' in aislado && aislado.escalar?.includes('masiva') && !escaladasMasivas.has(r.id)) {
+    escaladasMasivas.add(r.id)
+    void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (modificación masiva): ${quienFue}: ${aislado.aviso_masiva}. No conviene juntar la rama sin revisarla.` }).catch(() => undefined)
+  }
   const verificacion = r.ok && input.verificar?.trim() ? await verificarEn($, input.cwd, input.verificar.trim()) : undefined
   const revisor = claseTarea === 'escritura' && r.ok ? await rutaSkill($, 'ponytail-review') : undefined
   // El modelo pedido a propósito se usa aunque el catálogo no le confirme la capacidad; se avisa para que el jefe lo sepa.
@@ -1358,9 +1425,10 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     ...(necesidades.length ? { necesita: necesidades } : {}),
     ...(necesidades.length && input.necesita === undefined ? { detectada: true } : {}),
     ...(avisoCapacidad ? { aviso_capacidad: avisoCapacidad } : {}),
-    ...(cambios.length ? { cambios } : {}),
+    ...(cambios.length || reintentos.length ? { cambios: [...reintentos, ...cambios] } : {}),
     ...(avisoArchivo ? { aviso_archivo: avisoArchivo } : {}),
     ...(aislado ? { copia: aislado } : {}),
+    ...(aislado && 'escalar' in aislado && aislado.escalar ? { escalar: aislado.escalar, aviso_masiva: aislado.aviso_masiva } : {}),
     ...(verificacion ? { verificacion } : {}),
     salida: r.s.texto.slice(0, 60_000) || '(sin salida)',
     aviso: verificacion
@@ -1403,6 +1471,43 @@ async function delegarUno($: EngineInterface, modelos: Modelos, input: Encargo, 
   }
 }
 
+// Si ningún encargo del grupo llegó a ejecutarse, los errores ya volvieron en la respuesta de la herramienta: no hay nada que auditar.
+const hayQueAuditar = (grupo: string) => registro.delGrupo(grupo).some(e => e.trabajoId)
+
+async function lanzarEncargo($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, grupo?: string, sinBloqueo = false, existente?: ReturnType<typeof registro.nuevoEncargo>) {
+  const encargo = existente ?? registro.nuevoEncargo({ grupo, subtarea: input.subtarea }, Date.now())
+  let iniciar!: () => void
+  const inicio = new Promise<void>(resolve => { iniciar = resolve })
+  let iniciado = false
+  const promesa = delegarUno($, modelos, { ...input, alLanzar: () => {
+    if (iniciado) return
+    iniciado = true
+    registro.marcar(encargo.id, 'corriendo', {}, Date.now())
+    iniciar()
+  } }, timeoutMs, sinBloqueo).then(async resultado => {
+    const obj = resultado as Record<string, any>
+    const exito = Boolean(obj.id && obj.exito)
+    registro.marcar(encargo.id, obj.id ? (exito ? 'terminado' : 'fallido') : 'fallido', { trabajoId: obj.id, resultado }, Date.now())
+    if (iniciado) {
+      const fallos = registro.registrarFin(input.subtarea, exito)
+      if (!exito && fallos === FALLOS_SEGUIDOS_ESCALA) void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (fallos): la subtarea ${input.subtarea} lleva ${fallos} fallos seguidos. Modelos probados: ${Array.isArray(obj.cambios) && obj.cambios.length ? obj.cambios.join(', ') : obj.trabajador}. No la relances igual: cambia el enfoque o pregunta al usuario.` }).catch(() => undefined)
+    }
+    if (registro.avisarGrupo(encargo.grupo) && hayQueAuditar(encargo.grupo)) await avisarGrupo($, encargo.grupo)
+    return resultado
+  }).catch(async error => {
+    const resultado = { error: String(error) }
+    registro.marcar(encargo.id, 'fallido', { resultado }, Date.now())
+    if (iniciado) {
+      const fallos = registro.registrarFin(input.subtarea, false)
+      if (fallos === FALLOS_SEGUIDOS_ESCALA) void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (fallos): la subtarea ${input.subtarea} lleva ${fallos} fallos seguidos. Modelos probados: ${input.trabajador ?? 'trabajador'}. No la relances igual: cambia el enfoque o pregunta al usuario.` }).catch(() => undefined)
+    }
+    if (registro.avisarGrupo(encargo.grupo) && hayQueAuditar(encargo.grupo)) await avisarGrupo($, encargo.grupo)
+    return resultado
+  })
+  const primero = await Promise.race([inicio.then(() => 'lanzado'), promesa.then(() => 'fin')])
+  return { encargo, ...(primero === 'fin' ? { resultadoInmediato: await promesa } : {}), promesa }
+}
+
 export const register: Register = (on, options) => {
   const opt = (options ?? {}) as Opciones
   const modelos: Modelos = {
@@ -1419,6 +1524,7 @@ export const register: Register = (on, options) => {
     claude: lista(opt.claudeModels, ['haiku', 'sonnet', 'opus']),
   }
   const timeoutMs = Math.min(10, Math.max(1, Number(opt.timeoutMin ?? 8))) * 60_000
+  limiteInactividadMs = Math.min(120, Math.max(10, Number(opt.inactividadMin ?? INACTIVIDAD_MIN_POR_DEFECTO))) * 60_000
   contexto = { modelos, timeoutMs }
   presupuestoClaude = Math.max(0, Number(opt.presupuestoClaudeTokens ?? 400_000)) || 0
   const tema = String(opt.ntfyTema ?? '').trim()
@@ -1434,6 +1540,7 @@ export const register: Register = (on, options) => {
     await restaurarEstado($).catch(() => undefined)
     void refrescarCatalogo($, modelos, opt.catalogoEnLinea !== false).catch(() => undefined)
     $.clock.every(2000, () => guardarEstado($))
+    $.clock.every(60_000, () => void vigilar($).catch(() => undefined))
     // Proxy: el de los ajustes, si no el que ya trae el entorno, si no el de Windows (el que usa el navegador).
     const proxyEntorno = (await $.env.get('HTTPS_PROXY').catch(() => undefined)) ?? (await $.env.get('https_proxy').catch(() => undefined))
     const proxyWindows = opt.proxy || proxyEntorno
@@ -1495,7 +1602,7 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'delegar',
       description:
-        'Delega una tarea a un trabajador externo (ollama, opencode o claude headless) con el modelo elegido y devuelve su salida, el tiempo y los tokens que consumió. El resultado NO está verificado: debes auditarlo.',
+        'Lanza una tarea en segundo plano y devuelve sus ids al instante. Recibirás un aviso al terminar; consulta estado si hace falta y audita el resultado.',
       isDeferred: false,
       inputSchema: {
         type: 'object',
@@ -1519,7 +1626,7 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'delegar_varios',
       description:
-        'Lanza VARIAS subtareas a la vez, cada una a un agente distinto (el centro elige el mejor modelo libre y cambia solo si falla). Devuelve todos los resultados cuando terminan. Úsalo para las subtareas que no dependen unas de otras.',
+        'Lanza varias subtareas en segundo plano y devuelve sus ids al instante. Recibirás un único aviso cuando termine el grupo; consulta estado si hace falta.',
       isDeferred: false,
       inputSchema: {
         type: 'object',
@@ -1549,6 +1656,7 @@ export const register: Register = (on, options) => {
         required: ['tareas'],
       },
     })
+    await $.tool.register({ name: 'estado', description: 'Devuelve encargos recientes (por defecto los últimos 30), con estado en_cola/corriendo/terminado/fallido, segundos, id de trabajo y resultado al terminar. Filtra por grupo o por ids de encargo eN.', isDeferred: false, inputSchema: { type: 'object', properties: { grupo: { type: 'string', description: 'Id de grupo devuelto por delegar_varios; devuelve todos sus encargos.' }, ids: { type: 'array', items: { type: 'string' }, description: 'Ids de encargo eN devueltos al lanzar; devuelve solo esos encargos.' } } } })
     await $.tool.register({
       name: 'buscar_skills',
       description: 'Busca entre las skills instaladas (las del usuario y las de sus plugins) las que sirven para una tarea. Devuelve nombre, descripción y ruta del SKILL.md. Pasa los nombres elegidos en "skills" al delegar.',
@@ -1562,7 +1670,7 @@ export const register: Register = (on, options) => {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'id que devolvió delegar' },
+          id: { type: 'string', description: 'Id de trabajo tXXXX o id de encargo eN devuelto por delegar/delegar_varios' },
           puntaje: { type: 'number', minimum: 1, maximum: 10 },
           nota: { type: 'string' },
         },
@@ -1798,9 +1906,13 @@ ${protocolo(modelos)}`
     }
   }).catch(async (_$, _e, next) => res({ error: `planificar falló: ${String(next.error)}` }))
 
-  on('tool.call', { tool: 'mcp__centro-agentes__delegar' }, async ($, e) =>
-    res(await delegarUno($, modelos, args(e) as Encargo, timeoutMs)),
-  ).catch(async (_$, _e, next) => res({ error: `delegar falló: ${String(next.error)}` }))
+  on('tool.call', { tool: 'mcp__centro-agentes__delegar' }, async ($, e) => {
+    const input = args(e) as Encargo
+    const { encargo, resultadoInmediato, promesa } = await lanzarEncargo($, modelos, input, timeoutMs)
+    if (resultadoInmediato) return res(resultadoInmediato)
+    void promesa
+    return res({ encargo: encargo.id, grupo: encargo.grupo, ...(input.subtarea === undefined ? {} : { subtarea: input.subtarea }), estado: 'lanzado', aviso: 'Trabajando en segundo plano. Recibirás UN aviso cuando termine el grupo; mientras, sigue con otra cosa o consulta con la herramienta estado.' })
+  }).catch(async (_$, _e, next) => res({ error: `delegar falló: ${String(next.error)}` }))
 
   on('tool.call', { tool: 'mcp__centro-agentes__delegar_varios' }, async ($, e) => {
     const { tareas } = args(e) as { tareas: Encargo[] | string }
@@ -1810,34 +1922,65 @@ ${protocolo(modelos)}`
     // Todas a la vez: cada una elige el mejor modelo libre, así trabajan agentes distintos en paralelo.
     // Una subtarea que espera a otras del mismo lote arranca sola cuando esas terminan bien (y pasan su verificación).
     const subs = (await read($, plan))?.subtareas ?? []
-    const porN = new Map(lista.filter(t => t.subtarea !== undefined).map(t => [t.subtarea!, t]))
+    const grupo = registro.nuevoGrupo()
+    const encargos = lista.map(t => registro.nuevoEncargo({ grupo, subtarea: t.subtarea }, Date.now()))
+    const porIndice = new Map(lista.map((t, i) => [i, t]))
     const enMarcha = new Map<number, Promise<any>>()
-    const lanzar = (t: Encargo, camino = new Set<number>()): Promise<any> => {
+    const iniciar = (i: number, camino = new Set<number>()): Promise<any> => {
+      const t = porIndice.get(i)!
       const n = t.subtarea
-      if (n === undefined) return delegarUno($, modelos, t, timeoutMs)
-      const ya = enMarcha.get(n)
+      const ya = enMarcha.get(i)
       if (ya) return ya
-      const espera = bloqueos(subs, n)
-      // Las que espera fuera del lote (o en un ciclo) no se pueden esperar aquí: delegarUno devuelve el aviso.
-      const enLote = espera.filter(e => porN.has(e) && !camino.has(e))
+      const espera = n === undefined ? [] : bloqueos(subs, n)
+      const enLote = espera.map(dep => lista.findIndex(x => x.subtarea === dep)).filter(j => j >= 0 && j !== i && !camino.has(j))
       const p = (async () => {
-        if (!espera.length || enLote.length < espera.length) return delegarUno($, modelos, t, timeoutMs)
-        const previas = await Promise.all(enLote.map(e => lanzar(porN.get(e)!, new Set([...camino, n]))))
-        const mal = previas.filter(r => !r.exito || r.verificacion?.ok === false).map(r => r.subtarea)
-        if (mal.length) return { subtarea: n, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${n}.` }
-        return { ...(await delegarUno($, modelos, t, timeoutMs, true)), tras: enLote }
+        if (!espera.length || enLote.length < espera.length) return lanzarEncargo($, modelos, t, timeoutMs, grupo, false, encargos[i])
+        const previas = await Promise.all(enLote.map(async j => {
+          const previa = await iniciar(j, new Set([...camino, i]))
+          return { resultado: await previa.promesa, subtarea: lista[j].subtarea }
+        }))
+        const mal = previas.filter(x => !x.resultado?.exito || x.resultado?.verificacion?.ok === false).map(x => x.subtarea)
+        if (mal.length) {
+          const resultado = { subtarea: n, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${n}.` }
+          registro.marcar(encargos[i].id, 'fallido', { resultado }, Date.now())
+          if (registro.avisarGrupo(grupo) && hayQueAuditar(grupo)) await avisarGrupo($, grupo)
+          return { encargo: encargos[i], resultadoInmediato: resultado, resultado, promesa: Promise.resolve(resultado) }
+        }
+        return { ...(await lanzarEncargo($, modelos, t, timeoutMs, grupo, true, encargos[i])), tras: enLote.map(j => lista[j].subtarea) }
       })()
-      enMarcha.set(n, p)
+      enMarcha.set(i, p)
       return p
     }
-    const resultados = await Promise.all(lista.map(t => lanzar(t)))
-    return res({ resultados, aviso: 'Resultados sin verificar. Audita cada uno y llama a registrar_auditoria con su id.' })
+    const respuesta = await Promise.all(lista.map(async (t, i) => {
+      const espera = t.subtarea === undefined ? [] : bloqueos(subs, t.subtarea)
+      const enLote = espera.some(dep => lista.some(x => x.subtarea === dep))
+      if (enLote) {
+        void iniciar(i)
+        return { encargo: encargos[i].id, ...(t.subtarea === undefined ? {} : { subtarea: t.subtarea }), estado: 'en_espera' as const }
+      }
+      const lanzamiento = iniciar(i)
+      const inmediato = await Promise.race([lanzamiento, new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 1500))])
+      const error = inmediato?.resultadoInmediato?.error
+      return { encargo: encargos[i].id, ...(t.subtarea === undefined ? {} : { subtarea: t.subtarea }), estado: error ? 'fallido' as const : 'lanzado' as const, ...(error ? { error } : {}) }
+    }))
+    return res({ grupo, encargos: respuesta, aviso: 'Trabajando en segundo plano. Recibirás UN aviso cuando termine todo el grupo; no esperes ni sondees en bucle. Audita los resultados al recibir el aviso.' })
   }).catch(async (_$, _e, next) => res({ error: `delegar_varios falló: ${String(next.error)}` }))
+
+  on('tool.call', { tool: 'mcp__centro-agentes__estado' }, async ($, e) => {
+    const filtro = args(e) as { grupo?: string; ids?: string[] }
+    const todos = registro.todos()
+    const encargos = (filtro.ids?.length ? todos.filter(x => filtro.ids!.includes(x.id)) : filtro.grupo ? todos.filter(x => x.grupo === filtro.grupo) : todos.slice(-30))
+    const resumen = resumenEstado(encargos, Date.now())
+    return res({ encargos: resumen, corriendo: encargos.filter(x => x.estado === 'corriendo').length, en_cola: encargos.filter(x => x.estado === 'en_cola').length, terminados: encargos.filter(x => x.estado === 'terminado').length, fallidos: encargos.filter(x => x.estado === 'fallido').length })
+  })
 
   on('tool.call', { tool: 'mcp__centro-agentes__registrar_auditoria' }, async ($, e) => {
     const { id, puntaje, nota } = args(e) as { id: string; puntaje: number; nota?: string }
+    const encargo = /^e\d+$/.test(id) ? registro.obtener(id) : undefined
+    if (/^e\d+$/.test(id) && encargo && !encargo.trabajoId) return res({ error: `El encargo ${id} todavía no terminó` })
+    const trabajoId = encargo?.trabajoId ?? id
     const lista = (await read($, trabajos)) ?? []
-    const t = lista.find(x => x.id === id)
+    const t = lista.find(x => x.id === trabajoId)
     if (!t) return res({ error: `No existe el trabajo ${id}` })
     const p = Math.max(1, Math.min(10, Math.round(puntaje)))
 
@@ -1849,8 +1992,8 @@ ${protocolo(modelos)}`
     c.msTotal += t.ms ?? 0
     await $.store.set(STORE_KEY, tabla)
 
-    await update($, trabajos, l => (l ?? []).map(x => (x.id === id ? { ...x, puntaje: p } : x)))
-    await puntuarEnHistorial($, id, p)
+    await update($, trabajos, l => (l ?? []).map(x => (x.id === trabajoId ? { ...x, puntaje: p } : x)))
+    await puntuarEnHistorial($, trabajoId, p)
     await anotarCerebro($, t, p, nota)
     const avisoArchivo = await marcar($, t.subtarea, { estado: p >= 6 ? 'solucionado' : 'pendiente', quien: t.trabajador, puntaje: p })
     await avisarSiTermino($)

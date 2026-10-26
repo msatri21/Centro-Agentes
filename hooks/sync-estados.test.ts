@@ -1,9 +1,10 @@
+import { delegarYEsperar, delegarVariosYEsperar } from './ayuda-asincrona'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { scriptFalso } from './scriptFalso'
 import { estadosInterrumpidos } from './register'
 
-const out = (r: any) => JSON.parse(r.result)
+const out = (r: any) => r?.result ? JSON.parse(r.result) : r
 const base = (on: any) => {
   mock.store(on)
   mock.clock(on)
@@ -15,7 +16,7 @@ const base = (on: any) => {
   on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
 }
 const planificar = ($: any, subtareas: any[], manuales?: number[]) => $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'demo', subtareas, manuales, cwd: 'C:/proyecto' } })
-const delegar = ($: any, subtarea: number) => $.tool.call({ tool: 'mcp__centro-agentes__delegar', input: { trabajador: 'claude', categoria: 'x', tarea: 'hazlo', subtarea } })
+const delegar = ($: any, subtarea: number) => delegarYEsperar($, { trabajador: 'claude', categoria: 'x', tarea: 'hazlo', subtarea })
 
 test('reserva antes de iniciar, termina en realizado y evita duplicar o delegar manuales', async ($, on) => {
   base(on)
