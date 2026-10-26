@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { huellaDeModelos } from '../hooks/catalogo.ts'
+import { llamarHastaTerminar } from './ayuda-prueba.mjs'
 
 const servidor = fileURLToPath(new URL('./centro-mcp.mjs', import.meta.url))
 const temporal = fs.mkdtempSync(path.join(os.tmpdir(), 'centro-mcp-catalogo-'))
@@ -109,7 +110,7 @@ assert.equal(conImagen.modelos[0].modelo, 'opencode/ve')
 assert.equal(conImagen.modelos[0].imagen, 'si')
 console.log('✓ modelos lista el catálogo y filtra por necesita')
 
-const detectado = await jefe.llamar('delegar', { cwd: raiz, categoria: 'texto', tarea: 'transcribe estas capturas de pantalla' })
+const detectado = await llamarHastaTerminar((n, a) => jefe.llamar(n, a), 'delegar', { cwd: raiz, categoria: 'texto', tarea: 'transcribe estas capturas de pantalla' })
 assert.equal(detectado.exito, true)
 assert.equal(detectado.trabajador, 'opencode:opencode/ve')
 assert.deepEqual(detectado.necesita, ['imagen'])
@@ -117,7 +118,7 @@ assert.equal(detectado.detectada, true)
 assert.equal(lanzamientos(), 1)
 console.log('✓ delegar usa un modelo con imagen y devuelve detectada')
 
-const forzado = await jefe.llamar('delegar', { cwd: raiz, categoria: 'texto', tarea: 'transcribe estas capturas de pantalla', modelo: 'opencode/ci' })
+const forzado = await llamarHastaTerminar((n, a) => jefe.llamar(n, a), 'delegar', { cwd: raiz, categoria: 'texto', tarea: 'transcribe estas capturas de pantalla', modelo: 'opencode/ci' })
 assert.equal(forzado.exito, true)
 assert.equal(forzado.trabajador, 'opencode:opencode/ci')
 assert.match(forzado.aviso_capacidad, /no la tiene/)
@@ -140,7 +141,7 @@ jefe.cerrar()
 const sinImagen = cliente({ casa: nuevaCasa(catalogo({ imagenEnVe: false })), chats: path.join(temporal, 'chats-sin-imagen') })
 await sinImagen.iniciar()
 const antes = lanzamientos()
-const imposible = await sinImagen.llamar('delegar', { cwd: raiz, categoria: 'texto', tarea: 'transcribe estas capturas de pantalla' })
+const imposible = await llamarHastaTerminar((n, a) => sinImagen.llamar(n, a), 'delegar', { cwd: raiz, categoria: 'texto', tarea: 'transcribe estas capturas de pantalla' })
 assert.match(imposible.error, /Ningún modelo conocido tiene la capacidad imagen/)
 assert.deepEqual(imposible.necesita, ['imagen'])
 assert.equal(imposible.detectada, true)

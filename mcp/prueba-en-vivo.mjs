@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { llamarHastaTerminar } from './ayuda-prueba.mjs'
 
 const AQUI = path.dirname(fileURLToPath(import.meta.url))
 const TANDAS = Number(process.argv[2]) > 0 ? Number(process.argv[2]) : 30
@@ -95,7 +96,7 @@ try {
       console.log('')
     }
     log(`Tanda ${k}: lanzo cinco agentes reales.`)
-    const r = await herramienta('delegar_varios', {
+    const r = await llamarHastaTerminar(herramienta, 'delegar_varios', {
       tareas: tareas(k).map((t, i) => ({ ...t, cwd: SANDBOX, trabajador: 'opencode', modelo: MODELOS[i % MODELOS.length] })),
     })
     for (const x of r.resultados ?? []) {
