@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { FALLOS_SEGUIDOS_ESCALA, INACTIVIDAD_MIN_POR_DEFECTO, LIMITE_ARCHIVOS_BORRADOS, LIMITE_ARCHIVOS_MODIFICADOS, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, choques, contarCambios, esErrorDeArranque, esMasiva, inactivo, resumenEstado, textoAvisoGrupo } from './asincrono'
+import { AMARILLO_MS_POR_DEFECTO, MARGEN_AGENTE_VIVO_MS, agenteVivo, FALLOS_SEGUIDOS_ESCALA, INACTIVIDAD_MIN_POR_DEFECTO, LIMITE_ARCHIVOS_BORRADOS, LIMITE_ARCHIVOS_MODIFICADOS, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, choques, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, type Encargo, type TrabajoVivo } from './asincrono'
 
 test('el semáforo da cuatro huecos, la quinta espera y liberar dos veces no cuela a dos', async () => {
   expect(MAX_PARALELO).toBe(4)
@@ -176,4 +176,91 @@ test('arma avisos de grupo con y sin escaladas', () => {
   expect(avisado).toContain('ESCALADA (fuera de alcance): opencode')
   expect(avisado).toContain('ESCALADA (modificación masiva): opencode: 16 archivos modificados')
   expect(avisado).toContain('ESCALADA (choque de ramas): opencode y codex')
+})
+
+test('formatea duraciones cortas en los bordes', () => {
+  expect(duracionCorta(0)).toBe('0 s')
+  expect(duracionCorta(59_000)).toBe('59 s')
+  expect(duracionCorta(60_000)).toBe('1 min')
+  expect(duracionCorta(59 * 60_000)).toBe('59 min')
+  expect(duracionCorta(60 * 60_000)).toBe('1 h 00 min')
+  expect(duracionCorta(65 * 60_000)).toBe('1 h 05 min')
+  expect(duracionCorta(Number.NaN)).toBe('0 s')
+  expect(duracionCorta(-1)).toBe('0 s')
+})
+
+test('filas vivas filtra, ordena, mide señal y separa agente del modelo', () => {
+  const trabajos: TrabajoVivo[] = [
+    { id: 't2', trabajador: 'ollama:gpt-oss:20b-cloud', estado: 'corriendo', inicio: 200, ultimaActividad: 1000 },
+    { id: 't1', trabajador: 'opencode:opencode/big-pickle', estado: 'corriendo', inicio: 100 },
+    { id: 't3', trabajador: 'otro:model', estado: 'terminado', inicio: 0 },
+  ]
+  const filas = filasVivas(trabajos, 600_101)
+  expect(filas.map(f => f.id)).toEqual(['t1', 't2'])
+  expect(filas[0]).toMatchObject({ agente: 'opencode', modelo: 'big-pickle', sinSenalMs: AMARILLO_MS_POR_DEFECTO + 1, amarillo: true })
+  expect(filas[1]).toMatchObject({ agente: 'ollama', modelo: 'gpt-oss:20b-cloud', sinSenalMs: 599_101, amarillo: false })
+  expect(filasVivas([{ id: 'x', trabajador: 'a:m', estado: 'corriendo', inicio: 0 }], AMARILLO_MS_POR_DEFECTO)[0].amarillo).toBe(false)
+})
+
+test('texto de barra resume cola, grupos, paralelismo e inactividad', () => {
+  const e = (id: string, grupo: string, estado: Encargo['estado']): Encargo => ({ id, grupo, estado, escalados: [], inicio: 0 })
+  expect(textoBarra([], [], 0)).toBe('')
+  const vivos: TrabajoVivo[] = [1, 2, 3].map(n => ({ id: `t${n}`, trabajador: `a${n}:m`, estado: 'corriendo', inicio: 0 }))
+  expect(textoBarra(vivos, [], 1)).toBe('⚙ 3 trabajando')
+  expect(textoBarra([], [e('q', 'q', 'en_cola')], 1)).toBe('⚙ en espera · 1 en cola')
+  expect(textoBarra([], [e('a', 'g1', 'terminado'), e('b', 'g1', 'corriendo'), e('c', 'g2', 'en_cola'), e('d', 'g3', 'corriendo')], 1)).toContain('g1: 1/2 listos · g2: 0/1 listos · +1 grupos')
+  expect(textoBarra([], [e('e3', 'e3', 'en_cola')], 1)).toBe('⚙ en espera · 1 en cola')
+  expect(textoBarra([{ id: 't', trabajador: 'a:m', estado: 'corriendo', inicio: 0 }], [], AMARILLO_MS_POR_DEFECTO + 1)).toBe('⚠ 1 trabajando · ⚠ 1 sin señal')
+})
+
+test('textoEstado incluye el resumen y cada detalle; también expresa inactividad total', () => {
+  const encargo = (id: string, grupo: string, estado: Encargo['estado']): Encargo => ({ id, grupo, estado, escalados: [], inicio: 0 })
+  const texto = textoEstado([
+    { id: 't', trabajador: 'opencode:vendor/modelo-x', estado: 'corriendo', inicio: 0, ultimaActividad: 0, subtarea: 7 },
+  ], [encargo('e1', 'g1', 'terminado'), encargo('e2', 'g1', 'corriendo'), encargo('q', 'q', 'en_cola')], AMARILLO_MS_POR_DEFECTO + 1)
+  expect(texto).toBe([
+    'Centro de agentes: ⚠ 1 trabajando · 1 en cola · g1: 1/2 listos · ⚠ 1 sin señal',
+    '● opencode · modelo-x · subtarea 7 · lleva 10 min · última señal hace 10 min ⚠ sin señal desde hace tiempo',
+    'En cola: 1 (esperando hueco: máximo 4 agentes a la vez)',
+    'Grupo g1: 1/2 listos',
+    'Aviso: 1 agente(s) llevan más de 10 min sin dar señales; a los 40 min el jefe recibe una escalada.',
+  ].join('\n'))
+  expect(textoEstado([], [], 0)).toBe('Centro de agentes: nada trabajando')
+})
+
+test('el registro se guarda y se recupera tras una recarga: ids, grupos, avisos dados y fallos', () => {
+  const a = new Registro()
+  const g = a.nuevoGrupo()
+  const e1 = a.nuevoEncargo({ grupo: g, subtarea: 3 }, 1000)
+  const e2 = a.nuevoEncargo({ grupo: g }, 1000)
+  a.marcar(e1.id, 'terminado', { trabajoId: 't1', resultado: { id: 't1' } }, 2000)
+  a.marcar(e2.id, 'corriendo', {}, 1500)
+  a.registrarFin(3, false)
+
+  const b = new Registro()
+  b.importar(JSON.parse(JSON.stringify(a.exportar())))
+  expect(b.todos().map(e => [e.id, e.estado, e.trabajoId])).toEqual([['e1', 'terminado', 't1'], ['e2', 'corriendo', undefined]])
+  // Los contadores siguen: ni el próximo encargo ni el próximo grupo repiten ids.
+  expect(b.nuevoEncargo({}, 3000).id).toBe('e3')
+  expect(b.nuevoGrupo()).toBe('g2')
+  // El segundo fallo seguido de la subtarea 3 sigue contando desde el primero.
+  expect(b.registrarFin(3, false)).toBe(2)
+  // Un grupo ya avisado no se vuelve a avisar tras recargar.
+  b.marcar('e2', 'terminado', {}, 4000)
+  expect(b.avisarGrupo(g)).toBe(true)
+  const c = new Registro()
+  c.importar(JSON.parse(JSON.stringify(b.exportar())))
+  expect(c.avisarGrupo(g)).toBe(false)
+  // Sin datos guardados no cambia nada.
+  c.importar(undefined)
+  expect(c.todos()).toHaveLength(3)
+})
+
+test('un agente cuenta como vivo con pid.json sin fin.json y reciente; un pid viejo o con fin no frena nada', () => {
+  const ahora = 10_000_000
+  expect(agenteVivo({ inicio: ahora - 60_000 }, false, ahora)).toBe(true)
+  expect(agenteVivo({ inicio: ahora - 60_000 }, true, ahora)).toBe(false)
+  expect(agenteVivo({ inicio: ahora - MARGEN_AGENTE_VIVO_MS - 1 }, false, ahora)).toBe(false)
+  expect(agenteVivo(undefined, false, ahora)).toBe(false)
+  expect(agenteVivo({}, false, ahora)).toBe(false)
 })

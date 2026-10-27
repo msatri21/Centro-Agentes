@@ -8,7 +8,7 @@ import { entradaDe, puntosCatalogo } from './catalogo.ts'
 export type Celda = { n: number; suma: number; msTotal: number }
 export type Puntajes = Record<string, Record<string, Celda>>
 
-export type Salida = { texto: string; tokensIn?: number; tokensOut?: number; ventana?: number; costo?: number }
+export type Salida = { texto: string; tokensIn?: number; tokensOut?: number; ventana?: number; costo?: number; errorTipo?: string; reintentoMs?: number }
 
 // Un "trabajador" del ranking es trabajador:modelo (o solo trabajador si usa el modelo por defecto).
 export const clave = (t: Trabajador, modelo?: string) => (modelo ? `${t}:${modelo}` : t)
@@ -74,6 +74,7 @@ export function leerOpencode(stdout: string): Salida {
   let tokensIn = 0
   let tokensOut = 0
   let costo = 0
+  const salida: Salida = { texto: '', tokensIn, tokensOut, costo }
   for (const linea of stdout.split(/\r?\n/)) {
     if (!linea.trim()) continue
     let ev: any
@@ -84,15 +85,26 @@ export function leerOpencode(stdout: string): Salida {
       continue
     }
     if (ev.type === 'text') texto += (ev.part?.text ?? '') + '\n'
-    else if (ev.type === 'error') texto += `[error] ${ev.error?.data?.message ?? ev.error?.name ?? 'desconocido'}\n`
-    else if (ev.type === 'step_finish') {
+    else if (ev.type === 'error') {
+      // Formatos vistos: {error:{type,message,retryAfterMs}}, {error:{name,data:{message}}} y error como texto plano.
+      const e = typeof ev.error === 'string' ? { message: ev.error } : (ev.error ?? {})
+      texto += `[error] ${e.message ?? e.data?.message ?? e.name ?? 'desconocido'}\n`
+      if (e.type) {
+        salida.errorTipo = e.type
+        if (e.retryAfterMs) salida.reintentoMs = e.retryAfterMs
+      }
+    } else if (ev.type === 'step_finish') {
       const t = ev.part?.tokens ?? {}
       tokensIn += (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
       tokensOut += (t.output ?? 0) + (t.reasoning ?? 0)
       costo += ev.part?.cost ?? 0
     }
   }
-  return { texto: texto.trim(), tokensIn, tokensOut, costo }
+  salida.texto = texto.trim()
+  salida.tokensIn = tokensIn
+  salida.tokensOut = tokensOut
+  salida.costo = costo
+  return salida
 }
 
 // Errores que indican que la red o el proxy bloquean, no que el modelo lo hizo mal.

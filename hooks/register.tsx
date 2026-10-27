@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualiz
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { FALLOS_SEGUIDOS_ESCALA, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, esErrorDeArranque, esMasiva, inactivo, resumenEstado, textoAvisoGrupo } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, esErrorDeArranque, esMasiva, inactivo, resumenEstado, textoAvisoGrupo, textoEstado, type RegistroGuardado } from './asincrono.ts'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -54,6 +54,7 @@ type Opciones = {
   certificadoCA?: string
   esperaInicialSeg?: number
   ponytailAutomatico?: boolean
+  lanzadorDesacoplado?: boolean
   catalogoEnLinea?: boolean
   abrirAlIniciar?: boolean
   modoJefe?: boolean
@@ -166,6 +167,8 @@ const salud = new Map<Trabajador, { ok: boolean; en: number }>()
 let red: Record<string, string> = {}
 let esperaInicialMs = 90_000
 let limiteInactividadMs = INACTIVIDAD_MIN_POR_DEFECTO * 60_000
+// Los agentes corren bajo mcp/lanzador.mjs y dejan su salida en disco (ajuste lanzadorDesacoplado); sin el ajuste, el camino de siempre.
+let lanzadorDesacoplado = false
 const escaladasVigilante = new Set<string>()
 // Las skills de ponytail que el centro añade solo, según la clase de tarea (ajuste ponytailAutomatico).
 let skillsAuto = true
@@ -264,6 +267,137 @@ export async function vigilar($: EngineInterface, ahora = Date.now()) {
 
 type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean }
 
+// Cada cuánto se mira el log del agente en disco.
+const SONDEO_MS = 500
+// Tras pedir la cancelación, cuánto se espera al fin.json antes de darlo por perdido.
+const ESPERA_CANCELAR_MS = 5000
+
+// Ejecuta al agente a través de mcp/lanzador.mjs: él deja la salida (<id>.log) y el final (<id>.fin.json) en disco y
+// sigue vivo aunque este plugin se recargue; aquí solo se lee de ahí. Devuelve undefined si no pudo preparar el
+// lanzamiento (el agente no llegó a arrancar), para que se use el camino de siempre.
+async function correrDesacoplado(
+  $: EngineInterface,
+  argv: string[],
+  init: { cwd?: string; stdin?: string; timeoutMs: number; trabajoId: string },
+  env: Record<string, string>,
+  alTrozo: (stdout: string) => void,
+  alCortar: (cortar: (por: string) => void) => void,
+): Promise<Corrida | undefined> {
+  const id = init.trabajoId
+  const carpeta = `${await carpetaChat($)}/trabajos`
+  const ruta = (ext: string) => `${carpeta}/${id}${ext}`
+  try {
+    let raiz = ''
+    try { raiz = $.plugin.root } catch {}
+    await $.fs.write(ruta('.argv.json'), JSON.stringify(argv))
+    if (init.stdin !== undefined) await $.fs.write(ruta('.in'), init.stdin)
+    // El primer proceso solo relanza al lanzador fuera de nuestro árbol de procesos y sale al instante.
+    const lanzar = $.process.spawn({ argv: ['node', `${raiz}/mcp/lanzador.mjs`, carpeta, id, '--desacoplado'], cwd: init.cwd, env: Object.keys(env).length ? env : undefined })
+    for await (const _ of lanzar) {}
+    // Si node no pudo con el lanzador, el agente no arrancó: se vuelve al camino de siempre en vez de esperar un fin que no llegará.
+    if ((await lanzar.result).code !== 0) return undefined
+  } catch {
+    return undefined
+  }
+  return esperarArchivos($, { carpeta, id, timeoutMs: init.timeoutMs, trabajoId: id }, alTrozo, alCortar)
+}
+
+// Lee de disco lo que deja el lanzador (<id>.log en vivo y <id>.fin.json al terminar) hasta que el agente acaba.
+// Sirve igual para el agente recién lanzado que para uno reencontrado tras recargar el plugin.
+async function esperarArchivos(
+  $: EngineInterface,
+  init: { carpeta: string; id: string; timeoutMs: number; trabajoId: string },
+  alTrozo: (stdout: string) => void,
+  alCortar: (cortar: (por: string) => void) => void,
+): Promise<Corrida> {
+  const id = init.id
+  const ruta = (ext: string) => `${init.carpeta}/${id}${ext}`
+  let stdout = ''
+  let stderr = ''
+  let motivo = ''
+  let leido = 0
+  let terminado = false
+  let corteEn = 0
+  const cortar = (por: string) => {
+    if (motivo) return
+    motivo = por
+    corteEn = Date.now()
+    void $.fs.write(ruta('.cancelar'), por).catch(() => undefined)
+  }
+  alCortar(cortar)
+  let reloj: { cancel(): void } = { cancel() {} }
+  const armarReloj = () => {
+    reloj = $.clock.after(init.timeoutMs, async () => {
+      if (terminado || motivo) return
+      if (await esperaUsuario($, init.trabajoId)) armarReloj()
+      else if (!terminado) cortar('pasó el tiempo máximo')
+    })
+  }
+  armarReloj()
+  let callado: { cancel(): void } | undefined
+  const armarCallado = () => {
+    callado = $.clock.after(esperaInicialMs, async () => {
+      if (terminado || motivo) return
+      if (await esperaUsuario($, init.trabajoId)) armarCallado()
+      else if (!terminado) cortar(`sin respuesta en ${esperaInicialMs / 1000} s (¿red o proxy bloqueado?)`)
+    })
+  }
+  armarCallado()
+  // Lee del log lo que llegó desde la última vez; solo cuentan las líneas completas.
+  const leerNuevo = async () => {
+    const texto = await $.fs.read(ruta('.log')).catch(() => '')
+    const trozo = texto.slice(leido)
+    const corte = trozo.lastIndexOf('\n')
+    if (corte < 0) return
+    leido += corte + 1
+    let hayStdout = false
+    for (const linea of trozo.slice(0, corte).split('\n')) {
+      let parte: { s?: string; t?: string }
+      try { parte = JSON.parse(linea) } catch { continue }
+      const t = String(parte.t ?? '')
+      callado?.cancel()
+      callado = undefined
+      if (parte.s === 'stdout') {
+        stdout += t
+        hayStdout = true
+        // opencode informa los errores del proveedor en su stdout JSON.
+        if (t.includes('"type":"error"') && esErrorDeRed(t)) cortar('error de red')
+      } else {
+        stderr += t
+        if (esErrorDeRed(t)) cortar('error de red')
+      }
+    }
+    if (hayStdout) alTrozo(stdout)
+  }
+  let fin: { code?: number | null; cancelado?: boolean; error?: string } | undefined
+  try {
+    while (true) {
+      await leerNuevo()
+      const f = await $.fs.read(ruta('.fin.json')).catch(() => '')
+      if (f) {
+        try { fin = JSON.parse(f) } catch {}
+        if (fin) { await leerNuevo(); break }
+      }
+      // Pidió cortar pero el lanzador no contesta (murió): se da por perdido en vez de esperar para siempre.
+      if (motivo && Date.now() - corteEn > ESPERA_CANCELAR_MS) break
+      await new Promise<void>(resolver => setTimeout(resolver, SONDEO_MS))
+    }
+  } finally {
+    terminado = true
+    reloj.cancel()
+    callado?.cancel()
+  }
+  if (!motivo && fin?.cancelado) motivo = CANCELADO
+  const sinCodigo = !!motivo || !!fin?.error || !fin
+  return {
+    exitCode: sinCodigo ? null : (fin?.code ?? null),
+    stdout,
+    stderr: motivo ? `${stderr}\n[cortado: ${motivo}]` : fin?.error ? `${stderr}\n${fin.error}` : stderr,
+    isStdoutTruncated: false,
+    cortado: !!motivo,
+  }
+}
+
 // Lanza el proceso y lee su salida a trozos, para que el panel muestre en vivo lo que escribe cada agente.
 async function correrEnVivo(
   $: EngineInterface,
@@ -276,6 +410,10 @@ async function correrEnVivo(
   // CENTRO_*: así el agente sabe a qué chat y a qué trabajo pertenece (sus herramientas preguntar y pedir_permiso escriben ahí).
   const identidad = init.trabajoId ? { CENTRO_TRABAJADOR: '1', CENTRO_CHAT_DIR: await carpetaChat($), CENTRO_TRABAJO: init.trabajoId, CENTRO_ESPERA_MS: String(ESPERA_RESPUESTA_MS) } : {}
   const env = { ...red, ...(await entornoHermes($)), OLLAMA_API_BASE: 'http://127.0.0.1:11434', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(init.cwd ? { PWD: init.cwd } : {}), ...identidad }
+  if (lanzadorDesacoplado && init.trabajoId) {
+    const c = await correrDesacoplado($, argv, { ...init, trabajoId: init.trabajoId }, env, alTrozo, alCortar)
+    if (c) return c
+  }
   const flujo = $.process.spawn({ argv, cwd: init.cwd, input: init.stdin, env: Object.keys(env).length ? env : undefined })
   let stdout = ''
   let stderr = ''
@@ -539,6 +677,25 @@ export function esMasNueva(a: string, b: string): boolean {
   return false
 }
 
+// Agentes trabajando ahora en CUALQUIER chat de esta máquina: actualizar el plugin recarga las sesiones y no hay que hacerlo con ellos en marcha.
+export async function agentesVivos($: EngineInterface): Promise<number> {
+  const raiz = `${await carpetaWeb($)}/chats`
+  let vivos = 0
+  for (const chat of await $.fs.list(raiz).catch(() => [])) {
+    if (chat.kind !== 'dir') continue
+    const carpeta = `${raiz}/${chat.name}/trabajos`
+    const nombres = (await $.fs.list(carpeta).catch(() => [])).map(e => e.name)
+    for (const n of nombres.filter(x => x.endsWith('.pid.json'))) {
+      const id = n.slice(0, -'.pid.json'.length)
+      const pid = await $.fs.read(`${carpeta}/${n}`).then(s => JSON.parse(s) as { inicio?: number }).catch(() => undefined)
+      if (agenteVivo(pid, nombres.includes(`${id}.fin.json`), Date.now())) vivos++
+    }
+  }
+  return vivos
+}
+
+let reintentoActualizacion = false
+
 async function autoactualizar($: EngineInterface) {
   // Sin la marca BOM: algunos editores de Windows la ponen y JSON.parse falla con ella.
   const version = (texto: string) => (JSON.parse(texto.replace(/^﻿/, '')) as { version?: string }).version ?? '0'
@@ -546,6 +703,14 @@ async function autoactualizar($: EngineInterface) {
   // Cargado directamente desde la carpeta del proyecto (desarrollo), o buscado hace poco: nada que hacer.
   const ultima = await $.store.get(ULTIMA_BUSQUEDA_KEY).catch(() => undefined)
   if (!mia || !debeBuscarActualizacion($.plugin.root, typeof ultima === 'number' ? ultima : undefined, Date.now())) return
+  // Con agentes trabajando en algún chat no se toca nada: se vuelve a mirar en 5 min, sin gastar la búsqueda de las 6 horas.
+  if (await agentesVivos($)) {
+    if (!reintentoActualizacion) {
+      reintentoActualizacion = true
+      $.clock.after(5 * 60_000, () => { reintentoActualizacion = false; void autoactualizar($).catch(() => undefined) })
+    }
+    return
+  }
   await $.store.set(ULTIMA_BUSQUEDA_KEY, Date.now())
   const ok = (r: { exitCode: number | null }) => r.exitCode === 0
   // Sin internet o sin acceso al repositorio: se sigue con lo que hay, sin avisar.
@@ -669,12 +834,12 @@ async function carpetaChat($: EngineInterface) {
   return `${await carpetaWeb($)}/chats/${SID}`
 }
 
-type Guardado = { plan: Plan | null; planes?: Plan[]; trabajos: Trabajo[]; encargos: [number, Encargo][]; nombre?: string }
+type Guardado = { plan: Plan | null; planes?: Plan[]; trabajos: Trabajo[]; encargos: [number, Encargo][]; nombre?: string; registro?: RegistroGuardado }
 let ultimoGuardado = ''
 
 // Guarda plan, trabajos y encargos del chat cuando cambian (se llama cada 2 s).
 async function guardarEstado($: EngineInterface) {
-  const estado: Guardado = { plan: (await read($, plan)) ?? null, planes: (await read($, planes)) ?? [], trabajos: (await read($, trabajos)) ?? [], encargos: [...encargos], nombre: nombreChat }
+  const estado: Guardado = { plan: (await read($, plan)) ?? null, planes: (await read($, planes)) ?? [], trabajos: (await read($, trabajos)) ?? [], encargos: [...encargos], nombre: nombreChat, registro: registro.exportar() }
   // La salida en vivo cambia a cada momento y no hace falta para recuperar el centro.
   const texto = JSON.stringify({ ...estado, trabajos: estado.trabajos.map(t => ({ ...t, salida: t.estado === 'corriendo' ? undefined : t.salida })) })
   if (texto === ultimoGuardado) return
@@ -685,11 +850,12 @@ async function guardarEstado($: EngineInterface) {
 // Lo que se recupera de un estado guardado: los trabajos que estaban en marcha quedan interrumpidos
 // (sus procesos murieron con el chat) y sus subtareas vuelven a pendiente para poder relanzarlas.
 export function recuperar(g: Guardado): Guardado & { interrumpidos: number } {
-  const corriendo = g.trabajos.filter(t => t.estado === 'corriendo')
+  // Un trabajo con lanzador sigue en disco aunque el plugin se recargue: se reengancha en vez de darlo por interrumpido.
+  const corriendo = g.trabajos.filter(t => t.estado === 'corriendo' && !t.lanzador)
   const subs = new Set(corriendo.map(t => t.subtarea).filter((n): n is number => n !== undefined))
   return {
     plan: g.plan ? { ...g.plan, subtareas: g.plan.subtareas.map(s => { const estado = estadoSubtareaNuevo(s.estado); return estado === 'en_proceso' && subs.has(s.n) ? { ...s, estado: 'pendiente' as const } : { ...s, estado } }) } : null,
-    trabajos: g.trabajos.map(t => (t.estado === 'corriendo' ? { ...t, estado: 'error' as const, salida: '[interrumpido: el chat se cerró mientras trabajaba]' } : t)),
+    trabajos: g.trabajos.map(t => (t.estado === 'corriendo' && !t.lanzador ? { ...t, estado: 'error' as const, salida: '[interrumpido: el chat se cerró mientras trabajaba]' } : t)),
     planes: (g.planes ?? []).map(p => ({ ...p, subtareas: p.subtareas.map(s => ({ ...s, estado: estadoSubtareaNuevo(s.estado) })) })),
     encargos: g.encargos,
     interrumpidos: corriendo.length,
@@ -698,8 +864,53 @@ export function recuperar(g: Guardado): Guardado & { interrumpidos: number } {
 
 export function estadosInterrumpidos(g: Guardado): { id: string; estado: 'pendiente' }[] {
   if (!g.plan?.tarea) return []
-  return [...new Set(g.trabajos.filter(t => t.estado === 'corriendo' && t.subtarea !== undefined).map(t => t.subtarea!))]
+  return [...new Set(g.trabajos.filter(t => t.estado === 'corriendo' && !t.lanzador && t.subtarea !== undefined).map(t => t.subtarea!))]
     .map(n => ({ id: `${g.plan!.tarea}.${n}`, estado: 'pendiente' as const }))
+}
+
+const reenganchados = new Set<string>()
+
+// Tras recargar el plugin, los agentes que seguían bajo su lanzador se reencuentran por sus archivos en disco.
+async function reengancharPendientes($: EngineInterface) {
+  const lista = ((await read($, trabajos)) ?? []).filter(t => t.estado === 'corriendo' && t.lanzador && !cortadores.has(t.id) && !reenganchados.has(t.id))
+  for (const t of lista) {
+    reenganchados.add(t.id)
+    void reenganchar($, t).catch(() => undefined)
+  }
+}
+
+// Sigue a un agente que arrancó el plugin anterior: espera su fin, cierra el trabajo y su encargo y avisa al jefe UNA vez.
+// No cambia de modelo ni cierra la copia aislada ni corre 'verificar': eso lo decide el jefe con lo que le cuenta el aviso.
+async function reenganchar($: EngineInterface, t: Trabajo) {
+  const { carpeta, id, cwd } = t.lanzador!
+  const limite = Math.max(60_000, (contexto?.timeoutMs ?? 8 * 60_000) - (Date.now() - t.inicio))
+  const c = await esperarArchivos($, { carpeta, id, timeoutMs: limite, trabajoId: t.id }, () => {
+    update($, trabajos, l => (l ?? []).map(x => (x.id === t.id ? { ...x, ultimaActividad: Date.now() } : x))).catch(() => {})
+  }, cortar => cortadores.set(t.id, cortar))
+  cortadores.delete(t.id)
+  const agente = t.trabajador.split(':')[0] as Trabajador
+  const { s, ok } = interpretarSalida(agente, c)
+  const ms = Date.now() - t.inicio
+  await update($, trabajos, l => (l ?? []).map(x => (x.id === t.id ? { ...x, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : x)))
+  const hecho = ((await read($, trabajos)) ?? []).find(x => x.id === t.id)
+  if (hecho) await guardarEnHistorial($, hecho).catch(() => undefined)
+  if (t.subtarea !== undefined) {
+    registro.registrarFin(t.subtarea, ok)
+    if (!ok) await marcar($, t.subtarea, { estado: 'pendiente' }).catch(() => undefined)
+  }
+  const resultado = {
+    id: t.id, ...(t.subtarea === undefined ? {} : { subtarea: t.subtarea }), trabajador: t.trabajador, exito: ok, segundos: Math.round(ms / 1000),
+    tokens: { entrada: s.tokensIn ?? 0, salida: s.tokensOut ?? 0 }, salida: s.texto.slice(-3000), reenganchado: true,
+    aviso: `Resultado recuperado tras recargar el plugin: el centro no cerró la copia aislada ni corrió 'verificar'${cwd ? `; el agente trabajó en ${cwd}: revisa sus cambios con git y júntalos tú si están bien` : ''}. No se probó otro modelo; si falló, decide tú si relanzar.`,
+    ...(cwd ? { carpeta: cwd } : {}),
+  }
+  const encargo = t.encargo ? registro.obtener(t.encargo) : undefined
+  if (encargo && (encargo.estado === 'corriendo' || encargo.estado === 'en_cola')) {
+    registro.marcar(encargo.id, ok ? 'terminado' : 'fallido', { trabajoId: t.id, resultado }, Date.now())
+    if (registro.avisarGrupo(encargo.grupo) && hayQueAuditar(encargo.grupo)) await avisarGrupo($, encargo.grupo)
+    return
+  }
+  void $.prompt.submit({ text: `[Centro de agentes MST] Tras recargar el plugin, ${t.trabajador} ${ok ? 'terminó' : 'falló'} (trabajo ${t.id}). ${resultado.aviso}\nSalida: ${resultado.salida.slice(-600)}` }).catch(() => undefined)
 }
 
 async function restaurarEstado($: EngineInterface) {
@@ -712,8 +923,13 @@ async function restaurarEstado($: EngineInterface) {
     return
   }
   if (g.nombre && !nombreChat) nombreChat = g.nombre
+  // Los encargos asíncronos (eN, gN) viven en memoria: se recuperan aunque el estado de la sesión siga ahí.
+  if (!registro.todos().length) registro.importar(g.registro)
   // Tras una recarga del mod el estado sigue en memoria: solo se recupera si está vacío.
-  if ((await read($, plan)) || ((await read($, trabajos)) ?? []).length) return
+  if ((await read($, plan)) || ((await read($, trabajos)) ?? []).length) {
+    await reengancharPendientes($)
+    return
+  }
   const r = recuperar(g)
   await update($, plan, () => r.plan)
   await update($, planes, () => r.planes ?? [])
@@ -726,6 +942,7 @@ async function restaurarEstado($: EngineInterface) {
     }
   }
   if (r.interrumpidos) $.ui.toast(`${TITULO}: recuperado. ${r.interrumpidos} trabajo(s) quedaron interrumpidos; relánzalos desde la web o con /mst.`)
+  await reengancharPendientes($)
 }
 
 // La clave vive en un archivo de tu carpeta de usuario: la misma para todas las sesiones y copias del plugin
@@ -959,17 +1176,35 @@ const todosLosCandidatos = (m: Modelos): Candidato[] =>
   (['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude'] as const).flatMap(t => m[t].map(modelo => ({ trabajador: t, modelo })))
 
 
+// Lo que dijo el agente (texto y tokens) y si salió bien, a partir de lo que dejó su proceso.
+function interpretarSalida(agente: Trabajador, r: Corrida): { s: Salida; ok: boolean } {
+  const s =
+    agente === 'ollama' ? leerOllama(r.stdout, r.stderr)
+    : agente === 'opencode' ? leerOpencode(r.stdout)
+    : agente === 'hermes' ? leerHermes(r.stdout)
+    : agente === 'aider' ? leerAider(r.stdout)
+    : agente === 'codex' ? leerCodex(r.stdout)
+    : leerClaude(r.stdout)
+  // opencode puede salir con 0 aunque el proveedor haya devuelto un error y nada de texto.
+  const ok = r.exitCode === 0 && !/^\[error\]/.test(s.texto.trim()) && (!['hermes', 'aider', 'codex'].includes(agente) || !!s.texto)
+  // ollama escribe sus estadísticas en stderr y hermes su session_id: solo se enseñan si algo falló.
+  const err = ['ollama', 'hermes', 'aider', 'codex'].includes(agente) ? (ok ? '' : sinAnsi(r.stderr).trim()) : r.stderr
+  s.texto = `${s.texto}${err ? `\n[stderr]\n${err.slice(-3000)}` : ''}`.trim()
+  if (r.isStdoutTruncated) s.texto += '\n[salida truncada]'
+  return { s, ok }
+}
+
 // Ejecuta la tarea con un trabajador y modelo, y deja su fila en el historial.
 async function intentar(
   $: EngineInterface,
   c: Candidato,
-  input: { categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]; clasificacion?: Trabajo['clasificacion'] },
+  input: { categoria: string; tarea: string; subtarea?: number; cwd?: string; skills?: string[]; clasificacion?: Trabajo['clasificacion']; encargoId?: string },
   timeoutMs: number,
 ): Promise<Intento> {
   const quien = clave(c.trabajador, c.modelo)
   const id = `t${Date.now().toString(36)}${(seq++).toString(36)}`
   const t0 = Date.now()
-  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, clasificacion: input.clasificacion, ultimaActividad: t0, plan: (await read($, plan))?.objetivo }
+  const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, clasificacion: input.clasificacion, ultimaActividad: t0, plan: (await read($, plan))?.objetivo, ...(input.encargoId ? { encargo: input.encargoId } : {}), ...(lanzadorDesacoplado ? { lanzador: { carpeta: `${await carpetaChat($)}/trabajos`, id, ...(input.cwd ? { cwd: input.cwd } : {}) } } : {}) }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
   await update($, plan, p => p ? { ...p, subtareas: p.subtareas.map(s => s.n === input.subtarea ? { ...s, estado: 'en_proceso', quien } : s) } : p)
   $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
@@ -1036,19 +1271,9 @@ ${PROTOCOLO_AGENTE}`
       marcado = ahora
       update($, trabajos, l => (l ?? []).map(t => (t.id === id ? { ...t, ultimaActividad: ahora } : t))).catch(() => {})
     }, cortar => cortadores.set(id, cortar))
-    s =
-      c.trabajador === 'ollama' ? leerOllama(r.stdout, r.stderr)
-      : c.trabajador === 'opencode' ? leerOpencode(r.stdout)
-      : c.trabajador === 'hermes' ? leerHermes(r.stdout)
-      : c.trabajador === 'aider' ? leerAider(r.stdout)
-      : c.trabajador === 'codex' ? leerCodex(r.stdout)
-      : leerClaude(r.stdout)
-    // opencode puede salir con 0 aunque el proveedor haya devuelto un error y nada de texto.
-    ok = r.exitCode === 0 && !/^\[error\]/.test(s.texto.trim()) && (!['hermes', 'aider', 'codex'].includes(c.trabajador) || !!s.texto)
-    // ollama escribe sus estadísticas en stderr y hermes su session_id: solo se enseñan si algo falló.
-    const err = ['ollama', 'hermes', 'aider', 'codex'].includes(c.trabajador) ? (ok ? '' : sinAnsi(r.stderr).trim()) : r.stderr
-    s.texto = `${s.texto}${err ? `\n[stderr]\n${err.slice(-3000)}` : ''}`.trim()
-    if (r.isStdoutTruncated) s.texto += '\n[salida truncada]'
+    const leido = interpretarSalida(c.trabajador, r)
+    s = leido.s
+    ok = leido.ok
   } catch (err) {
     s = { texto: `No se pudo ejecutar ${argv[0]}: ${String(err)}` }
   } finally {
@@ -1186,6 +1411,8 @@ type Encargo = {
   /** Carpeta compartida (sin aislar): archivos o carpetas que este agente puede tocar; sin esto se reserva todo el repo */
   archivos?: string[]
   alLanzar?: () => void
+  /** Id del encargo asíncrono (eN) al que sirve este trabajo, para reencontrarlo tras una recarga */
+  encargoId?: string
 }
 
 const git = ($: EngineInterface, cwd: string, a: string[]) => $.process.run(['git', '-C', cwd, ...a], { timeoutMs: 60_000 })
@@ -1196,10 +1423,11 @@ async function crearCopia($: EngineInterface, cwd: string, nombre: string) {
   const raiz = await git($, cwd, ['rev-parse', '--show-toplevel']).catch(() => undefined)
   if (!raiz || raiz.exitCode !== 0) return { error: 'cwd no es un repositorio git: el agente trabaja en la carpeta tal cual' }
   const repo = raiz.stdout.trim()
+  const base = (await git($, repo, ['rev-parse', 'HEAD'])).stdout.trim()
   const carpeta = `${await carpetaWeb($)}/copias/${SID}/${nombre}`
   const rama = `mst/${nombre}`
   const r = await git($, repo, ['worktree', 'add', '-b', rama, carpeta, 'HEAD'])
-  return r.exitCode === 0 ? { repo, carpeta, rama } : { error: `git worktree falló: ${corto(r.stderr.trim(), 200)}` }
+  return r.exitCode === 0 ? { repo, carpeta, rama, base } : { error: `git worktree falló: ${corto(r.stderr.trim(), 200)}` }
 }
 
 async function borrarCopia($: EngineInterface, c: { repo: string; carpeta: string; rama: string }) {
@@ -1208,16 +1436,19 @@ async function borrarCopia($: EngineInterface, c: { repo: string; carpeta: strin
 }
 
 // Guarda en su rama lo que hizo el agente en la copia, para que el jefe lo junte con un merge.
-async function cerrarCopia($: EngineInterface, c: { repo: string; carpeta: string; rama: string }, mensaje: string) {
+async function cerrarCopia($: EngineInterface, c: { repo: string; carpeta: string; rama: string; base: string }, mensaje: string) {
   await git($, c.carpeta, ['add', '-A'])
-  const commit = await git($, c.carpeta, ['commit', '-q', '-m', mensaje])
-  // Sin cambios no hay nada que juntar: la copia y su rama se borran para no dejar basura.
-  if (commit.exitCode !== 0) {
+  // Si el agente ya hizo su propio commit, este falla y no pasa nada: se mira HEAD contra la base.
+  await git($, c.carpeta, ['commit', '-q', '-m', mensaje])
+  const head = (await git($, c.carpeta, ['rev-parse', 'HEAD'])).stdout.trim()
+  const pendiente = (await git($, c.carpeta, ['status', '--porcelain'])).stdout.trim()
+  // Sin commits nuevos ni cambios sin guardar no hay nada que juntar: la copia y su rama se borran para no dejar basura.
+  if (head === c.base && !pendiente) {
     await borrarCopia($, c)
     return { rama: c.rama, cambios: 'el agente no cambió ningún archivo; la copia se borró' }
   }
-  const stat = await git($, c.carpeta, ['diff', '--stat', 'HEAD~1', 'HEAD'])
-  const nameStatus = await git($, c.carpeta, ['diff', '--name-status', 'HEAD~1', 'HEAD'])
+  const stat = await git($, c.carpeta, ['diff', '--stat', c.base, 'HEAD'])
+  const nameStatus = await git($, c.carpeta, ['diff', '--name-status', c.base, 'HEAD'])
   const cambios = contarCambios(nameStatus.stdout)
   const masiva = esMasiva(cambios)
   return {
@@ -1232,6 +1463,7 @@ async function cerrarCopia($: EngineInterface, c: { repo: string; carpeta: strin
 
 // Ejecuta el comando de verificación del jefe (tests, build...) donde trabajó el agente.
 async function verificarEn($: EngineInterface, cwd: string | undefined, comando: string) {
+  if (cwd && !(await $.fs.exists(cwd).catch(() => true))) return { comando, ok: false, salida: `La carpeta de trabajo no existe: ${cwd}` }
   // Va en un .cmd: como argumento, las comillas del comando le llegan rotas a cmd. El .cmd se borra solo y conserva el código de salida.
   const archivo = `${await carpetaChat($)}/verificar-${Date.now().toString(36)}${(seq++).toString(36)}.cmd`
   await $.fs.write(archivo, `@echo off\r\nchcp 65001 >nul\r\n${comando}\r\nset "codigo=%errorlevel%"\r\n(goto) 2>nul & del "%~f0" & exit /b %codigo%\r\n`)
@@ -1373,6 +1605,14 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     if (r.ok) break
     // Cancelado a mano desde la web: no se prueba otro modelo.
     if (r.s.texto.includes(`[cortado: ${CANCELADO}]`)) break
+    // Cupo gratis agotado o modelo caído del proveedor: se aparta SOLO ese modelo el tiempo que toque y se pasa al siguiente sin gastar cambios.
+    const tipo = r.s.errorTipo
+    if (tipo === 'provider.free-limit' || tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))) {
+      const ms = tipo === 'provider.free-limit' ? (r.s.reintentoMs ?? HORA_MS) : 30 * 60_000
+      caidos.set(k, Date.now() + ms - CAIDO_MS)
+      motivoAgente.set(c.trabajador, tipo === 'provider.free-limit' ? 'sin cupo gratis' : 'modelo no disponible')
+      continue
+    }
     // Sin red, fallarán todos los modelos en la nube de ese agente: se aparta el agente entero un rato.
     if (r.sinRed && !esLocal(c)) salud.set(c.trabajador, { ok: false, en: Date.now() })
     // Clave caducada o no válida: todos los modelos de ese agente fallarán igual; se aparta una hora y se avisa.
@@ -1479,7 +1719,7 @@ async function lanzarEncargo($: EngineInterface, modelos: Modelos, input: Encarg
   let iniciar!: () => void
   const inicio = new Promise<void>(resolve => { iniciar = resolve })
   let iniciado = false
-  const promesa = delegarUno($, modelos, { ...input, alLanzar: () => {
+  const promesa = delegarUno($, modelos, { ...input, encargoId: encargo.id, alLanzar: () => {
     if (iniciado) return
     iniciado = true
     registro.marcar(encargo.id, 'corriendo', {}, Date.now())
@@ -1531,6 +1771,8 @@ export const register: Register = (on, options) => {
   temaNtfy = temaNtfyValido(tema) ? tema : ''
   esperaInicialMs = Math.min(600, Math.max(15, Number(opt.esperaInicialSeg ?? 90))) * 1000
   skillsAuto = opt.ponytailAutomatico !== false
+  // Solo con el ajuste en true (el plugin.json lo trae activado); sin él, como en las pruebas, el camino de siempre.
+  lanzadorDesacoplado = opt.lanzadorDesacoplado === true
 
   on('session.start', async ($, e, next) => {
     // Cada chat tiene su centro: su id nombra su carpeta. Se recupera lo guardado y se sigue guardando cada 2 s.
@@ -1563,6 +1805,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'centro-web', description: 'Abre el centro de agentes en el navegador (se actualiza solo)' })
     await $.command.register({ name: 'mst-informe', description: 'Escribe el informe final de este chat (Markdown) y lo abre' })
     await $.command.register({ name: 'mst-modelos', description: 'Lista los modelos que puede usar cada agente y qué sabe hacer cada uno' })
+    await $.command.register({ name: 'mst-estado', description: 'Muestra al instante qué agentes están trabajando, desde cuándo y hace cuánto dieron señal; no pasa por el jefe' })
     await $.command.register({ name: 'centro-reset', description: 'Borra los puntajes guardados' })
     // Al empezar cualquier sesión: el panel a la vista y la página web al día; el navegador se abre solo una vez al día.
     if (opt.abrirAlIniciar !== false) {
@@ -1802,6 +2045,11 @@ ${protocolo(modelos)}`
   on('command.run', { command: 'mst-modelos' }, async $ => {
     const catalogo = await leerCatalogoPlugin($)
     return { text: catalogo ? `${textoCatalogo(catalogo)}\n\nPara proponer uno al jefe: dile "prueba con <modelo>" en el chat o pulsa Proponer en la web.` : 'Aún no hay catálogo: se genera al iniciar la sesión (puede tardar unos segundos).' }
+  })
+
+  on('command.run', { command: 'mst-estado' }, async $ => {
+    const lista = (await read($, trabajos)) ?? []
+    return { text: textoEstado(lista, registro.todos(), Date.now(), AMARILLO_MS_POR_DEFECTO, limiteInactividadMs / 60_000) }
   })
 
   on('command.run', { command: 'centro-reset' }, async $ => {

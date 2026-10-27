@@ -95,10 +95,16 @@ export function entradaDe(c: Catalogo | undefined, agente: Agente, modelo: strin
   return c?.modelos.find(e => e.agente === agente && e.modelo === modelo) ?? (() => { const dato = tablaDelPlugin(agente, modelo); return dato ? { agente, modelo, capacidades: dato.capacidades, origen: 'plugin' } : undefined })()
 }
 
+// La palabra sola no basta: un verbo de ver/leer tiene que ir en la misma frase, y los compuestos o rutas (og-image, hero.webp, public/img/foo.jpg) no cuentan.
+const PALABRA_IMAGEN = /(?<![\w./\\-])(?:imagen(?:es)?|images?|png|jpe?g|gif|webp|bmp|tiff)(?![\w/\\-]|\.\w)/
+const VERBO_VER = /\b(?:analiz\w*|describ\w*|transcrib\w*|mir(?:a|ar|e|ando)|lee|leer|leen|lees|leyendo|interpret\w*|extrae\w*\s+(?:el\s+)?texto\s+de|que\s+hay\s+en|what\s+is\s+in|read|reads|reading|look\s+at|analy[sz]\w*|extract\s+text)\b/
+
 export function detectarNecesidades(texto: string, categoria?: string): Capacidad[] {
   const normal = `${texto} ${categoria ?? ''}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-  const sinNoImagen = normal.replace(/\b(?:imagen(?:es)?\s+de\s+docker|docker\s+images?|imagen\s+de\s+contenedor|container\s+image|imagen\s+base|imagen\s+iso|imagen\s+del\s+sistema|imagen\s+de\s+disco)\b/g, '')
-  return /\b(?:imagenes?|images?|fotos?|photos?|fotografia|capturas?(?:\s+de\s+pantalla)?|screenshot|pantallazo|escane(?:o|ado|ar)|ocr|png|jpe?g|gif|webp|bmp|tiff)\b/.test(sinNoImagen) ? ['imagen'] : []
+  if (/^(?:imagen(?:es)?|images?|vision|ocr)$/.test((categoria ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim())) return ['imagen']
+  const sinNoImagen = normal.replace(/\b(?:imagen(?:es)?\s+de\s+docker|docker\s+images?|imagen\s+de\s+contenedor|container\s+image|imagen\s+base|imagen\s+iso|imagen\s+del\s+sistema|imagen\s+de\s+disco)\b/g, ' ')
+  if (/\b(?:capturas?\s+de\s+pantalla|screenshots?|pantallazos?|fotos?|photos?|fotografias?|ocr|escane(?:o|ado|ar))\b/.test(sinNoImagen)) return ['imagen']
+  return sinNoImagen.split(/[.!?;]+(?=\s|$)|\n+/).some(frase => VERBO_VER.test(frase) && PALABRA_IMAGEN.test(frase)) ? ['imagen'] : []
 }
 
 export function filtrarPorCapacidad<T extends { trabajador: string; modelo: string }>(candidatos: T[], c: Catalogo | undefined, necesita: Capacidad[]): { aptos: T[]; excluidos: { candidato: T; motivo: 'no_la_tiene' | 'desconocido' }[] } {

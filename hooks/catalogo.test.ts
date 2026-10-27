@@ -74,6 +74,10 @@ test('huella ignora el orden; caducidad verifica fecha y huella', () => {
 test('detecta necesidades de imagen sin confundir imágenes de contenedor o sistema', () => {
   for (const s of ['Transcribe el texto de estas capturas de pantalla', 'Haz OCR de factura.png', 'FOTOS y fotografía', 'Analiza la imagen JPEG', 'Describe the photo']) expect(detectarNecesidades(s)).toEqual(['imagen'])
   for (const s of ['Construye la imagen de docker y súbela', 'docker images', 'imagen de contenedor', 'container image', 'imagen base', 'imagen ISO', 'imagen del sistema', 'imagen de disco', 'Corrige la función suma', 'Resume este informe']) expect(detectarNecesidades(s)).toEqual([])
+  for (const s of ['Describe la imagen adjunta', 'Transcribe esta captura de pantalla', 'Lee el texto de esta imagen', 'Haz OCR del documento']) expect(detectarNecesidades(s)).toEqual(['imagen'])
+  expect(detectarNecesidades('Actualiza el README con una imagen nueva')).toEqual([])
+  expect(detectarNecesidades('Revisa esto', 'imagen')).toEqual(['imagen'])
+  for (const s of ['Agrega la meta og-image al layout', 'Optimiza hero.webp en public/', 'Crea una imagen de docker', 'Redimensiona logo.png a 200px', 'Analiza public/img/foo.jpg']) expect(detectarNecesidades(s)).toEqual([])
 })
 
 test('filtra en desconocido y ausencia explícita de visión con motivos distintos', () => {

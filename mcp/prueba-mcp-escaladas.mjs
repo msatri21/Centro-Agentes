@@ -10,6 +10,7 @@ const bin = path.join(tmp, 'bin'), servidor = fileURLToPath(new URL('./centro-mc
 fs.mkdirSync(bin)
 const falso = path.join(bin, 'opencode-falso.mjs')
 fs.writeFileSync(falso, `import fs from 'node:fs'
+import {execFileSync} from 'node:child_process'
 const tarea=fs.readFileSync(0,'utf8'), espera=n=>new Promise(r=>setTimeout(r,n))
 if(tarea.includes('callado')) await espera(1800)
 if(tarea.includes('espera permiso')||tarea.includes('pregunta normal')) await espera(3000)
@@ -18,6 +19,8 @@ if(tarea.includes('falla')) { console.log(JSON.stringify({type:'text',part:{text
 const n=Number(tarea.match(/archivos (\\d+)/)?.[1]||0)
 for(let i=0;i<n;i++) fs.writeFileSync('archivo-'+i+'.txt','dato')
 if(tarea.includes('choque')) fs.writeFileSync('choque.txt',tarea.includes('uno')?'uno':'dos')
+// El agente guarda su trabajo él mismo, como hace un agente real: el commit del centro fallará.
+if(tarea.includes('commit propio')) { fs.writeFileSync('propio.txt','dato'); execFileSync('git',['add','.'],{stdio:'ignore'}); execFileSync('git',['-c','user.email=t@e','-c','user.name=T','commit','-qm','agente'],{stdio:'ignore'}) }
 console.log(JSON.stringify({type:'text',part:{text:'resultado falso'}}))
 `)
 if (process.platform === 'win32') fs.writeFileSync(path.join(bin, 'opencode.cmd'), `@echo off\r\n"${process.execPath}" "${falso}" %*\r\n`)
@@ -77,6 +80,12 @@ try {
   assert.equal(res.escalar?.includes('masiva')??false,n===16)
   assert.equal((res.avisos_web??[]).some(x=>x.includes('ESCALADA (modificación masiva')),n===16)
  }
+ // Si el agente ya hizo su propio commit, la rama y la copia se conservan con su trabajo.
+ const propia=await delegar('commit propio',{cwd:repo,aislar:true}); const resPropia=await esperar(propia.encargo)
+ assert.ok(resPropia.copia?.rama)
+ assert.ok(fs.existsSync(path.join(resPropia.copia.carpeta,'propio.txt')))
+ assert.ok(resPropia.copia.archivos.includes('propio.txt'))
+ assert.ok(execFileSync('git',['-C',repo,'branch','--list',resPropia.copia.rama]).toString().includes(resPropia.copia.rama))
  const lote=await llamar('delegar_varios',{tareas:['choque uno','choque dos'].map(tarea=>({cwd:repo,aislar:true,categoria:'prueba',tarea,trabajador:'opencode'}))})
  // El aviso del grupo llega cuando termina el último encargo: cada consulta vuelve en cuanto acaba uno, así que se acumulan los avisos.
  const avisosLote=[]
