@@ -236,10 +236,11 @@ async function crearCopia(cwd, nombre) {
   const raiz = await git(cwd, ['rev-parse', '--show-toplevel'])
   if (raiz.exitCode !== 0) return { error: 'cwd no es un repositorio git: el agente trabaja en la carpeta tal cual' }
   const repo = raiz.stdout.trim()
+  const base = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim()
   const carpeta = path.join(CASA, 'copias', ID, nombre)
   const rama = `mst/${nombre}`
   const r = await git(repo, ['worktree', 'add', '-b', rama, carpeta, 'HEAD'])
-  return r.exitCode === 0 ? { repo, carpeta, rama } : { error: `git worktree falló: ${corto(r.stderr.trim(), 200)}` }
+  return r.exitCode === 0 ? { repo, carpeta, rama, base } : { error: `git worktree falló: ${corto(r.stderr.trim(), 200)}` }
 }
 async function borrarCopia(c) {
   await git(c.repo, ['worktree', 'remove', '--force', c.carpeta])
@@ -267,13 +268,17 @@ async function juntarCopias(subtareas) {
 }
 async function cerrarCopia(c, mensaje) {
   await git(c.carpeta, ['add', '-A'])
-  const commit = await git(c.carpeta, ['commit', '-q', '-m', mensaje])
-  if (commit.exitCode !== 0) {
+  // Si el agente ya hizo su propio commit, este falla y no pasa nada: se mira HEAD contra la base.
+  await git(c.carpeta, ['commit', '-q', '-m', mensaje])
+  const head = (await git(c.carpeta, ['rev-parse', 'HEAD'])).stdout.trim()
+  const pendiente = (await git(c.carpeta, ['status', '--porcelain'])).stdout.trim()
+  // Sin commits nuevos ni cambios sin guardar no hay nada que juntar: la copia y su rama se borran para no dejar basura.
+  if (head === c.base && !pendiente) {
     await borrarCopia(c)
     return { rama: c.rama, cambios: 'el agente no cambió ningún archivo; la copia se borró' }
   }
-  const stat = await git(c.carpeta, ['diff', '--stat', 'HEAD~1', 'HEAD'])
-  const nameStatus = await git(c.carpeta, ['diff', '--name-status', 'HEAD~1', 'HEAD'])
+  const stat = await git(c.carpeta, ['diff', '--stat', c.base, 'HEAD'])
+  const nameStatus = await git(c.carpeta, ['diff', '--name-status', c.base, 'HEAD'])
   const cambios = contarCambios(nameStatus.stdout)
   const masiva = esMasiva(cambios)
   porJuntar.push(c)
@@ -311,6 +316,7 @@ function vigilar(ahora = Date.now()) {
 }
 if (!ES_TRABAJADOR) setInterval(vigilar, VIGILANTE_MS).unref()
 async function verificarEn(cwd, comando) {
+  if (cwd && !fs.existsSync(cwd)) return { comando, ok: false, salida: `La carpeta de trabajo no existe: ${cwd}` }
   // Va en un archivo: como argumento, las comillas del comando llegan rotas a cmd.
   fs.mkdirSync(DIR, { recursive: true })
   const archivo = path.join(DIR, `verificar-${Date.now().toString(36)}${(seq++).toString(36)}.cmd`)
@@ -502,6 +508,15 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     if (r.ok) break
     // Cancelado a mano desde la web: no se prueba otro modelo.
     if (r.s.texto.includes(`[cortado: ${CANCELADO}]`)) break
+    // Cupo gratis agotado o modelo caído del proveedor: se aparta SOLO ese modelo el tiempo que toque y se pasa al siguiente sin gastar cambios.
+    // Cupo gratis agotado o modelo caído del proveedor: errorTipo solo lo pone leerOpencode, así que solo afecta a opencode.
+    const tipo = r.s.errorTipo
+    if (tipo === 'provider.free-limit' || tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))) {
+      const ms = tipo === 'provider.free-limit' ? (r.s.reintentoMs ?? 60 * 60_000) : 30 * 60_000
+      caidos.set(k, Date.now() + ms - CAIDO_MS)
+      motivo.set(c.trabajador, tipo === 'provider.free-limit' ? 'sin cupo gratis' : 'modelo no disponible')
+      continue
+    }
     if (esErrorDeCuenta(r.s.texto)) {
       for (const m of MODELOS[c.trabajador]) caidos.set(clave(c.trabajador, m), Date.now() + 60 * 60_000 - CAIDO_MS)
       motivo.set(c.trabajador, 'clave caducada')

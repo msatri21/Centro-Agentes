@@ -30,6 +30,10 @@ export type Trabajo = {
   ultimaActividad?: number
   /** Objetivo del plan al que pertenece este trabajo (agrupa los nodos del grafo) */
   plan?: string
+  /** Dónde dejó el lanzador su log y su fin.json (carpeta e id de archivo), para reencontrar al agente tras una recarga */
+  lanzador?: { carpeta: string; id: string; cwd?: string }
+  /** Id del encargo asíncrono (eN) al que sirve este trabajo */
+  encargo?: string
 }
 
 export type Subtarea = {

@@ -109,12 +109,28 @@ export const FALLOS_SEGUIDOS_ESCALA = 2
 
 const terminado = (e: Encargo) => e.estado === 'terminado' || e.estado === 'fallido'
 
+export type RegistroGuardado = { encargos: Encargo[]; siguienteEncargo: number; siguienteGrupo: number; avisados: string[]; fallos: [number, number][] }
+
 export class Registro {
   private encargos = new Map<string, Encargo>()
   private siguienteEncargo = 1
   private siguienteGrupo = 1
   private avisados = new Set<string>()
   private fallos = new Map<number, number>()
+
+  // Para guardar el registro en disco y recuperarlo tras recargar el plugin (los avisos ya dados no se repiten).
+  exportar(): RegistroGuardado {
+    return { encargos: this.todos(), siguienteEncargo: this.siguienteEncargo, siguienteGrupo: this.siguienteGrupo, avisados: [...this.avisados], fallos: [...this.fallos] }
+  }
+
+  importar(g: RegistroGuardado | undefined): void {
+    if (!g || !Array.isArray(g.encargos)) return
+    this.encargos = new Map(g.encargos.map(e => [e.id, e]))
+    this.siguienteEncargo = Math.max(this.siguienteEncargo, Number(g.siguienteEncargo) || 1)
+    this.siguienteGrupo = Math.max(this.siguienteGrupo, Number(g.siguienteGrupo) || 1)
+    this.avisados = new Set(g.avisados ?? [])
+    this.fallos = new Map(g.fallos ?? [])
+  }
 
   nuevoGrupo(): string {
     return `g${this.siguienteGrupo++}`
@@ -187,4 +203,77 @@ export function resumenEstado(es: Encargo[], ahora: number): { id: string; grupo
     ...(e.trabajoId === undefined ? {} : { trabajoId: e.trabajoId }),
     ...(terminado(e) && e.resultado !== undefined ? { resultado: e.resultado } : {}),
   }))
+}
+
+export const AMARILLO_MS_POR_DEFECTO = 10 * 60_000
+
+export type TrabajoVivo = { id: string; trabajador: string; estado: string; inicio: number; ultimaActividad?: number; subtarea?: number; tarea?: string }
+export type FilaViva = { id: string; agente: string; modelo: string; subtarea?: number; tarea?: string; trabajandoMs: number; sinSenalMs: number; amarillo: boolean }
+
+export function filasVivas(trabajos: TrabajoVivo[], ahora: number, umbralMs = AMARILLO_MS_POR_DEFECTO): FilaViva[] {
+  return trabajos.filter(t => t.estado === 'corriendo').sort((a, b) => a.inicio - b.inicio).map(t => {
+    const [agente, ...resto] = t.trabajador.split(':')
+    const nombreModelo = resto.join(':')
+    const sinSenalMs = Math.max(0, ahora - (t.ultimaActividad ?? t.inicio))
+    return {
+      id: t.id, agente, modelo: nombreModelo.split('/').at(-1) ?? '',
+      ...(t.subtarea === undefined ? {} : { subtarea: t.subtarea }),
+      ...(t.tarea === undefined ? {} : { tarea: t.tarea }),
+      trabajandoMs: ahora - t.inicio, sinSenalMs, amarillo: sinSenalMs > umbralMs,
+    }
+  })
+}
+
+export function duracionCorta(ms: number): string {
+  if (Number.isNaN(ms) || ms < 0) return '0 s'
+  const segundos = Math.floor(ms / 1000)
+  if (segundos < 60) return `${segundos} s`
+  const minutos = Math.floor(segundos / 60)
+  if (minutos < 60) return `${minutos} min`
+  return `${Math.floor(minutos / 60)} h ${String(minutos % 60).padStart(2, '0')} min`
+}
+
+type ResumenGrupo = { grupo: string; encargos: Encargo[]; listos: number }
+function gruposActivos(encargos: Encargo[]): ResumenGrupo[] {
+  const grupos = new Map<string, Encargo[]>()
+  for (const e of encargos) grupos.set(e.grupo, [...(grupos.get(e.grupo) ?? []), e])
+  return [...grupos].map(([grupo, es]) => ({
+    grupo, encargos: es,
+    listos: es.filter(e => e.estado === 'terminado' || e.estado === 'fallido').length,
+  })).filter(g => g.listos < g.encargos.length && !(g.encargos.length === 1 && g.grupo === g.encargos[0].id))
+}
+
+export function textoBarra(trabajos: TrabajoVivo[], encargos: Encargo[], ahora: number, umbralMs = AMARILLO_MS_POR_DEFECTO): string {
+  const filas = filasVivas(trabajos, ahora, umbralMs)
+  const cola = encargos.filter(e => e.estado === 'en_cola').length
+  const grupos = gruposActivos(encargos)
+  if (!filas.length && !cola && !grupos.length) return ''
+  const amarillos = filas.filter(f => f.amarillo).length
+  const partes = [`${amarillos ? '⚠' : '⚙'} ${filas.length ? `${filas.length} trabajando` : 'en espera'}`]
+  if (cola) partes.push(`${cola} en cola`)
+  for (const g of grupos.slice(0, 2)) partes.push(`${g.grupo}: ${g.listos}/${g.encargos.length} listos`)
+  if (grupos.length > 2) partes.push(`+${grupos.length - 2} grupos`)
+  if (amarillos) partes.push(`⚠ ${amarillos} sin señal`)
+  return partes.join(' · ')
+}
+
+export function textoEstado(trabajos: TrabajoVivo[], encargos: Encargo[], ahora: number, umbralMs = AMARILLO_MS_POR_DEFECTO, escaladaMin = 40): string {
+  const filas = filasVivas(trabajos, ahora, umbralMs)
+  const cola = encargos.filter(e => e.estado === 'en_cola').length
+  const grupos = gruposActivos(encargos)
+  const amarillos = filas.filter(f => f.amarillo).length
+  const lineas = [`Centro de agentes: ${textoBarra(trabajos, encargos, ahora, umbralMs) || 'nada trabajando'}`]
+  for (const f of filas) lineas.push(`● ${f.agente} · ${f.modelo}${f.subtarea === undefined ? '' : ` · subtarea ${f.subtarea}`} · lleva ${duracionCorta(f.trabajandoMs)} · última señal hace ${duracionCorta(f.sinSenalMs)}${f.amarillo ? ' ⚠ sin señal desde hace tiempo' : ''}`)
+  if (cola) lineas.push(`En cola: ${cola} (esperando hueco: máximo 4 agentes a la vez)`)
+  for (const g of grupos) lineas.push(`Grupo ${g.grupo}: ${g.listos}/${g.encargos.length} listos`)
+  if (amarillos) lineas.push(`Aviso: ${amarillos} agente(s) llevan más de ${duracionCorta(umbralMs)} sin dar señales; a los ${escaladaMin} min el jefe recibe una escalada.`)
+  return lineas.join('\n')
+}
+
+// Un agente sigue vivo si su lanzador dejó pid.json, aún no dejó fin.json y arrancó hace menos del margen (el tope por tarea
+// es de 10 min: pasado el margen, un pid.json sin fin es de un lanzador que murió y no debe frenar nada para siempre).
+export const MARGEN_AGENTE_VIVO_MS = 15 * 60_000
+export function agenteVivo(pid: { inicio?: number } | undefined, hayFin: boolean, ahora: number): boolean {
+  if (hayFin || typeof pid?.inicio !== 'number') return false
+  return ahora - pid.inicio < MARGEN_AGENTE_VIVO_MS
 }

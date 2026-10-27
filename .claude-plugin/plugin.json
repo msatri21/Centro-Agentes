@@ -1,6 +1,6 @@
 {
   "name": "centro-agentes",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Centro de agentes MST: Claude como jefe reparte subtareas entre OpenCode, Ollama, Hermes, Aider y Claude headless, las verifica y lo muestra en vivo.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -92,6 +92,12 @@
       "type": "boolean",
       "title": "Skills de ponytail automáticas",
       "description": "Si ponytail, ponytail-review y ponytail-audit están instaladas, el centro las añade solo según la tarea: ponytail al escribir código, ponytail-review al auditar un cambio y ponytail-audit al auditar un repositorio. Ante la duda, cuenta como código",
+      "default": true
+    },
+    "lanzadorDesacoplado": {
+      "type": "boolean",
+      "title": "Agentes que sobreviven a una recarga del plugin",
+      "description": "Cada agente corre bajo un lanzador que deja su salida y su final en disco: si el plugin se recarga o se reinstala mientras trabaja, el agente sigue y su resultado no se pierde",
       "default": true
     },
     "catalogoEnLinea": {

@@ -667,7 +667,7 @@ test('dependencias: planificar las guarda, delegar no lanza una bloqueada y la a
   expect(listas([{ n: 1, titulo: 'a', estado: 'solucionado' }, { n: 2, titulo: 'b', estado: 'pendiente', espera: [1] }]).map(s => s.n)).toEqual([2])
 })
 
-test('aislar crea una copia git para el agente, guarda sus cambios en su rama y verificar ejecuta los tests allí', async ($, on) => {
+test('aislar crea una copia git para el agente, guarda sus cambios en su rama y verificar ejecuta los tests allí', { options: { lanzadorDesacoplado: false } }, async ($, on) => {
   base(on)
   const cwds: (string | undefined)[] = []
   on('process.spawn', async function* (_$: any, e: any) {
@@ -677,11 +677,18 @@ test('aislar crea una copia git para el agente, guarda sus cambios en su rama y 
   })
   const escritos: string[] = []
   on('fs.write', async (_$: any, e: any) => { escritos.push(e.content ?? e.text ?? e.data ?? JSON.stringify(e)); return { value: undefined } })
+  on('fs.exists', async () => ({ value: true }))
   const runs: string[][] = []
+  let heads = 0
   on('process.run', async (_$: any, e: any) => {
     runs.push(e.argv)
     const a = e.argv.join(' ')
-    const stdout = a.includes('rev-parse') ? 'C:/repo\n' : a.includes('diff --stat') ? ' a.txt | 1 +' : a.includes('verificar-') ? '3 pass' : ''
+    const stdout = a.includes('--show-toplevel') ? 'C:/repo\n'
+      : a.includes('rev-parse HEAD') ? `${heads++ ? 'nuevo' : 'base'}\n`
+      : a.includes('diff --stat') ? ' a.txt | 1 +'
+      : a.includes('diff --name-status') ? 'M\ta.txt'
+      : a.includes('verificar-') ? '3 pass'
+      : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false } }
   })
   const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'codigo', tarea: 't', subtarea: 1, cwd: 'C:/repo', aislar: true, verificar: 'npm test' }))
@@ -693,6 +700,36 @@ test('aislar crea una copia git para el agente, guarda sus cambios en su rama y 
   expect(d.verificacion).toMatchObject({ comando: 'npm test', ok: true, salida: '3 pass' })
   expect(d.aviso).toContain('superada')
   expect(escritos.some(t => t.includes('npm test'))).toBe(true)
+})
+
+test('si el agente ya hizo su propio commit, la copia se conserva y los cambios se miden contra la base', { options: { lanzadorDesacoplado: false } }, async ($, on) => {
+  base(on)
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout', text: 'hecho' }
+    return { value: { code: 0, signal: null } }
+  })
+  on('fs.exists', async () => ({ value: true }))
+  on('fs.write', async () => ({ value: undefined }))
+  const runs: string[][] = []
+  let heads = 0
+  on('process.run', async (_$: any, e: any) => {
+    runs.push(e.argv)
+    const a = e.argv.join(' ')
+    const stdout = a.includes('--show-toplevel') ? 'C:/repo\n'
+      : a.includes('rev-parse HEAD') ? `${heads++ ? 'nuevo' : 'base'}\n`
+      : a.includes('status --porcelain') ? ''
+      : a.includes('diff --stat base HEAD') ? ' a.txt | 1 +'
+      : a.includes('diff --name-status base HEAD') ? 'M\ta.txt'
+      : ''
+    // El commit del centro falla porque el agente ya había guardado lo suyo.
+    const exitCode = a.includes('commit -q') ? 1 : 0
+    return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false } }
+  })
+  const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'codigo', tarea: 't', subtarea: 1, cwd: 'C:/repo', aislar: true }))
+  expect(runs.some(r => r.includes('diff') && r.includes('base') && r.includes('HEAD'))).toBe(true)
+  expect(runs.some(r => r.includes('worktree') && r.includes('remove'))).toBe(false)
+  expect(d.copia.carpeta).toMatch(/copias/)
+  expect(d.copia.cambios).toContain('a.txt')
 })
 
 test('delegar_varios lanza sola la subtarea que espera a otra del lote cuando esa termina bien, y no si falla', async ($, on) => {
