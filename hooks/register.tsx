@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualiz
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, esErrorDeArranque, esMasiva, inactivo, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -37,6 +37,7 @@ const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, []
 const plan = atom({ plugin: 'centro-agentes', key: 'plan' } as const, null as Plan | null)
 // Los planes anteriores del chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
 const planes = atom({ plugin: 'centro-agentes', key: 'planes' } as const, [] as Plan[])
+let vivosPrevios = 0
 
 
 type Opciones = {
@@ -107,6 +108,13 @@ Luego audita los tres resultados con el mismo criterio (corrección, completitud
 const ver = (l: string[]) => l.map(x => x || 'por defecto').join(', ')
 
 const corto = (t: string, n = 60) => (t.length > n ? t.slice(0, n - 1) + '…' : t)
+export const filasPanelVivo = (trabajos: TrabajoVivo[], ahora: number) => filasVivas(trabajos, ahora).map(v => ({
+  agente: v.agente,
+  modelo: v.modelo,
+  tarea: corto(v.tarea ?? '', 40),
+  tiempo: duracionCorta(v.trabajandoMs),
+  color: v.amarillo ? '#ffb86c' : GRIS.hi,
+}))
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
 
@@ -727,21 +735,24 @@ async function autoactualizar($: EngineInterface) {
     : `${TITULO}: hay una versión nueva (${fuente}) pero no se pudo actualizar; ejecuta claude plugin update centro-agentes@centro-mst.`)
 }
 
+// Nunca rechaza: se llama sin esperar desde temporizadores y cierres, y el estado puede no estar ya (fin de sesión).
 async function actualizarBarra($: EngineInterface) {
-  const lista = ((await read($, trabajos)) ?? []) as Trabajo[]
-  const vivos = lista.filter(t => t.estado === 'corriendo').map((t): TrabajoVivo => ({
-    id: t.id,
-    trabajador: t.trabajador,
-    estado: t.estado,
-    inicio: t.inicio,
-    ultimaActividad: t.ultimaActividad,
-    subtarea: t.subtarea,
-    tarea: t.tarea,
-  }))
-  const encargosLista = registro.todos()
-  const texto = textoBarra(vivos, encargosLista, Date.now(), AMARILLO_MS_POR_DEFECTO)
-  if (texto) $.ui.status(texto)
-  else $.ui.status(undefined)
+  try {
+    const lista = ((await read($, trabajos)) ?? []) as Trabajo[]
+    const vivos = lista.filter(t => t.estado === 'corriendo').map((t): TrabajoVivo => ({
+      id: t.id,
+      trabajador: t.trabajador,
+      estado: t.estado,
+      inicio: t.inicio,
+      ultimaActividad: t.ultimaActividad,
+      subtarea: t.subtarea,
+      tarea: t.tarea,
+    }))
+    const encargosLista = registro.todos()
+    const texto = textoBarra(vivos, encargosLista, Date.now(), AMARILLO_MS_POR_DEFECTO)
+    if (texto) $.ui.status(texto)
+    else $.ui.status(undefined)
+  } catch {}
 }
 
 // --- Botones de la web: un servidor local recibe los clics y los anota; el centro los lee y los ejecuta ---
@@ -1810,7 +1821,18 @@ export const register: Register = (on, options) => {
     $.clock.every(2000, () => guardarEstado($))
     $.clock.every(60_000, () => void vigilar($).catch(() => undefined))
     if (barraEstado) barraEstado.cancel()
-    barraEstado = $.clock.every(5000, () => void actualizarBarra($))
+    barraEstado = $.clock.every(5000, () => void actualizarBarra($).catch(() => undefined))
+    $.clock.every(2000, async () => {
+      try {
+        const listaTrabajos = (await read($, trabajos)) ?? []
+        const ahora = Date.now()
+        const vivos = filasVivas(listaTrabajos, ahora)
+        if (vivosPrevios === 0 && vivos.length >= 1) {
+          void $.ui.open({ id: PANE, title: TITULO }).catch(() => undefined)
+        }
+        vivosPrevios = vivos.length
+      } catch {}
+    })
     // Proxy: el de los ajustes, si no el que ya trae el entorno, si no el de Windows (el que usa el navegador).
     const proxyEntorno = (await $.env.get('HTTPS_PROXY').catch(() => undefined)) ?? (await $.env.get('https_proxy').catch(() => undefined))
     const proxyWindows = opt.proxy || proxyEntorno
@@ -2359,13 +2381,23 @@ ${protocolo(modelos)}`
     const els = $.ui.resolve(e)
     const { Box, Text } = els
     const { p, pct, resumen, secciones, figuraSvg, tableroSvg, altFigura, altTablero } = await armar($, e.viewport?.rows ?? 30)
+    const listaTrabajos = (await read($, trabajos)) ?? []
+    const ahora = Date.now()
+    const vivos = filasVivas(listaTrabajos, ahora)
     const ancho = Math.max(30, (e.viewport?.columns ?? 80) - 4)
     const barra = (n: number, largo = 20) => '█'.repeat(Math.round((n / 100) * largo)).padEnd(largo, '░')
     // La terminal no dibuja SVG: allí queda solo el texto de abajo.
     const Svg = 'Svg' in els ? els.Svg : undefined
-
     return (
       <Box flexDirection="column">
+        <Box flexDirection="column">
+          <Text bold color={GRIS.mid}>{'AGENTES TRABAJANDO AHORA'.toUpperCase()}</Text>
+          {vivos.length === 0 && <Text color={GRIS.lo}>  nadie</Text>}
+          {filasPanelVivo(listaTrabajos, ahora).map(v => {
+            const nombreModelo = v.modelo ? `${v.agente}:${v.modelo}` : v.agente
+            return <Text color={v.color}>{[nombreModelo, v.tarea, v.tiempo].filter(Boolean).join('  ')}</Text>
+          })}
+        </Box>
         {Svg && <Svg source={figuraSvg} alt={altFigura} isInteractive />}
         {Svg && <Svg source={tableroSvg} alt={altTablero} isInteractive />}
         {!Svg && (
@@ -2384,5 +2416,11 @@ ${protocolo(modelos)}`
         )}
       </Box>
     )
+  })
+
+  // Los avisos del plugin se dibujan en una sola línea; con ctrl+o (isExpanded) salen enteros.
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+    if (e.origin.kind !== 'plugin' || e.isExpanded) return next(e)
+    return next({ ...e, text: lineaAviso(e.text) })
   })
 }

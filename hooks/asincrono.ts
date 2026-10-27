@@ -277,3 +277,11 @@ export function agenteVivo(pid: { inicio?: number } | undefined, hayFin: boolean
   if (hayFin || typeof pid?.inicio !== 'number') return false
   return ahora - pid.inicio < MARGEN_AGENTE_VIVO_MS
 }
+
+// Una línea compacta para un aviso del plugin: sin el prefijo del centro, hasta el primer punto o salto de línea, con tope de 90.
+export function lineaAviso(texto: string): string {
+  const sinPrefijo = texto.replace(/^\s*\[Centro de agentes MST\]\s*/, '')
+  const primera = (sinPrefijo.split(/\r?\n/)[0] ?? '').split(/\.\s/)[0].trim().replace(/[.:]$/, '')
+  const linea = `⚙ ${primera}`
+  return linea.length > 90 ? `${linea.slice(0, 89)}…` : linea
+}
