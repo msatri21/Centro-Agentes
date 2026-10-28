@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualiz
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, esErrorDeArranque, esMasiva, inactivo, resumenEstado, textoAvisoGrupo, textoEstado, type RegistroGuardado } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -37,6 +37,7 @@ const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, []
 const plan = atom({ plugin: 'centro-agentes', key: 'plan' } as const, null as Plan | null)
 // Los planes anteriores del chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
 const planes = atom({ plugin: 'centro-agentes', key: 'planes' } as const, [] as Plan[])
+let vivosPrevios = 0
 
 
 type Opciones = {
@@ -107,6 +108,13 @@ Luego audita los tres resultados con el mismo criterio (corrección, completitud
 const ver = (l: string[]) => l.map(x => x || 'por defecto').join(', ')
 
 const corto = (t: string, n = 60) => (t.length > n ? t.slice(0, n - 1) + '…' : t)
+export const filasPanelVivo = (trabajos: TrabajoVivo[], ahora: number) => filasVivas(trabajos, ahora).map(v => ({
+  agente: v.agente,
+  modelo: v.modelo,
+  tarea: corto(v.tarea ?? '', 40),
+  tiempo: duracionCorta(v.trabajandoMs),
+  color: v.amarillo ? '#ffb86c' : GRIS.hi,
+}))
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
 
@@ -661,6 +669,7 @@ async function rutaWeb($: EngineInterface) {
   return `${await carpetaChat($)}/centro.html`
 }
 let web: { cancel(): void } | undefined
+let barraEstado: { cancel(): void } | undefined
 
 // --- Autoactualización: las sesiones cargan una copia instalada del plugin; si el repositorio publicado (el marketplace
 // centro-mst) tiene una versión más nueva, se actualiza la copia para las sesiones que se abran después. ---
@@ -724,6 +733,26 @@ async function autoactualizar($: EngineInterface) {
   $.ui.toast(up
     ? `${TITULO} actualizado de ${mia} a ${fuente}: reinicia esta sesión para usar lo nuevo.`
     : `${TITULO}: hay una versión nueva (${fuente}) pero no se pudo actualizar; ejecuta claude plugin update centro-agentes@centro-mst.`)
+}
+
+// Nunca rechaza: se llama sin esperar desde temporizadores y cierres, y el estado puede no estar ya (fin de sesión).
+async function actualizarBarra($: EngineInterface) {
+  try {
+    const lista = ((await read($, trabajos)) ?? []) as Trabajo[]
+    const vivos = lista.filter(t => t.estado === 'corriendo').map((t): TrabajoVivo => ({
+      id: t.id,
+      trabajador: t.trabajador,
+      estado: t.estado,
+      inicio: t.inicio,
+      ultimaActividad: t.ultimaActividad,
+      subtarea: t.subtarea,
+      tarea: t.tarea,
+    }))
+    const encargosLista = registro.todos()
+    const texto = textoBarra(vivos, encargosLista, Date.now(), AMARILLO_MS_POR_DEFECTO)
+    if (texto) $.ui.status(texto)
+    else $.ui.status(undefined)
+  } catch {}
 }
 
 // --- Botones de la web: un servidor local recibe los clics y los anota; el centro los lee y los ejecuta ---
@@ -907,9 +936,11 @@ async function reenganchar($: EngineInterface, t: Trabajo) {
   const encargo = t.encargo ? registro.obtener(t.encargo) : undefined
   if (encargo && (encargo.estado === 'corriendo' || encargo.estado === 'en_cola')) {
     registro.marcar(encargo.id, ok ? 'terminado' : 'fallido', { trabajoId: t.id, resultado }, Date.now())
+    void actualizarBarra($)
     if (registro.avisarGrupo(encargo.grupo) && hayQueAuditar(encargo.grupo)) await avisarGrupo($, encargo.grupo)
     return
   }
+  void actualizarBarra($)
   void $.prompt.submit({ text: `[Centro de agentes MST] Tras recargar el plugin, ${t.trabajador} ${ok ? 'terminó' : 'falló'} (trabajo ${t.id}). ${resultado.aviso}\nSalida: ${resultado.salida.slice(-600)}` }).catch(() => undefined)
 }
 
@@ -925,6 +956,7 @@ async function restaurarEstado($: EngineInterface) {
   if (g.nombre && !nombreChat) nombreChat = g.nombre
   // Los encargos asíncronos (eN, gN) viven en memoria: se recuperan aunque el estado de la sesión siga ahí.
   if (!registro.todos().length) registro.importar(g.registro)
+  void actualizarBarra($)
   // Tras una recarga del mod el estado sigue en memoria: solo se recupera si está vacío.
   if ((await read($, plan)) || ((await read($, trabajos)) ?? []).length) {
     await reengancharPendientes($)
@@ -943,6 +975,7 @@ async function restaurarEstado($: EngineInterface) {
   }
   if (r.interrumpidos) $.ui.toast(`${TITULO}: recuperado. ${r.interrumpidos} trabajo(s) quedaron interrumpidos; relánzalos desde la web o con /mst.`)
   await reengancharPendientes($)
+  void actualizarBarra($)
 }
 
 // La clave vive en un archivo de tu carpeta de usuario: la misma para todas las sesiones y copias del plugin
@@ -1207,7 +1240,7 @@ async function intentar(
   const trabajo: Trabajo = { id, trabajador: quien, categoria: input.categoria, tarea: corto(input.tarea), instruccion: input.tarea.slice(0, 1500), estado: 'corriendo', inicio: t0, subtarea: input.subtarea, skills: input.skills?.length ? input.skills : undefined, clasificacion: input.clasificacion, ultimaActividad: t0, plan: (await read($, plan))?.objetivo, ...(input.encargoId ? { encargo: input.encargoId } : {}), ...(lanzadorDesacoplado ? { lanzador: { carpeta: `${await carpetaChat($)}/trabajos`, id, ...(input.cwd ? { cwd: input.cwd } : {}) } } : {}) }
   await update($, trabajos, l => [...(l ?? []), trabajo].slice(-50))
   await update($, plan, p => p ? { ...p, subtareas: p.subtareas.map(s => s.n === input.subtarea ? { ...s, estado: 'en_proceso', quien } : s) } : p)
-  $.ui.status(`⚙ ${quien}: ${corto(input.tarea, 30)}`)
+  void actualizarBarra($)
   // Publica cada 1,5 s lo último que escribió el agente: el panel lo muestra como su terminal.
   let crudo = ''
   const latido = $.clock.every(1500, () =>
@@ -1283,7 +1316,7 @@ ${PROTOCOLO_AGENTE}`
   await update($, trabajos, l =>
     (l ?? []).map(t => (t.id === id ? { ...t, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : t)),
   )
-  $.ui.status(undefined)
+  void actualizarBarra($)
   cortadores.delete(id)
   const hecho = ((await read($, trabajos)) ?? []).find(t => t.id === id)
   if (hecho) await guardarEnHistorial($, hecho).catch(() => undefined)
@@ -1716,6 +1749,7 @@ const hayQueAuditar = (grupo: string) => registro.delGrupo(grupo).some(e => e.tr
 
 async function lanzarEncargo($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, grupo?: string, sinBloqueo = false, existente?: ReturnType<typeof registro.nuevoEncargo>) {
   const encargo = existente ?? registro.nuevoEncargo({ grupo, subtarea: input.subtarea }, Date.now())
+  void actualizarBarra($)
   let iniciar!: () => void
   const inicio = new Promise<void>(resolve => { iniciar = resolve })
   let iniciado = false
@@ -1723,11 +1757,13 @@ async function lanzarEncargo($: EngineInterface, modelos: Modelos, input: Encarg
     if (iniciado) return
     iniciado = true
     registro.marcar(encargo.id, 'corriendo', {}, Date.now())
+    void actualizarBarra($)
     iniciar()
   } }, timeoutMs, sinBloqueo).then(async resultado => {
     const obj = resultado as Record<string, any>
     const exito = Boolean(obj.id && obj.exito)
     registro.marcar(encargo.id, obj.id ? (exito ? 'terminado' : 'fallido') : 'fallido', { trabajoId: obj.id, resultado }, Date.now())
+    void actualizarBarra($)
     if (iniciado) {
       const fallos = registro.registrarFin(input.subtarea, exito)
       if (!exito && fallos === FALLOS_SEGUIDOS_ESCALA) void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (fallos): la subtarea ${input.subtarea} lleva ${fallos} fallos seguidos. Modelos probados: ${Array.isArray(obj.cambios) && obj.cambios.length ? obj.cambios.join(', ') : obj.trabajador}. No la relances igual: cambia el enfoque o pregunta al usuario.` }).catch(() => undefined)
@@ -1737,6 +1773,7 @@ async function lanzarEncargo($: EngineInterface, modelos: Modelos, input: Encarg
   }).catch(async error => {
     const resultado = { error: String(error) }
     registro.marcar(encargo.id, 'fallido', { resultado }, Date.now())
+    void actualizarBarra($)
     if (iniciado) {
       const fallos = registro.registrarFin(input.subtarea, false)
       if (fallos === FALLOS_SEGUIDOS_ESCALA) void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (fallos): la subtarea ${input.subtarea} lleva ${fallos} fallos seguidos. Modelos probados: ${input.trabajador ?? 'trabajador'}. No la relances igual: cambia el enfoque o pregunta al usuario.` }).catch(() => undefined)
@@ -1783,6 +1820,19 @@ export const register: Register = (on, options) => {
     void refrescarCatalogo($, modelos, opt.catalogoEnLinea !== false).catch(() => undefined)
     $.clock.every(2000, () => guardarEstado($))
     $.clock.every(60_000, () => void vigilar($).catch(() => undefined))
+    if (barraEstado) barraEstado.cancel()
+    barraEstado = $.clock.every(5000, () => void actualizarBarra($).catch(() => undefined))
+    $.clock.every(2000, async () => {
+      try {
+        const listaTrabajos = (await read($, trabajos)) ?? []
+        const ahora = Date.now()
+        const vivos = filasVivas(listaTrabajos, ahora)
+        if (vivosPrevios === 0 && vivos.length >= 1) {
+          void $.ui.open({ id: PANE, title: TITULO }).catch(() => undefined)
+        }
+        vivosPrevios = vivos.length
+      } catch {}
+    })
     // Proxy: el de los ajustes, si no el que ya trae el entorno, si no el de Windows (el que usa el navegador).
     const proxyEntorno = (await $.env.get('HTTPS_PROXY').catch(() => undefined)) ?? (await $.env.get('https_proxy').catch(() => undefined))
     const proxyWindows = opt.proxy || proxyEntorno
@@ -1822,6 +1872,7 @@ export const register: Register = (on, options) => {
     }
     // Tras una recarga del mod, o si se abrió al iniciar, la vista web sigue encendida.
     if (await $.store.get(WEB_KEY)) encenderWeb($)
+    void actualizarBarra($)
 
     await $.tool.register({
       name: 'planificar',
@@ -2172,6 +2223,7 @@ ${protocolo(modelos)}`
     const subs = (await read($, plan))?.subtareas ?? []
     const grupo = registro.nuevoGrupo()
     const encargos = lista.map(t => registro.nuevoEncargo({ grupo, subtarea: t.subtarea }, Date.now()))
+    void actualizarBarra($)
     const porIndice = new Map(lista.map((t, i) => [i, t]))
     const enMarcha = new Map<number, Promise<any>>()
     const iniciar = (i: number, camino = new Set<number>()): Promise<any> => {
@@ -2191,6 +2243,7 @@ ${protocolo(modelos)}`
         if (mal.length) {
           const resultado = { subtarea: n, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${n}.` }
           registro.marcar(encargos[i].id, 'fallido', { resultado }, Date.now())
+          void actualizarBarra($)
           if (registro.avisarGrupo(grupo) && hayQueAuditar(grupo)) await avisarGrupo($, grupo)
           return { encargo: encargos[i], resultadoInmediato: resultado, resultado, promesa: Promise.resolve(resultado) }
         }
@@ -2328,13 +2381,23 @@ ${protocolo(modelos)}`
     const els = $.ui.resolve(e)
     const { Box, Text } = els
     const { p, pct, resumen, secciones, figuraSvg, tableroSvg, altFigura, altTablero } = await armar($, e.viewport?.rows ?? 30)
+    const listaTrabajos = (await read($, trabajos)) ?? []
+    const ahora = Date.now()
+    const vivos = filasVivas(listaTrabajos, ahora)
     const ancho = Math.max(30, (e.viewport?.columns ?? 80) - 4)
     const barra = (n: number, largo = 20) => '█'.repeat(Math.round((n / 100) * largo)).padEnd(largo, '░')
     // La terminal no dibuja SVG: allí queda solo el texto de abajo.
     const Svg = 'Svg' in els ? els.Svg : undefined
-
     return (
       <Box flexDirection="column">
+        <Box flexDirection="column">
+          <Text bold color={GRIS.mid}>{'AGENTES TRABAJANDO AHORA'.toUpperCase()}</Text>
+          {vivos.length === 0 && <Text color={GRIS.lo}>  nadie</Text>}
+          {filasPanelVivo(listaTrabajos, ahora).map(v => {
+            const nombreModelo = v.modelo ? `${v.agente}:${v.modelo}` : v.agente
+            return <Text color={v.color}>{[nombreModelo, v.tarea, v.tiempo].filter(Boolean).join('  ')}</Text>
+          })}
+        </Box>
         {Svg && <Svg source={figuraSvg} alt={altFigura} isInteractive />}
         {Svg && <Svg source={tableroSvg} alt={altTablero} isInteractive />}
         {!Svg && (
@@ -2353,5 +2416,11 @@ ${protocolo(modelos)}`
         )}
       </Box>
     )
+  })
+
+  // Los avisos del plugin se dibujan en una sola línea; con ctrl+o (isExpanded) salen enteros.
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+    if (e.origin.kind !== 'plugin' || e.isExpanded) return next(e)
+    return next({ ...e, text: lineaAviso(e.text) })
   })
 }

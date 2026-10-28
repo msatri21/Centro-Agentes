@@ -137,6 +137,20 @@ async function main() {
   comprobar(e.fin?.code === null && typeof e.fin?.error === 'string', `(e) fin.json: ${JSON.stringify(e.fin)}`)
   comprobar(e.codigo === 1, `(e) el lanzador salió con ${e.codigo}`)
 
+  // (h) un atajo .cmd que usa %~dp0 (como el de pnpm) se lanza por nombre: con el nombre entrecomillado cmd no lo resolvía.
+  if (process.platform === 'win32') {
+    // El atajo vive en otra carpeta que el cwd y se encuentra por PATH, como el de pnpm.
+    fs.mkdirSync(path.join(CARPETA, 'bin-h'), { recursive: true })
+    fs.writeFileSync(path.join(CARPETA, 'bin-h', 'atajo-h.cmd'), '@"%~dp0\\..\\h-sale.cmd" %*\r\n')
+    fs.writeFileSync(path.join(CARPETA, 'h-sale.cmd'), '@echo hola-h\r\n')
+    preparar('h', ['atajo-h'])
+    const h = await new Promise(resolve => {
+      const p = spawn(process.execPath, [LANZADOR, CARPETA, 'h'], { cwd: CARPETA, stdio: 'ignore', windowsHide: true, env: { ...process.env, PATH: path.join(CARPETA, 'bin-h') + ';' + process.env.PATH } })
+      p.on('close', () => resolve(leerJson(ruta('h', '.fin.json'))))
+    })
+    comprobar(h?.code === 0 && texto('h', 'stdout').includes('hola-h'), `(h) atajo .cmd: ${JSON.stringify(h)} ${texto('h', 'stderr')}`)
+  }
+
   // (f) el padre muere de golpe y el lanzador termina igual.
   const agenteF = agenteFalso('agente-f.mjs', [
     'let i = 0',

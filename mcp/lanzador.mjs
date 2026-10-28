@@ -137,7 +137,9 @@ async function principal() {
 
   let arranque = await arrancar(argv)
   if (arranque.error && process.platform === 'win32' && ['ENOENT', 'EINVAL'].includes(arranque.error.code) && existeEnWindows(argv[0])) {
-    const linea = argv.map(a => `"${a.replace(/"/g, "'")}"`).join(' ')
+    // El nombre del comando va sin comillas si no las necesita: con comillas, cmd no resuelve los atajos .cmd de pnpm (%~dp0 queda vacío).
+    const comillas = (a, primero) => (primero && !/[\s&|<>^()%!"]/.test(a) ? a : `"${a.replace(/"/g, "'")}"`)
+    const linea = argv.map((a, i) => comillas(a, i === 0)).join(' ')
     arranque = await arrancar(['cmd', '/d', '/s', '/c', `"${linea}"`], true)
   }
   if (arranque.error || !arranque.proceso?.pid) {

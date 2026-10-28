@@ -47,6 +47,7 @@ El centro puede darles a los agentes que programan la skill [ponytail](https://g
 - `/mst [tarea]` — panel + web; con tarea, el jefe la reparte.
 - `/mst-informe` — informe final del chat en Markdown.
 - `/mst-estado` — qué agentes trabajan ahora, desde cuándo y hace cuánto dieron señal; no pasa por el jefe.
+- **Se ve que siguen trabajando:** la barra de estado de abajo muestra siempre cuántos agentes hay vivos y se refresca cada 5 s; el panel tiene la sección «Agentes trabajando ahora» (en ámbar si uno lleva rato sin señal) y se abre solo cuando arranca el primero; y los avisos del plugin al chat salen en una línea (`⚙ Terminó el grupo g1 (3 encargo(s))`), enteros con ctrl+o.
 - `/centro-web`, `/centro-panel`, `/centro-bench <tarea>`, `/centro-reset`.
 
 ## Cómo trabaja el jefe
