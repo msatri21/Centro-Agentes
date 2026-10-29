@@ -257,6 +257,11 @@ export function textoBarra(trabajos: TrabajoVivo[], encargos: Encargo[], ahora: 
   return partes.join(' · ')
 }
 
+// Con el panel cerrado a mano, la barra dice al final cómo volver a abrirlo (sin texto de barra no hay dónde ponerlo).
+export function pistaPanel(texto: string, cerrado: boolean): string {
+  return cerrado && texto ? `${texto} · /centro-panel abre el panel` : texto
+}
+
 export function textoEstado(trabajos: TrabajoVivo[], encargos: Encargo[], ahora: number, umbralMs = AMARILLO_MS_POR_DEFECTO, escaladaMin = 40): string {
   const filas = filasVivas(trabajos, ahora, umbralMs)
   const cola = encargos.filter(e => e.estado === 'en_cola').length

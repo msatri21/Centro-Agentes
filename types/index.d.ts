@@ -58,6 +58,8 @@ declare module 'claude-code' {
       plan: Plan | null
       /** Planes anteriores del chat (el grafo los dibuja atenuados) */
       planes: Plan[]
+      /** Secciones del panel plegadas, por clave (por defecto, todas abiertas) */
+      plegadas: Record<string, boolean>
     }
   }
 }

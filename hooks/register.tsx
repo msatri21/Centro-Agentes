@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualiz
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -37,7 +37,11 @@ const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, []
 const plan = atom({ plugin: 'centro-agentes', key: 'plan' } as const, null as Plan | null)
 // Los planes anteriores del chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
 const planes = atom({ plugin: 'centro-agentes', key: 'planes' } as const, [] as Plan[])
+// Qué secciones del panel están plegadas; por defecto ninguna (abiertas).
+const plegadas = atom({ plugin: 'centro-agentes', key: 'plegadas' } as const, {} as Record<string, boolean>)
 let vivosPrevios = 0
+// La persona cerró el panel a mano: no se reabre sola al arrancar un agente (solo /mst y /centro-panel lo abren).
+let panelCerradoAMano = false
 
 
 type Opciones = {
@@ -115,6 +119,12 @@ export const filasPanelVivo = (trabajos: TrabajoVivo[], ahora: number) => filasV
   tiempo: duracionCorta(v.trabajandoMs),
   color: v.amarillo ? '#ffb86c' : GRIS.hi,
 }))
+
+// Una sección está plegada solo si el atom lo dice: por defecto, todas abiertas.
+export const estaPlegada = (plegadas: Record<string, boolean>, clave: string) => plegadas[clave] === true
+// La cabecera pulsable: ▾ abierta, ▸ plegada.
+export const cabeceraPlegable = (plegadas: Record<string, boolean>, clave: string, titulo: string) =>
+  `${estaPlegada(plegadas, clave) ? '▸' : '▾'} ${titulo.toUpperCase()}`
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
 
@@ -601,7 +611,7 @@ async function armar($: EngineInterface, filasVista = 30) {
         titulo: 'Subtareas',
         columnas: [16, 52, 380, 560],
         filas: subs.map(s => ({
-          celdas: [`${icono[s.estado]} ${s.n}`, corto(conSkills(encargos.get(s.n)?.skills, s.titulo), 40), corto(s.quien ?? '', 22), s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado],
+          celdas: [`${icono[s.estado]} ${s.n}`, conSkills(encargos.get(s.n)?.skills, s.titulo), corto(s.quien ?? '', 22), s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado],
           tono: tonoSub[s.estado],
         })),
         vacio: 'sin subtareas',
@@ -749,7 +759,7 @@ async function actualizarBarra($: EngineInterface) {
       tarea: t.tarea,
     }))
     const encargosLista = registro.todos()
-    const texto = textoBarra(vivos, encargosLista, Date.now(), AMARILLO_MS_POR_DEFECTO)
+    const texto = pistaPanel(textoBarra(vivos, encargosLista, Date.now(), AMARILLO_MS_POR_DEFECTO), panelCerradoAMano)
     if (texto) $.ui.status(texto)
     else $.ui.status(undefined)
   } catch {}
@@ -1827,7 +1837,7 @@ export const register: Register = (on, options) => {
         const listaTrabajos = (await read($, trabajos)) ?? []
         const ahora = Date.now()
         const vivos = filasVivas(listaTrabajos, ahora)
-        if (vivosPrevios === 0 && vivos.length >= 1) {
+        if (vivosPrevios === 0 && vivos.length >= 1 && !panelCerradoAMano) {
           void $.ui.open({ id: PANE, title: TITULO }).catch(() => undefined)
         }
         vivosPrevios = vivos.length
@@ -2028,8 +2038,15 @@ ${protocolo(modelos)}`
     return { ...r, sections: [...r.sections, { id: 'centro-agentes:jefe', text: texto, scope: 'session' as const }] }
   })
 
+  // La persona cerró el panel a mano: se respeta (no se bloquea el cierre) y deja de abrirse solo.
+  on('ui.close', { id: PANE }, async (_$, e, next) => {
+    if (e.origin.kind === 'person') panelCerradoAMano = true
+    return next(e)
+  }).catch(async (_$, e, next) => next(e))
+
   // /mst: lo primero en cualquier chat. Abre el panel y la web; con texto, además empieza el trabajo como jefe.
   on('command.run', { command: 'mst' }, async ($, e) => {
+    panelCerradoAMano = false
     void $.ui.open({ id: PANE, title: TITULO })
     await $.store.set(WEB_KEY, true)
     await escribirWeb($)
@@ -2082,6 +2099,7 @@ ${protocolo(modelos)}`
   })
 
   on('command.run', { command: 'centro-panel' }, async $ => {
+    panelCerradoAMano = false
     await $.ui.open({ id: PANE, title: TITULO })
     return { text: 'Panel abierto.' }
   })
@@ -2379,41 +2397,56 @@ ${protocolo(modelos)}`
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
-    const { Box, Text } = els
-    const { p, pct, resumen, secciones, figuraSvg, tableroSvg, altFigura, altTablero } = await armar($, e.viewport?.rows ?? 30)
+    const { Box, Text, Button } = els
+    const { p, pct, resumen, secciones, figuraSvg, altFigura } = await armar($, e.viewport?.rows ?? 30)
     const listaTrabajos = (await read($, trabajos)) ?? []
     const ahora = Date.now()
     const vivos = filasVivas(listaTrabajos, ahora)
     const ancho = Math.max(30, (e.viewport?.columns ?? 80) - 4)
     const barra = (n: number, largo = 20) => '█'.repeat(Math.round((n / 100) * largo)).padEnd(largo, '░')
-    // La terminal no dibuja SVG: allí queda solo el texto de abajo.
+    // La terminal no dibuja SVG: la figura solo aparece donde hay superficie Svg.
     const Svg = 'Svg' in els ? els.Svg : undefined
+    const enPlegadas = (await read($, plegadas)) ?? {}
+    const alternar = (clave: string) => { void update($, plegadas, x => ({ ...x, [clave]: !x[clave] })) }
+    const cabecera = (clave: string, titulo: string) => (
+      <Button key={`cab-${clave}`} onPress={() => alternar(clave)}>
+        <Text bold color={GRIS.mid}>{cabeceraPlegable(enPlegadas, clave, titulo)}</Text>
+      </Button>
+    )
     return (
       <Box flexDirection="column">
-        <Box flexDirection="column">
-          <Text bold color={GRIS.mid}>{'AGENTES TRABAJANDO AHORA'.toUpperCase()}</Text>
-          {vivos.length === 0 && <Text color={GRIS.lo}>  nadie</Text>}
-          {filasPanelVivo(listaTrabajos, ahora).map(v => {
-            const nombreModelo = v.modelo ? `${v.agente}:${v.modelo}` : v.agente
-            return <Text color={v.color}>{[nombreModelo, v.tarea, v.tiempo].filter(Boolean).join('  ')}</Text>
-          })}
-        </Box>
-        {Svg && <Svg source={figuraSvg} alt={altFigura} isInteractive />}
-        {Svg && <Svg source={tableroSvg} alt={altTablero} isInteractive />}
-        {!Svg && (
+        {cabecera('vivos', 'Agentes trabajando ahora')}
+        {!estaPlegada(enPlegadas, 'vivos') && (
+          <Box flexDirection="column">
+            {vivos.length === 0 && <Text color={GRIS.lo}>  nadie</Text>}
+            {filasPanelVivo(listaTrabajos, ahora).map(v => {
+              const nombreModelo = v.modelo ? `${v.agente}:${v.modelo}` : v.agente
+              return <Text color={v.color}>{[nombreModelo, v.tarea, v.tiempo].filter(Boolean).join('  ')}</Text>
+            })}
+          </Box>
+        )}
+        {/* Sin isInteractive: se dibuja como imagen y se ajusta al ancho del panel. */}
+        {Svg && cabecera('figura', 'Figura')}
+        {Svg && !estaPlegada(enPlegadas, 'figura') && <Svg source={figuraSvg} alt={altFigura} />}
+        {cabecera('resumen', 'Resumen')}
+        {!estaPlegada(enPlegadas, 'resumen') && (
           <Box flexDirection="column">
             {p && <Text bold color={GRIS.hi}>{corto(p.objetivo, ancho)}</Text>}
             {p && <Text><Text color={VINO}>{barra(pct)}</Text></Text>}
             {resumen.map(f => <Text color={GRIS[f.tono]}>{f.celdas.join('  ·  ')}</Text>)}
-            {secciones.map(s => (
+          </Box>
+        )}
+        {secciones.map(s => (
+          <Box flexDirection="column" key={s.titulo}>
+            {cabecera(s.titulo.toLowerCase(), s.titulo)}
+            {!estaPlegada(enPlegadas, s.titulo.toLowerCase()) && (
               <Box flexDirection="column">
-                <Text bold color={GRIS.mid}>{s.titulo.toUpperCase()}</Text>
                 {s.filas.length === 0 && s.vacio && <Text color={GRIS.lo}>  {s.vacio}</Text>}
                 {s.filas.map(f => <Text color={GRIS[f.tono]}>{f.celdas.filter(Boolean).join('  ')}</Text>)}
               </Box>
-            ))}
+            )}
           </Box>
-        )}
+        ))}
       </Box>
     )
   })
