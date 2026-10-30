@@ -283,7 +283,7 @@ export async function vigilar($: EngineInterface, ahora = Date.now()) {
   }
 }
 
-type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean }
+type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean; fin?: number }
 
 // Cada cuánto se mira el log del agente en disco.
 const SONDEO_MS = 500
@@ -387,7 +387,7 @@ async function esperarArchivos(
     }
     if (hayStdout) alTrozo(stdout)
   }
-  let fin: { code?: number | null; cancelado?: boolean; error?: string } | undefined
+  let fin: { code?: number | null; cancelado?: boolean; error?: string; fin?: number } | undefined
   try {
     while (true) {
       await leerNuevo()
@@ -413,6 +413,7 @@ async function esperarArchivos(
     stderr: motivo ? `${stderr}\n[cortado: ${motivo}]` : fin?.error ? `${stderr}\n${fin.error}` : stderr,
     isStdoutTruncated: false,
     cortado: !!motivo,
+    fin: fin?.fin,
   }
 }
 
@@ -929,7 +930,8 @@ async function reenganchar($: EngineInterface, t: Trabajo) {
   cortadores.delete(t.id)
   const agente = t.trabajador.split(':')[0] as Trabajador
   const { s, ok } = interpretarSalida(agente, c)
-  const ms = Date.now() - t.inicio
+  // La duración real es fin del lanzador menos el inicio, no "ahora - inicio": el reencuentro puede ser horas después.
+  const ms = c.fin ? c.fin - t.inicio : Date.now() - t.inicio
   await update($, trabajos, l => (l ?? []).map(x => (x.id === t.id ? { ...x, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : x)))
   const hecho = ((await read($, trabajos)) ?? []).find(x => x.id === t.id)
   if (hecho) await guardarEnHistorial($, hecho).catch(() => undefined)
