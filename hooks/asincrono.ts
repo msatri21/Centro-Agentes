@@ -322,3 +322,33 @@ export function lineaAviso(texto: string): string {
   const linea = `⚙ ${primera}`
   return linea.length > 90 ? `${linea.slice(0, 89)}…` : linea
 }
+
+// Tokens legibles para el panel: 123, 1.5k, 12k, 1.2M (sin saltar a '1000k' ni a '10.0k' en los bordes).
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n) || n < 1000) return String(Math.max(0, Math.round(n || 0)))
+  if (n >= 999_500) return `${(n / 1_000_000).toFixed(1)}M`
+  const k = n / 1000
+  return k < 9.95 ? `${k.toFixed(1)}k` : `${Math.round(k)}k`
+}
+
+export type FilaResumenPanel = { celdas: string[]; tono: 'hi' | 'mid' | 'lo' | 'vino' }
+
+// Las filas del Resumen del panel que hablan de consumo y de dinero: solo esta sesión, sin totales históricos (esos van en la web).
+export function filasResumenPanelSesion(d: {
+  trabajos: number
+  entradaNueva: number
+  cache: number
+  salida: number
+  sonnetSesion: number
+  apiSesion: number
+  sinPrecioSesion: number
+  claudeGastado?: number
+}): FilaResumenPanel[] {
+  const filas: FilaResumenPanel[] = [
+    { celdas: ['Agentes', `${d.trabajos} trabajos`, `entrada ${fmtTokens(d.entradaNueva)}`, `caché ${fmtTokens(d.cache)}`, `salida ${fmtTokens(d.salida)}`], tono: 'mid' },
+    { celdas: ['Ahorro', `$${d.sonnetSesion.toFixed(2)} vs Sonnet 5.5`], tono: 'vino' },
+    { celdas: ['Costo API', `$${d.apiSesion.toFixed(2)} si se pagaran`, ...(d.sinPrecioSesion > 0 ? [`${d.sinPrecioSesion} sin precio`] : [])], tono: 'mid' },
+  ]
+  if (d.claudeGastado !== undefined) filas.push({ celdas: ['Claude', `$${d.claudeGastado.toFixed(2)} gastado`], tono: 'mid' })
+  return filas
+}

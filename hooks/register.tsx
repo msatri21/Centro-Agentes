@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoApi, costoComoClaude, debeBusc
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasResumenPanelSesion, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
 export { costoApi, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -686,6 +686,23 @@ async function armar($: EngineInterface, filasVista = 30) {
         tono: 'vino',
       },
     ]
+    // El panel solo habla de esta sesión y con pocas palabras; la web conserva `resumen` y el detalle histórico en `costos`.
+    const delaSesion = lista.filter(t => !t.trabajador.startsWith('claude:'))
+    const cacheSesion = delaSesion.reduce((a, t) => a + Math.min(t.tokensIn ?? 0, t.tokensCache ?? 0), 0)
+    const delClaude = lista.filter(t => t.trabajador.startsWith('claude:'))
+    const resumenPanel: Fila[] = [
+      ...resumen.slice(0, 2),
+      ...filasResumenPanelSesion({
+        trabajos: lista.length,
+        entradaNueva: delaSesion.reduce((a, t) => a + (t.tokensIn ?? 0), 0) - cacheSesion,
+        cache: cacheSesion,
+        salida: delaSesion.reduce((a, t) => a + (t.tokensOut ?? 0), 0),
+        sonnetSesion: costos.sonnetSesion,
+        apiSesion: costos.apiSesion,
+        sinPrecioSesion: costos.sinPrecioSesion,
+        ...(delClaude.length ? { claudeGastado: delClaude.reduce((a, t) => a + (t.costo ?? 0), 0) } : {}),
+      }),
+    ]
     const secciones: Seccion[] = [
       {
         titulo: 'Subtareas',
@@ -771,7 +788,7 @@ async function armar($: EngineInterface, filasVista = 30) {
       { etiqueta: 'Ahorro', valor: `$${ahorroSesion.toFixed(2)}`, nota: `total $${total.usd.toFixed(2)} vs Claude Sonnet` },
     ]
     return {
-      p, pct, resumen, secciones, seccionesPanel, lectura, kpis, costos,
+      p, pct, resumen, resumenPanel, secciones, seccionesPanel, lectura, kpis, costos,
       figuraSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }),
       figuraPanelSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }, { marco: false }),
       tableroSvg: tablero({
@@ -2511,7 +2528,7 @@ ${protocolo(modelos)}`
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    const { p, pct, resumen, seccionesPanel, figuraPanelSvg, altFigura } = await armar($, e.viewport?.rows ?? 30)
+    const { p, pct, resumenPanel, seccionesPanel, figuraPanelSvg, altFigura } = await armar($, e.viewport?.rows ?? 30)
     const listaTrabajos = (await read($, trabajos)) ?? []
     const ahora = Date.now()
     const vivos = filasVivas(listaTrabajos, ahora)
@@ -2568,7 +2585,7 @@ ${protocolo(modelos)}`
               {p && <Text color={GRIS.hi}>{tituloCorto(p.objetivo, 12)}</Text>}
               <Text color={GRIS.mid}>{ahoraTexto}</Text>
               <Text><Text color={VINO}>{barra(pct)}</Text></Text>
-              {resumen.map((f, i) => {
+              {resumenPanel.map((f, i) => {
                 // Cada fila en su línea: la etiqueta apagada y los datos en el tono de la fila.
                 const [etiqueta, ...resto] = f.celdas
                 return (
