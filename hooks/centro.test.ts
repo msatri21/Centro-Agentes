@@ -513,7 +513,7 @@ test('la figura marca quién trabaja y cabe en el límite de Svg con muchas subt
 
 test('los lectores sacan texto y tokens de cada CLI', async () => {
   const usage = '{"type":"result","result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":2,"cache_creation_input_tokens":30,"cache_read_input_tokens":20,"output_tokens":4},"modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}}}'
-  const esperado = { texto: 'ok', tokensIn: 52, tokensOut: 4, ventana: 1000000, costo: 0.01 }
+  const esperado = { texto: 'ok', tokensIn: 52, tokensCache: 20, tokensOut: 4, ventana: 1000000, costo: 0.01 }
   expect(leerClaude(usage)).toEqual(esperado)
   expect(leerClaude(`{"type":"system"}\n{"type":"assistant","message":{"content":[]}}\n${usage}\n`)).toEqual(esperado)
 

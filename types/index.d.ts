@@ -16,6 +16,8 @@ export type Trabajo = {
   puntaje?: number
   /** Tokens que leyó el trabajador (contexto consumido) y que escribió */
   tokensIn?: number
+  /** Tokens leídos de caché, incluidos en tokensIn por compatibilidad */
+  tokensCache?: number
   tokensOut?: number
   /** Ventana de contexto del modelo, si el CLI la informa */
   ventana?: number

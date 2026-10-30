@@ -1000,7 +1000,7 @@ async function reenganchar($: EngineInterface, t: Trabajo) {
   const { s, ok } = interpretarSalida(agente, c)
   // La duración real es fin del lanzador menos el inicio, no "ahora - inicio": el reencuentro puede ser horas después.
   const ms = c.fin ? c.fin - t.inicio : Date.now() - t.inicio
-  await update($, trabajos, l => (l ?? []).map(x => (x.id === t.id ? { ...x, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : x)))
+  await update($, trabajos, l => (l ?? []).map(x => (x.id === t.id ? { ...x, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensCache: s.tokensCache, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : x)))
   const hecho = ((await read($, trabajos)) ?? []).find(x => x.id === t.id)
   if (hecho) await guardarEnHistorial($, hecho).catch(() => undefined)
   if (t.subtarea !== undefined) {
@@ -1009,7 +1009,7 @@ async function reenganchar($: EngineInterface, t: Trabajo) {
   }
   const resultado = {
     id: t.id, ...(t.subtarea === undefined ? {} : { subtarea: t.subtarea }), trabajador: t.trabajador, exito: ok, segundos: Math.round(ms / 1000),
-    tokens: { entrada: s.tokensIn ?? 0, salida: s.tokensOut ?? 0 }, salida: s.texto.slice(-3000), reenganchado: true,
+    tokens: { entrada: s.tokensIn ?? 0, salida: s.tokensOut ?? 0, ...(s.tokensCache === undefined ? {} : { cache: s.tokensCache }) }, salida: s.texto.slice(-3000), reenganchado: true,
     aviso: `Resultado recuperado tras recargar el plugin: el centro no cerró la copia aislada ni corrió 'verificar'${cwd ? `; el agente trabajó en ${cwd}: revisa sus cambios con git y júntalos tú si están bien` : ''}. No se probó otro modelo; si falló, decide tú si relanzar.`,
     ...(cwd ? { carpeta: cwd } : {}),
   }
@@ -1394,7 +1394,7 @@ ${PROTOCOLO_AGENTE}`
   }
   const ms = Date.now() - t0
   await update($, trabajos, l =>
-    (l ?? []).map(t => (t.id === id ? { ...t, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : t)),
+    (l ?? []).map(t => (t.id === id ? { ...t, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensCache: s.tokensCache, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : t)),
   )
   void actualizarBarra($)
   cortadores.delete(id)
@@ -1774,7 +1774,7 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     trabajador: quienFue,
     exito: r.ok,
     segundos: Math.round(r.ms / 1000),
-    tokens: { entrada: r.s.tokensIn, salida: r.s.tokensOut },
+    tokens: { entrada: r.s.tokensIn, salida: r.s.tokensOut, ...(r.s.tokensCache === undefined ? {} : { cache: r.s.tokensCache }) },
     ...(necesidades.length ? { necesita: necesidades } : {}),
     ...(necesidades.length && input.necesita === undefined ? { detectada: true } : {}),
     ...(avisoCapacidad ? { aviso_capacidad: avisoCapacidad } : {}),

@@ -8,7 +8,7 @@ import { entradaDe, puntosCatalogo } from './catalogo.ts'
 export type Celda = { n: number; suma: number; msTotal: number }
 export type Puntajes = Record<string, Record<string, Celda>>
 
-export type Salida = { texto: string; tokensIn?: number; tokensOut?: number; ventana?: number; costo?: number; errorTipo?: string; reintentoMs?: number }
+export type Salida = { texto: string; tokensIn?: number; tokensCache?: number; tokensOut?: number; ventana?: number; costo?: number; errorTipo?: string; reintentoMs?: number }
 
 // Un "trabajador" del ranking es trabajador:modelo (o solo trabajador si usa el modelo por defecto).
 export const clave = (t: Trabajador, modelo?: string) => (modelo ? `${t}:${modelo}` : t)
@@ -27,6 +27,7 @@ export function leerClaude(stdout: string): Salida {
     return {
       texto: String(j.result ?? ''),
       tokensIn: (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+      tokensCache: u.cache_read_input_tokens,
       tokensOut: u.output_tokens ?? 0,
       ventana: m?.contextWindow,
       costo: j.total_cost_usd,
@@ -72,6 +73,7 @@ export function leerHermes(stdout: string): Salida & { exitCode?: number } {
 export function leerOpencode(stdout: string): Salida {
   let texto = ''
   let tokensIn = 0
+  let tokensCache = 0
   let tokensOut = 0
   let costo = 0
   const salida: Salida = { texto: '', tokensIn, tokensOut, costo }
@@ -96,12 +98,14 @@ export function leerOpencode(stdout: string): Salida {
     } else if (ev.type === 'step_finish') {
       const t = ev.part?.tokens ?? {}
       tokensIn += (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
+      tokensCache += t.cache?.read ?? 0
       tokensOut += (t.output ?? 0) + (t.reasoning ?? 0)
       costo += ev.part?.cost ?? 0
     }
   }
   salida.texto = texto.trim()
   salida.tokensIn = tokensIn
+  salida.tokensCache = tokensCache
   salida.tokensOut = tokensOut
   salida.costo = costo
   return salida
