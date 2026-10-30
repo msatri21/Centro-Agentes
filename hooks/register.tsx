@@ -122,9 +122,36 @@ export const filasPanelVivo = (trabajos: TrabajoVivo[], ahora: number) => filasV
 
 // Una sección está plegada solo si el atom lo dice: por defecto, todas abiertas.
 export const estaPlegada = (plegadas: Record<string, boolean>, clave: string) => plegadas[clave] === true
-// La cabecera pulsable: ▾ abierta, ▸ plegada.
+// La cabecera pulsable: el glifo (▾ abierta, ▸ plegada) va en su botón y el título aparte.
 export const cabeceraPlegable = (plegadas: Record<string, boolean>, clave: string, titulo: string) =>
-  `${estaPlegada(plegadas, clave) ? '▸' : '▾'} ${titulo.toUpperCase()}`
+  ({ glifo: estaPlegada(plegadas, clave) ? '▸' : '▾', titulo })
+
+// La versión del plugin para la cabecera del panel: se lee una vez por sesión.
+let versionPanel: string | undefined
+let versionPanelLeida = false
+async function versionDelPlugin($: EngineInterface) {
+  if (!versionPanelLeida) {
+    versionPanelLeida = true
+    // Sin la marca BOM: algunos editores de Windows la ponen y JSON.parse falla con ella.
+    versionPanel = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)
+      .then(t => (JSON.parse(t.replace(/^﻿/, '')) as { version?: string }).version)
+      .catch(() => undefined)
+  }
+  return versionPanel
+}
+
+// Una línea legible del historial del panel: ✓ opencode · deepseek-v4.1-flash · 1m02s · 8/10
+export const lineaHistorial = (t: Pick<Trabajo, 'trabajador' | 'ms' | 'puntaje' | 'estado'>) => {
+  const [agente, ...resto] = t.trabajador.split(':')
+  const modelo = resto.join(':').split('/').pop()
+  const ms = t.ms ?? 0
+  const duracion = ms >= 60_000
+    ? `${Math.floor(ms / 60_000)}m${String(Math.round((ms % 60_000) / 1000)).padStart(2, '0')}s`
+    : `${Math.round(ms / 1000)}s`
+  return [`${t.estado === 'error' ? '✗' : '✓'} ${agente}`, modelo, duracion, t.puntaje !== undefined ? `${t.puntaje}/10` : '']
+    .filter(Boolean)
+    .join(' · ')
+}
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
 
@@ -553,7 +580,7 @@ async function puntuarEnHistorial($: EngineInterface, id: string, puntaje: numbe
 // En la web, las skills de un trabajo van delante de su texto con ✦.
 export const conSkills = (skills: string[] | undefined, texto: string) => (skills?.length ? `✦ ${skills.join(', ')} · ${texto}` : texto)
 
-async function armar($: EngineInterface, filasVista = 30) {
+async function armar($: EngineInterface, _filasVista = 30) {
     const lista = (await read($, trabajos)) ?? []
     const p = await read($, plan)
     const ctx = (await $.session.usage()).context
@@ -579,12 +606,11 @@ async function armar($: EngineInterface, filasVista = 30) {
     const tonoTrab = (t: Trabajo): Tono =>
       t.estado === 'error' || (t.puntaje ?? 10) < 6 ? 'vino' : t.puntaje !== undefined ? 'hi' : 'mid'
     const corriendo = lista.filter(t => t.estado === 'corriendo')
-    const room = Math.max(3, filasVista - subs.length - corriendo.length - 14)
 
     // Los mismos datos para la tarjeta SVG y para el texto de la terminal.
     const resumen: Fila[] = [
       ...(p
-        ? [{ celdas: [`${hechas}/${subs.length} hechas (${pct}%)`, ...(faltan > 0 && msMedio !== undefined ? [`faltan ${faltan}, ≈${seg(faltan * msMedio)}`] : [])], tono: 'hi' as Tono }]
+        ? [{ celdas: ['Progreso', `${hechas}/${subs.length} hechas (${pct}%)`, ...(faltan > 0 && msMedio !== undefined ? [`faltan ${faltan}, ≈${seg(faltan * msMedio)}`] : [])], tono: 'hi' as Tono }]
         : [{ celdas: ['Sin plan aún. Usa /centro <tarea>'], tono: 'lo' as Tono }]),
       {
         celdas: [
@@ -618,25 +644,13 @@ async function armar($: EngineInterface, filasVista = 30) {
         vacio: 'sin subtareas',
       },
       {
-        titulo: 'Trabajando ahora',
-        columnas: [16, 250, 310],
-        filas: corriendo.map(t => ({ celdas: [corto(`● ${t.trabajador}`, 29), seg(ahora - t.inicio), corto(conSkills(t.skills, t.tarea), 40)], tono: 'vino' })),
-        vacio: 'nadie',
-      },
-      {
         titulo: 'Historial',
+        // La web apila estas celdas por columnas; el panel pinta una línea por trabajo y su tarea debajo.
         columnas: [16, 250, 300, 400, 450],
-        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-room).map(t => ({
-          celdas: [
-            // ◦ marca lo que viene de una sesión anterior.
-            corto(`${t.estado === 'error' ? '✗' : deAntes.includes(t) ? '◦' : '✓'} ${t.trabajador}`, 29),
-            seg(t.ms ?? 0),
-            t.tokensIn !== undefined ? `${miles(t.tokensIn)}→${miles(t.tokensOut ?? 0)}` : '',
-            t.puntaje !== undefined ? `${t.puntaje}/10` : '',
-            corto(conSkills(t.skills, t.tarea), 22),
-          ],
-          tono: tonoTrab(t),
-        })),
+        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-5).flatMap(t => [
+          { celdas: [lineaHistorial(t)], tono: tonoTrab(t) },
+          ...(t.tarea ? [{ celdas: [corto(t.tarea, 50)], tono: 'lo' as Tono }] : []),
+        ]),
         vacio: 'vacío',
       },
     ]
@@ -663,6 +677,7 @@ async function armar($: EngineInterface, filasVista = 30) {
     return {
       p, pct, resumen, secciones, lectura, kpis,
       figuraSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }),
+      figuraPanelSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }, { marco: false }),
       tableroSvg: tablero({
         titulo, lectura, progreso: p ? pct : undefined, resumen, secciones,
         terminales: corriendo.map(t => ({
@@ -2400,7 +2415,7 @@ ${protocolo(modelos)}`
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    const { p, pct, resumen, secciones, figuraSvg, altFigura } = await armar($, e.viewport?.rows ?? 30)
+    const { p, pct, resumen, secciones, figuraPanelSvg, altFigura } = await armar($, e.viewport?.rows ?? 30)
     const listaTrabajos = (await read($, trabajos)) ?? []
     const ahora = Date.now()
     const vivos = filasVivas(listaTrabajos, ahora)
@@ -2410,41 +2425,68 @@ ${protocolo(modelos)}`
     const Svg = 'Svg' in els ? els.Svg : undefined
     const enPlegadas = (await read($, plegadas)) ?? {}
     const alternar = (clave: string) => { void update($, plegadas, x => ({ ...x, [clave]: !x[clave] })) }
-    const cabecera = (clave: string, titulo: string) => (
-      <Button key={`cab-${clave}`} onPress={() => alternar(clave)}>
-        <Text bold color={GRIS.mid}>{cabeceraPlegable(enPlegadas, clave, titulo)}</Text>
-      </Button>
-    )
+    const version = await versionDelPlugin($)
+    // El título y, al lado, un glifo discreto: nada de botones con marco.
+    const cabecera = (clave: string, titulo: string) => {
+      const cab = cabeceraPlegable(enPlegadas, clave, titulo)
+      return (
+        <Box key={`cab-${clave}`} flexDirection="row" gap={1}>
+          <Text bold color={GRIS.mid}>{cab.titulo}</Text>
+          <Button key={`btn-${clave}`} plain dimColor onPress={() => alternar(clave)}>{cab.glifo}</Button>
+        </Box>
+      )
+    }
     return (
-      <Box flexDirection="column">
-        {cabecera('vivos', 'Agentes trabajando ahora')}
-        {!estaPlegada(enPlegadas, 'vivos') && (
-          <Box flexDirection="column">
-            {vivos.length === 0 && <Text color={GRIS.lo}>  nadie</Text>}
-            {filasPanelVivo(listaTrabajos, ahora).map(v => {
-              const nombreModelo = v.modelo ? `${v.agente}:${v.modelo}` : v.agente
-              return <Text color={v.color}>{[nombreModelo, v.tarea, v.tiempo].filter(Boolean).join('  ')}</Text>
-            })}
-          </Box>
-        )}
+      <Box flexDirection="column" paddingX={1} gap={1}>
+        <Box flexDirection="row" gap={1}>
+          <Text bold>{TITULO}</Text>
+          {version !== undefined && <Text dimColor>v{version} · /mst</Text>}
+        </Box>
+        <Box flexDirection="column" gap={1}>
+          {cabecera('vivos', 'Agentes trabajando ahora')}
+          {!estaPlegada(enPlegadas, 'vivos') && (
+            <Box flexDirection="column">
+              {vivos.length === 0 && <Text color={GRIS.lo}>nadie</Text>}
+              {filasPanelVivo(listaTrabajos, ahora).map((v, i) => {
+                const nombreModelo = v.modelo ? `${v.agente}:${v.modelo}` : v.agente
+                return <Text key={i} color={v.color}>{[nombreModelo, v.tarea, v.tiempo].filter(Boolean).join('  ')}</Text>
+              })}
+            </Box>
+          )}
+        </Box>
         {/* Sin isInteractive: se dibuja como imagen y se ajusta al ancho del panel. */}
-        {Svg && cabecera('figura', 'Figura')}
-        {Svg && !estaPlegada(enPlegadas, 'figura') && <Svg source={figuraSvg} alt={altFigura} />}
-        {cabecera('resumen', 'Resumen')}
-        {!estaPlegada(enPlegadas, 'resumen') && (
-          <Box flexDirection="column">
-            {p && <Text bold color={GRIS.hi}>{corto(p.objetivo, ancho)}</Text>}
-            {p && <Text><Text color={VINO}>{barra(pct)}</Text></Text>}
-            {resumen.map(f => <Text color={GRIS[f.tono]}>{f.celdas.join('  ·  ')}</Text>)}
+        {Svg && (
+          <Box flexDirection="column" gap={1}>
+            {cabecera('figura', 'Figura')}
+            {!estaPlegada(enPlegadas, 'figura') && <Svg source={figuraPanelSvg} alt={altFigura} />}
           </Box>
         )}
+        <Box flexDirection="column" gap={1}>
+          {cabecera('resumen', 'Resumen')}
+          {!estaPlegada(enPlegadas, 'resumen') && (
+            <Box flexDirection="column">
+              {p && <Text bold color={GRIS.hi}>{corto(p.objetivo, ancho)}</Text>}
+              {p && <Text><Text color={VINO}>{barra(pct)}</Text></Text>}
+              {resumen.map((f, i) => {
+                // Cada fila en su línea: la etiqueta apagada y los datos en el tono de la fila.
+                const [etiqueta, ...resto] = f.celdas
+                return (
+                  <Text key={i} color={GRIS[f.tono]}>
+                    <Text dimColor>{etiqueta}</Text>
+                    {resto.length > 0 ? `  ${resto.join('  ·  ')}` : ''}
+                  </Text>
+                )
+              })}
+            </Box>
+          )}
+        </Box>
         {secciones.map(s => (
-          <Box flexDirection="column" key={s.titulo}>
+          <Box flexDirection="column" gap={1} key={s.titulo}>
             {cabecera(s.titulo.toLowerCase(), s.titulo)}
             {!estaPlegada(enPlegadas, s.titulo.toLowerCase()) && (
               <Box flexDirection="column">
-                {s.filas.length === 0 && s.vacio && <Text color={GRIS.lo}>  {s.vacio}</Text>}
-                {s.filas.map(f => <Text color={GRIS[f.tono]}>{f.celdas.filter(Boolean).join('  ')}</Text>)}
+                {s.filas.length === 0 && s.vacio && <Text color={GRIS.lo}>{s.vacio}</Text>}
+                {s.filas.map((f, i) => <Text key={i} color={GRIS[f.tono]}>{f.celdas.filter(Boolean).join('  ')}</Text>)}
               </Box>
             )}
           </Box>

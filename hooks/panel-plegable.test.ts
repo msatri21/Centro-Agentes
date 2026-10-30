@@ -8,14 +8,8 @@ test('por defecto todas las secciones están abiertas; solo se pliega lo marcado
   expect(estaPlegada({ resumen: true }, 'resumen')).toBe(true)
 })
 
-test('la cabecera muestra el título de la sección con ▾ abierta y ▸ plegada', () => {
-  const abierta = cabeceraPlegable({}, 'vivos', 'Agentes trabajando ahora')
-  expect(abierta).toContain('AGENTES TRABAJANDO AHORA')
-  expect(abierta.startsWith('▾')).toBe(true)
-
-  const plegada = cabeceraPlegable({ vivos: true }, 'vivos', 'Agentes trabajando ahora')
-  expect(plegada).toContain('AGENTES TRABAJANDO AHORA')
-  expect(plegada.startsWith('▸')).toBe(true)
-
-  expect(cabeceraPlegable({}, 'subtareas', 'Subtareas')).toContain('SUBTAREAS')
+test('la cabecera entrega el título normal (sin mayúsculas) y el glifo aparte: ▾ abierta y ▸ plegada', () => {
+  expect(cabeceraPlegable({}, 'vivos', 'Agentes trabajando ahora')).toEqual({ glifo: '▾', titulo: 'Agentes trabajando ahora' })
+  expect(cabeceraPlegable({ vivos: true }, 'vivos', 'Agentes trabajando ahora')).toEqual({ glifo: '▸', titulo: 'Agentes trabajando ahora' })
+  expect(cabeceraPlegable({}, 'subtareas', 'Subtareas')).toEqual({ glifo: '▾', titulo: 'Subtareas' })
 })
