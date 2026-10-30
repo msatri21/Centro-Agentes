@@ -283,15 +283,36 @@ export function agenteVivo(pid: { inicio?: number } | undefined, hayFin: boolean
   return ahora - pid.inicio < MARGEN_AGENTE_VIVO_MS
 }
 
+// El primer separador del texto: lo que va antes es el título y lo que va después, el detalle.
+const SEPARADOR = /[:;]|\s—\s|\s–\s|\s\(|\.\s/
+
 // Un título breve para el panel: fuera la etiqueta inicial ([R6], [F1]) y el detalle tras el primer separador; nunca parte una palabra.
-export function tituloCorto(t: string, maxPalabras = 6): string {
+export function tituloCorto(t: string, maxPalabras = 10): string {
   const sinEtiqueta = t.replace(/^\s*\[[^\]]+\]\s*/, '')
-  const corte = sinEtiqueta.search(/[:;]|\s—\s|\s–\s|\s\(|\.\s/)
+  const corte = sinEtiqueta.search(SEPARADOR)
   const base = (corte >= 0 ? sinEtiqueta.slice(0, corte) : sinEtiqueta).trim()
   const palabras = base.split(/\s+/).filter(Boolean)
   const tope = Math.max(1, maxPalabras)
   if (palabras.length <= tope) return palabras.join(' ')
   return `${palabras.slice(0, tope).join(' ')}…`
+}
+
+// El detalle que tituloCorto descarta: tras el primer separador, solo la primera frase y con tope de palabras.
+export function descripcionCorta(t: string, maxPalabras = 12): string {
+  const sinEtiqueta = t.replace(/^\s*\[[^\]]+\]\s*/, '')
+  const m = sinEtiqueta.match(SEPARADOR)
+  if (!m || m.index === undefined) return ''
+  // Si el separador fue un paréntesis, el detalle no debe arrastrar el que cierra.
+  const primera = sinEtiqueta.slice(m.index + m[0].length).split('. ')[0].trim().replace(/\)$/, '')
+  const palabras = primera.split(/\s+/).filter(Boolean)
+  const tope = Math.max(1, maxPalabras)
+  if (palabras.length <= tope) return palabras.join(' ')
+  return `${palabras.slice(0, tope).join(' ')}…`
+}
+
+// La tarea del historial sin el prefijo de encabezado que se repetía en cada línea.
+export function tareaLimpia(t: string): string {
+  return tituloCorto(t.replace(/^\s*(tarea|proyecto|objetivo)\s*:\s*/i, ''), 10)
 }
 
 // Una línea compacta para un aviso del plugin: sin el prefijo del centro, hasta el primer punto o salto de línea, con tope de 90.

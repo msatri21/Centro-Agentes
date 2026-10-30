@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualiz
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -115,7 +115,7 @@ const corto = (t: string, n = 60) => (t.length > n ? t.slice(0, n - 1) + '…' :
 export const filasPanelVivo = (trabajos: TrabajoVivo[], ahora: number) => filasVivas(trabajos, ahora).map(v => ({
   agente: v.agente,
   modelo: v.modelo,
-  tarea: tituloCorto(v.tarea ?? '', 6),
+  tarea: tituloCorto(v.tarea ?? '', 8),
   tiempo: duracionCorta(v.trabajandoMs),
   color: v.amarillo ? '#ffb86c' : GRIS.hi,
 }))
@@ -681,21 +681,29 @@ async function armar($: EngineInterface, filasVista = 30) {
       {
         titulo: 'Subtareas',
         columnas: [],
-        filas: subs.map(s => ({
-          celdas: [
-            `${icono[s.estado]} ${s.n}  ${tituloCorto(s.titulo)}`,
-            s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado,
-            quienCorto(s.quien),
-          ],
-          tono: tonoSub[s.estado],
-        })),
+        // Cada subtarea ocupa dos filas: la línea con su estado y, debajo en gris, el detalle que el título descarta.
+        filas: subs.flatMap(s => {
+          const estado = s.estado === 'realizado' ? 'en_proceso' : s.estado
+          const linea = `${icono[s.estado]} ${s.n}  ${tituloCorto(s.titulo)} · ${estado}${s.puntaje !== undefined ? ` · ${s.puntaje}/10` : ''}`
+          const detalle = descripcionCorta(s.titulo)
+          return [
+            { celdas: [linea], tono: tonoSub[s.estado] },
+            ...(detalle ? [{ celdas: [`   ${detalle}`], tono: 'lo' as Tono }] : []),
+          ]
+        }),
         vacio: 'sin subtareas',
       },
       {
         titulo: 'Historial',
         columnas: [],
-        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4)
-          .map(t => ({ celdas: [lineaHistorial(t, t.tarea)], tono: tonoTrab(t) })),
+        // Dos filas por entrada: la línea del historial y, debajo en gris, la tarea en pocas palabras.
+        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4).flatMap(t => {
+          const tarea = tareaLimpia(t.tarea)
+          return [
+            { celdas: [lineaHistorial(t)], tono: tonoTrab(t) },
+            ...(tarea ? [{ celdas: [`   ${tarea}`], tono: 'lo' as Tono }] : []),
+          ]
+        }),
         vacio: 'vacío',
       },
     ]
@@ -2466,7 +2474,7 @@ ${protocolo(modelos)}`
     const vivos = filasVivas(listaTrabajos, ahora)
     // En una frase, lo que ocupa ahora a los agentes.
     const ahoraTexto = vivos.length
-      ? `Ahora: ${vivos[0].agente}${vivos[0].tarea ? ` → ${tituloCorto(vivos[0].tarea, 6)}` : ''}`
+      ? `Ahora: ${vivos[0].agente}${vivos[0].tarea ? ` → ${tituloCorto(vivos[0].tarea, 10)}` : ''}`
       : 'Ahora: nada en marcha'
     const barra = (n: number, largo = 20) => '█'.repeat(Math.round((n / 100) * largo)).padEnd(largo, '░')
     // La terminal no dibuja SVG: la figura solo aparece donde hay superficie Svg.
@@ -2514,7 +2522,7 @@ ${protocolo(modelos)}`
           {cabecera('resumen', 'Resumen')}
           {!estaPlegada(enPlegadas, 'resumen') && (
             <Box flexDirection="column">
-              {p && <Text color={GRIS.hi}>{tituloCorto(p.objetivo, 8)}</Text>}
+              {p && <Text color={GRIS.hi}>{tituloCorto(p.objetivo, 12)}</Text>}
               <Text color={GRIS.mid}>{ahoraTexto}</Text>
               <Text><Text color={VINO}>{barra(pct)}</Text></Text>
               {resumen.map((f, i) => {
