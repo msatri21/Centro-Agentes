@@ -106,6 +106,8 @@ test('tras recargar el plugin, el agente se reencuentra por sus archivos y el je
   reiniciarCatalogoParaPruebas()
   mock.store(on); mock.clock(on)
   const hace = Date.now() - 60_000
+  // El agente terminó hace ~53 s (duró 7 s), aunque el reencuentro sea ahora: la duración sale de fin.json.
+  const finReal = hace + 7000
   const avisos: string[] = []
   let finEscrito = false
   on('ui.status', async () => ({ value: undefined }))
@@ -130,7 +132,7 @@ test('tras recargar el plugin, el agente se reencuentra por sus archivos y el je
       }) }
     }
     if (ruta.endsWith('/trabajos/tviejo.log')) return { value: linea('stdout', 'hecho tras recarga') }
-    if (ruta.endsWith('/trabajos/tviejo.fin.json')) { if (finEscrito) return { value: JSON.stringify({ code: 0, signal: null, cancelado: false, fin: Date.now() }) }; throw new Error('aún no') }
+    if (ruta.endsWith('/trabajos/tviejo.fin.json')) { if (finEscrito) return { value: JSON.stringify({ code: 0, signal: null, cancelado: false, fin: finReal }) }; throw new Error('aún no') }
     if (ruta.toLowerCase().endsWith('cerebro.json')) return { value: '{}' }
     if (ruta.endsWith('plugin.json')) return { value: '{"version":"1"}' }
     throw new Error(`ruta no simulada: ${ruta}`)
@@ -142,6 +144,8 @@ test('tras recargar el plugin, el agente se reencuentra por sus archivos y el je
   await esperar(async () => (await estado($, 'e1'))?.estado === 'terminado')
   const e = await estado($, 'e1')
   expect(e.resultado).toMatchObject({ id: 'tviejo', exito: true, salida: 'hecho tras recarga', reenganchado: true })
+  // La duración es fin - inicio (7 s), no ahora - inicio (~60 s): reenganchar no alarga el trabajo.
+  expect(e.resultado.segundos).toBe(7)
   // Un solo aviso, el del grupo, y el jefe sabe que no se cerró nada por él.
   await esperar(() => avisos.length > 0)
   await new Promise(r => setTimeout(r, 50))

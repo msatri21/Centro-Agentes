@@ -257,6 +257,11 @@ export function textoBarra(trabajos: TrabajoVivo[], encargos: Encargo[], ahora: 
   return partes.join(' · ')
 }
 
+// Con el panel cerrado a mano, la barra dice al final cómo volver a abrirlo (sin texto de barra no hay dónde ponerlo).
+export function pistaPanel(texto: string, cerrado: boolean): string {
+  return cerrado && texto ? `${texto} · /centro-panel abre el panel` : texto
+}
+
 export function textoEstado(trabajos: TrabajoVivo[], encargos: Encargo[], ahora: number, umbralMs = AMARILLO_MS_POR_DEFECTO, escaladaMin = 40): string {
   const filas = filasVivas(trabajos, ahora, umbralMs)
   const cola = encargos.filter(e => e.estado === 'en_cola').length
@@ -278,10 +283,72 @@ export function agenteVivo(pid: { inicio?: number } | undefined, hayFin: boolean
   return ahora - pid.inicio < MARGEN_AGENTE_VIVO_MS
 }
 
+// El primer separador del texto: lo que va antes es el título y lo que va después, el detalle.
+const SEPARADOR = /[:;]|\s—\s|\s–\s|\s\(|\.\s/
+
+// Un título breve para el panel: fuera la etiqueta inicial ([R6], [F1]) y el detalle tras el primer separador; nunca parte una palabra.
+export function tituloCorto(t: string, maxPalabras = 10): string {
+  const sinEtiqueta = t.replace(/^\s*\[[^\]]+\]\s*/, '')
+  const corte = sinEtiqueta.search(SEPARADOR)
+  const base = (corte >= 0 ? sinEtiqueta.slice(0, corte) : sinEtiqueta).trim()
+  const palabras = base.split(/\s+/).filter(Boolean)
+  const tope = Math.max(1, maxPalabras)
+  if (palabras.length <= tope) return palabras.join(' ')
+  return `${palabras.slice(0, tope).join(' ')}…`
+}
+
+// El detalle que tituloCorto descarta: tras el primer separador, solo la primera frase y con tope de palabras.
+export function descripcionCorta(t: string, maxPalabras = 12): string {
+  const sinEtiqueta = t.replace(/^\s*\[[^\]]+\]\s*/, '')
+  const m = sinEtiqueta.match(SEPARADOR)
+  if (!m || m.index === undefined) return ''
+  // Si el separador fue un paréntesis, el detalle no debe arrastrar el que cierra.
+  const primera = sinEtiqueta.slice(m.index + m[0].length).split('. ')[0].trim().replace(/\)$/, '')
+  const palabras = primera.split(/\s+/).filter(Boolean)
+  const tope = Math.max(1, maxPalabras)
+  if (palabras.length <= tope) return palabras.join(' ')
+  return `${palabras.slice(0, tope).join(' ')}…`
+}
+
+// La tarea del historial sin el prefijo de encabezado que se repetía en cada línea.
+export function tareaLimpia(t: string): string {
+  return tituloCorto(t.replace(/^\s*(tarea|proyecto|objetivo)\s*:\s*/i, ''), 10)
+}
+
 // Una línea compacta para un aviso del plugin: sin el prefijo del centro, hasta el primer punto o salto de línea, con tope de 90.
 export function lineaAviso(texto: string): string {
   const sinPrefijo = texto.replace(/^\s*\[Centro de agentes MST\]\s*/, '')
   const primera = (sinPrefijo.split(/\r?\n/)[0] ?? '').split(/\.\s/)[0].trim().replace(/[.:]$/, '')
   const linea = `⚙ ${primera}`
   return linea.length > 90 ? `${linea.slice(0, 89)}…` : linea
+}
+
+// Tokens legibles para el panel: 123, 1.5k, 12k, 1.2M (sin saltar a '1000k' ni a '10.0k' en los bordes).
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n) || n < 1000) return String(Math.max(0, Math.round(n || 0)))
+  if (n >= 999_500) return `${(n / 1_000_000).toFixed(1)}M`
+  const k = n / 1000
+  return k < 9.95 ? `${k.toFixed(1)}k` : `${Math.round(k)}k`
+}
+
+export type FilaResumenPanel = { celdas: string[]; tono: 'hi' | 'mid' | 'lo' | 'vino' }
+
+// Las filas del Resumen del panel que hablan de consumo y de dinero: solo esta sesión, sin totales históricos (esos van en la web).
+export function filasResumenPanelSesion(d: {
+  trabajos: number
+  entradaNueva: number
+  cache: number
+  salida: number
+  sonnetSesion: number
+  apiSesion: number
+  sinPrecioSesion: number
+  claudeGastado?: number
+}): FilaResumenPanel[] {
+  const filas: FilaResumenPanel[] = [
+    { celdas: ['Agentes', `${d.trabajos} trabajos`, `entrada ${fmtTokens(d.entradaNueva)}`, `caché ${fmtTokens(d.cache)}`, `salida ${fmtTokens(d.salida)}`], tono: 'mid' },
+    { celdas: ['Ahorro', `$${d.sonnetSesion.toFixed(2)} vs Sonnet 5.5`], tono: 'vino' },
+    { celdas: ['Costo API', `$${d.apiSesion.toFixed(2)} si se pagaran`, ...(d.sinPrecioSesion > 0 ? [`${d.sinPrecioSesion} sin precio`] : [])], tono: 'mid' },
+  ]
+  if (d.claudeGastado !== undefined) filas.push({ celdas: ['Claude', `$${d.claudeGastado.toFixed(2)} gastado`], tono: 'mid' })
+  return filas
 }

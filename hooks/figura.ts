@@ -42,7 +42,8 @@ export const marco = (h: number, fig: string, titulo: string, pie: string, lectu
   texto(W - 16, h - 14, lectura, 'iso-face-text', 'hi', 10, 'end'),
 ]
 
-export function figura(d: DatosFigura): string {
+/** `marco: false` deja solo la mesa, sin borde ni cabecera, para el panel lateral. */
+export function figura(d: DatosFigura, opciones?: { marco?: boolean }): string {
   const n = Math.max(1, d.subtareas.length)
   const mesa: Planta = { x: 0, y: 0, w: 320, d: 200, r: 8 }
   const caja: Point3[] = [[0, 0, -8], [320, 0, -8], [0, 200, -8], [320, 200, -8], [110, 18, ALTO_MAX + 8], [320, 18, ALTO_MAX + 8]]
@@ -117,7 +118,7 @@ export function figura(d: DatosFigura): string {
   const hechas = d.subtareas.filter(e => e === 'solucionado').length
   const [dx, dy] = iso([45, 120, 0], P)
   const cuerpo = [
-    ...marco(H, 'Fig 1', d.titulo, 'DIRECTOR · TRABAJADORES · SUBTAREAS', d.lectura),
+    ...(opciones?.marco === false ? [ACENTO] : marco(H, 'Fig 1', d.titulo, 'DIRECTOR · TRABAJADORES · SUBTAREAS', d.lectura)),
     base,
     lineSvg(regla.join(''), { tone: 'faint' }),
     ...cables,

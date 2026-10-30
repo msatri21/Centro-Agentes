@@ -315,7 +315,7 @@ test('cada trabajo queda en el historial permanente con su puntaje, y suma al ah
   await $.tool.call({ tool: 'mcp__centro-agentes__registrar_auditoria', input: { id: d.id, puntaje: 7 } })
   expect(guardado.historial.map((t: any) => [t.id, t.puntaje])).toEqual([[d.id, 7]])
   // 500k de entrada y 100k de salida con Claude Sonnet 5.5: $1 + $1.
-  expect(guardado.ahorro).toEqual({ usd: 2, gastoClaude: 0, trabajos: 1 })
+  expect(guardado.ahorro).toEqual({ usd: 2, gastoClaude: 0, trabajos: 1, api: 0, sinPrecio: 1 })
 })
 
 test('la página con controles lleva los botones, el aviso de listo y la notificación', async () => {
@@ -513,7 +513,7 @@ test('la figura marca quién trabaja y cabe en el límite de Svg con muchas subt
 
 test('los lectores sacan texto y tokens de cada CLI', async () => {
   const usage = '{"type":"result","result":"ok","total_cost_usd":0.01,"usage":{"input_tokens":2,"cache_creation_input_tokens":30,"cache_read_input_tokens":20,"output_tokens":4},"modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}}}'
-  const esperado = { texto: 'ok', tokensIn: 52, tokensOut: 4, ventana: 1000000, costo: 0.01 }
+  const esperado = { texto: 'ok', tokensIn: 52, tokensCache: 20, tokensOut: 4, ventana: 1000000, costo: 0.01 }
   expect(leerClaude(usage)).toEqual(esperado)
   expect(leerClaude(`{"type":"system"}\n{"type":"assistant","message":{"content":[]}}\n${usage}\n`)).toEqual(esperado)
 

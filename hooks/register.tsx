@@ -12,12 +12,12 @@ import type { Cerebro } from './cerebro'
 import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 import { agregarRendimiento, bloqueos, estadoSubtareaNuevo, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
-import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualizacion, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
+import { Cerrojos, archivosCambiados, clave, costoApi, costoComoClaude, debeBuscarActualizacion, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
-export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasResumenPanelSesion, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
+export { costoApi, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
 // Los tonos del kit de anatomy para la terminal: grises y negros, y el vinotinto como único acento.
@@ -37,7 +37,11 @@ const trabajos = atom({ plugin: 'centro-agentes', key: 'trabajos' } as const, []
 const plan = atom({ plugin: 'centro-agentes', key: 'plan' } as const, null as Plan | null)
 // Los planes anteriores del chat (el grafo los dibuja atenuados); un plan nuevo con el mismo objetivo que uno anterior lo reactiva.
 const planes = atom({ plugin: 'centro-agentes', key: 'planes' } as const, [] as Plan[])
+// Qué secciones del panel están plegadas; por defecto ninguna (abiertas).
+const plegadas = atom({ plugin: 'centro-agentes', key: 'plegadas' } as const, {} as Record<string, boolean>)
 let vivosPrevios = 0
+// La persona cerró el panel a mano: no se reabre sola al arrancar un agente (solo /mst y /centro-panel lo abren).
+let panelCerradoAMano = false
 
 
 type Opciones = {
@@ -111,10 +115,52 @@ const corto = (t: string, n = 60) => (t.length > n ? t.slice(0, n - 1) + '…' :
 export const filasPanelVivo = (trabajos: TrabajoVivo[], ahora: number) => filasVivas(trabajos, ahora).map(v => ({
   agente: v.agente,
   modelo: v.modelo,
-  tarea: corto(v.tarea ?? '', 40),
+  tarea: tituloCorto(v.tarea ?? '', 8),
   tiempo: duracionCorta(v.trabajandoMs),
   color: v.amarillo ? '#ffb86c' : GRIS.hi,
 }))
+
+// agente · modelo corto, sin el proveedor: 'opencode:opencode/deepseek-v4.1-flash-free' -> 'opencode · deepseek-v4.1-flash-free'.
+export const quienCorto = (q?: string) => {
+  if (!q) return ''
+  const [agente, ...resto] = q.split(':')
+  const modelo = resto.join(':').split('/').pop()
+  return modelo ? `${agente} · ${modelo}` : agente
+}
+
+// Una sección está plegada solo si el atom lo dice: por defecto, todas abiertas.
+export const estaPlegada = (plegadas: Record<string, boolean>, clave: string) => plegadas[clave] === true
+// La cabecera pulsable: el glifo (▾ abierta, ▸ plegada) va en su botón y el título aparte.
+export const cabeceraPlegable = (plegadas: Record<string, boolean>, clave: string, titulo: string) =>
+  ({ glifo: estaPlegada(plegadas, clave) ? '▸' : '▾', titulo })
+
+// La versión del plugin para la cabecera del panel: se lee una vez por sesión.
+let versionPanel: string | undefined
+let versionPanelLeida = false
+async function versionDelPlugin($: EngineInterface) {
+  if (!versionPanelLeida) {
+    versionPanelLeida = true
+    // Sin la marca BOM: algunos editores de Windows la ponen y JSON.parse falla con ella.
+    versionPanel = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)
+      .then(t => (JSON.parse(t.replace(/^﻿/, '')) as { version?: string }).version)
+      .catch(() => undefined)
+  }
+  return versionPanel
+}
+
+// Una línea legible del historial del panel: ✓ opencode · deepseek-v4.1-flash · 1m02s · 8/10 — pulido del panel
+export const lineaHistorial = (t: Pick<Trabajo, 'trabajador' | 'ms' | 'puntaje' | 'estado'>, tarea?: string) => {
+  const [agente, ...resto] = t.trabajador.split(':')
+  const modelo = resto.join(':').split('/').pop()
+  const ms = t.ms ?? 0
+  const duracion = ms >= 60_000
+    ? `${Math.floor(ms / 60_000)}m${String(Math.round((ms % 60_000) / 1000)).padStart(2, '0')}s`
+    : `${Math.round(ms / 1000)}s`
+  const linea = [`${t.estado === 'error' ? '✗' : '✓'} ${agente}`, modelo, duracion, t.puntaje !== undefined ? `${t.puntaje}/10` : '']
+    .filter(Boolean)
+    .join(' · ')
+  return tarea ? `${linea} — ${tituloCorto(tarea, 5)}` : linea
+}
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
 
@@ -273,7 +319,7 @@ export async function vigilar($: EngineInterface, ahora = Date.now()) {
   }
 }
 
-type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean }
+type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean; fin?: number }
 
 // Cada cuánto se mira el log del agente en disco.
 const SONDEO_MS = 500
@@ -377,7 +423,7 @@ async function esperarArchivos(
     }
     if (hayStdout) alTrozo(stdout)
   }
-  let fin: { code?: number | null; cancelado?: boolean; error?: string } | undefined
+  let fin: { code?: number | null; cancelado?: boolean; error?: string; fin?: number } | undefined
   try {
     while (true) {
       await leerNuevo()
@@ -403,6 +449,7 @@ async function esperarArchivos(
     stderr: motivo ? `${stderr}\n[cortado: ${motivo}]` : fin?.error ? `${stderr}\n${fin.error}` : stderr,
     isStdoutTruncated: false,
     cortado: !!motivo,
+    fin: fin?.fin,
   }
 }
 
@@ -519,8 +566,19 @@ async function reservarSubtarea($: EngineInterface, n: number) {
 const HIST_KEY = 'historial'
 const AHORRO_KEY = 'ahorro'
 const MAX_HIST = 200
-type Ahorro = { usd: number; gastoClaude: number; trabajos: number }
+type Ahorro = { usd: number; gastoClaude: number; trabajos: number; api?: number; sinPrecio?: number }
 
+// 'ollama:gpt-oss:120b-cloud' -> agente 'ollama', modelo 'gpt-oss:120b-cloud' (el modelo puede llevar sus propios ':').
+export const agenteYModelo = (trabajador: string) => {
+  const i = trabajador.indexOf(':')
+  return i < 0 ? { agente: trabajador, modelo: '' } : { agente: trabajador.slice(0, i), modelo: trabajador.slice(i + 1) }
+}
+
+function precioDeTrabajo(t: Trabajo) {
+  if (t.trabajador.startsWith('claude:')) return undefined
+  const { agente, modelo } = agenteYModelo(t.trabajador)
+  return entradaDe(catalogoMemoria, agente as any, modelo)?.precio
+}
 
 async function guardarEnHistorial($: EngineInterface, t: Trabajo) {
   const h = ((await $.store.get(HIST_KEY)) ?? []) as Trabajo[]
@@ -528,9 +586,11 @@ async function guardarEnHistorial($: EngineInterface, t: Trabajo) {
   const a = ((await $.store.get(AHORRO_KEY)) ?? { usd: 0, gastoClaude: 0, trabajos: 0 }) as Ahorro
   const esClaude = t.trabajador.startsWith('claude:')
   await $.store.set(AHORRO_KEY, {
-    usd: a.usd + (esClaude ? 0 : costoComoClaude(t.tokensIn, t.tokensOut)),
+    usd: a.usd + (esClaude ? 0 : costoComoClaude(t.tokensIn, t.tokensOut, t.tokensCache)),
     gastoClaude: a.gastoClaude + (esClaude ? (t.costo ?? 0) : 0),
     trabajos: a.trabajos + 1,
+    api: (a.api ?? 0) + (esClaude ? (t.costo ?? 0) : costoApi(t, precioDeTrabajo(t)) ?? 0),
+    sinPrecio: (a.sinPrecio ?? 0) + (!esClaude && !precioDeTrabajo(t) ? 1 : 0),
   })
 }
 
@@ -543,6 +603,7 @@ async function puntuarEnHistorial($: EngineInterface, id: string, puntaje: numbe
 export const conSkills = (skills: string[] | undefined, texto: string) => (skills?.length ? `✦ ${skills.join(', ')} · ${texto}` : texto)
 
 async function armar($: EngineInterface, filasVista = 30) {
+    await leerCatalogoPlugin($)
     const lista = (await read($, trabajos)) ?? []
     const p = await read($, plan)
     const ctx = (await $.session.usage()).context
@@ -550,7 +611,36 @@ async function armar($: EngineInterface, filasVista = 30) {
     // El historial suma lo de sesiones anteriores (del almacén) a lo de esta.
     const deAntes = (((await $.store.get(HIST_KEY).catch(() => undefined)) ?? []) as Trabajo[]).filter(h => !lista.some(t => t.id === h.id))
     const total = ((await $.store.get(AHORRO_KEY).catch(() => undefined)) ?? { usd: 0, gastoClaude: 0, trabajos: 0 }) as Ahorro
-    const ahorroSesion = lista.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut), 0)
+    const ahorroSesion = lista.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut, t.tokensCache), 0)
+    const porModelo = [...deAntes, ...lista].reduce((grupos, t) => {
+      const trabajador = t.trabajador
+      const previo = grupos.get(trabajador) ?? { trabajador, agente: trabajador.split(':')[0], modelo: trabajador.includes(':') ? trabajador.slice(trabajador.indexOf(':') + 1) : '', trabajos: 0, entradaNueva: 0, cache: 0, salida: 0, _api: 0, _tieneApi: false, costoSonnet: 0, ahorro: 0 }
+      const esClaude = trabajador.startsWith('claude:')
+      const precio = precioDeTrabajo(t)
+      const api = esClaude ? (t.costo ?? 0) : costoApi(t, precio)
+      const sonnet = costoComoClaude(t.tokensIn, t.tokensOut, t.tokensCache)
+      previo.trabajos++
+      previo.entradaNueva += Math.max(0, (t.tokensIn ?? 0) - Math.min(t.tokensIn ?? 0, t.tokensCache ?? 0))
+      previo.cache += Math.min(t.tokensIn ?? 0, t.tokensCache ?? 0)
+      previo.salida += t.tokensOut ?? 0
+      previo._api += api ?? 0
+      previo._tieneApi ||= api !== undefined
+      previo.costoSonnet += sonnet
+      previo.ahorro += api === undefined ? 0 : sonnet - api
+      if (precio) previo.precio = precio
+      grupos.set(trabajador, previo)
+      return grupos
+    }, new Map<string, any>())
+    const filasCosto = [...porModelo.values()].map(({ _api, _tieneApi, ...fila }) => ({ ...fila, ...(_tieneApi ? { costoApi: _api } : {}) }))
+    const apiSesion = lista.reduce((s, t) => {
+      const precio = precioDeTrabajo(t)
+      return s + (t.trabajador.startsWith('claude:') ? (t.costo ?? 0) : costoApi(t, precio) ?? 0)
+    }, 0)
+    const sinPrecioSesion = lista.filter(t => {
+      if (t.trabajador.startsWith('claude:')) return false
+      return !precioDeTrabajo(t)
+    }).length
+    const costos = { sonnetSesion: ahorroSesion, apiSesion, sinPrecioSesion, apiTotal: total.api ?? 0, sonnetTotal: total.usd, gastoClaude: total.gastoClaude, porModelo: filasCosto }
 
     const subs = p?.subtareas ?? []
     const hechas = subs.filter(s => s.estado === 'solucionado').length
@@ -573,7 +663,7 @@ async function armar($: EngineInterface, filasVista = 30) {
     // Los mismos datos para la tarjeta SVG y para el texto de la terminal.
     const resumen: Fila[] = [
       ...(p
-        ? [{ celdas: [`${hechas}/${subs.length} hechas (${pct}%)`, ...(faltan > 0 && msMedio !== undefined ? [`faltan ${faltan}, ≈${seg(faltan * msMedio)}`] : [])], tono: 'hi' as Tono }]
+        ? [{ celdas: ['Progreso', `${hechas}/${subs.length} hechas (${pct}%)`, ...(faltan > 0 && msMedio !== undefined ? [`faltan ${faltan}, ≈${seg(faltan * msMedio)}`] : [])], tono: 'hi' as Tono }]
         : [{ celdas: ['Sin plan aún. Usa /centro <tarea>'], tono: 'lo' as Tono }]),
       {
         celdas: [
@@ -596,12 +686,29 @@ async function armar($: EngineInterface, filasVista = 30) {
         tono: 'vino',
       },
     ]
+    // El panel solo habla de esta sesión y con pocas palabras; la web conserva `resumen` y el detalle histórico en `costos`.
+    const delaSesion = lista.filter(t => !t.trabajador.startsWith('claude:'))
+    const cacheSesion = delaSesion.reduce((a, t) => a + Math.min(t.tokensIn ?? 0, t.tokensCache ?? 0), 0)
+    const delClaude = lista.filter(t => t.trabajador.startsWith('claude:'))
+    const resumenPanel: Fila[] = [
+      ...resumen.slice(0, 2),
+      ...filasResumenPanelSesion({
+        trabajos: lista.length,
+        entradaNueva: delaSesion.reduce((a, t) => a + (t.tokensIn ?? 0), 0) - cacheSesion,
+        cache: cacheSesion,
+        salida: delaSesion.reduce((a, t) => a + (t.tokensOut ?? 0), 0),
+        sonnetSesion: costos.sonnetSesion,
+        apiSesion: costos.apiSesion,
+        sinPrecioSesion: costos.sinPrecioSesion,
+        ...(delClaude.length ? { claudeGastado: delClaude.reduce((a, t) => a + (t.costo ?? 0), 0) } : {}),
+      }),
+    ]
     const secciones: Seccion[] = [
       {
         titulo: 'Subtareas',
         columnas: [16, 52, 380, 560],
         filas: subs.map(s => ({
-          celdas: [`${icono[s.estado]} ${s.n}`, corto(conSkills(encargos.get(s.n)?.skills, s.titulo), 40), corto(s.quien ?? '', 22), s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado],
+          celdas: [`${icono[s.estado]} ${s.n}`, conSkills(encargos.get(s.n)?.skills, s.titulo), corto(s.quien ?? '', 22), s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado],
           tono: tonoSub[s.estado],
         })),
         vacio: 'sin subtareas',
@@ -629,6 +736,37 @@ async function armar($: EngineInterface, filasVista = 30) {
         vacio: 'vacío',
       },
     ]
+    // El panel pinta una línea por fila (sin columnas): subtareas y las últimas 4 del historial, con el texto entero.
+    const seccionesPanel: Seccion[] = [
+      {
+        titulo: 'Subtareas',
+        columnas: [],
+        // Cada subtarea ocupa dos filas: la línea con su estado y, debajo en gris, el detalle que el título descarta.
+        filas: subs.flatMap(s => {
+          const estado = s.estado === 'realizado' ? 'en_proceso' : s.estado
+          const linea = `${icono[s.estado]} ${s.n}  ${tituloCorto(s.titulo)} · ${estado}${s.puntaje !== undefined ? ` · ${s.puntaje}/10` : ''}`
+          const detalle = descripcionCorta(s.titulo)
+          return [
+            { celdas: [linea], tono: tonoSub[s.estado] },
+            ...(detalle ? [{ celdas: [`   ${detalle}`], tono: 'lo' as Tono }] : []),
+          ]
+        }),
+        vacio: 'sin subtareas',
+      },
+      {
+        titulo: 'Historial',
+        columnas: [],
+        // Dos filas por entrada: la línea del historial y, debajo en gris, la tarea en pocas palabras.
+        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4).flatMap(t => {
+          const tarea = tareaLimpia(t.tarea)
+          return [
+            { celdas: [lineaHistorial(t)], tono: tonoTrab(t) },
+            ...(tarea ? [{ celdas: [`   ${tarea}`], tono: 'lo' as Tono }] : []),
+          ]
+        }),
+        vacio: 'vacío',
+      },
+    ]
 
     const bahias = TRABAJADORES.map(w => {
       const suyos = lista.filter(t => t.trabajador === w || t.trabajador.startsWith(`${w}:`))
@@ -650,8 +788,9 @@ async function armar($: EngineInterface, filasVista = 30) {
       { etiqueta: 'Ahorro', valor: `$${ahorroSesion.toFixed(2)}`, nota: `total $${total.usd.toFixed(2)} vs Claude Sonnet` },
     ]
     return {
-      p, pct, resumen, secciones, lectura, kpis,
+      p, pct, resumen, resumenPanel, secciones, seccionesPanel, lectura, kpis, costos,
       figuraSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }),
+      figuraPanelSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }, { marco: false }),
       tableroSvg: tablero({
         titulo, lectura, progreso: p ? pct : undefined, resumen, secciones,
         terminales: corriendo.map(t => ({
@@ -749,7 +888,7 @@ async function actualizarBarra($: EngineInterface) {
       tarea: t.tarea,
     }))
     const encargosLista = registro.todos()
-    const texto = textoBarra(vivos, encargosLista, Date.now(), AMARILLO_MS_POR_DEFECTO)
+    const texto = pistaPanel(textoBarra(vivos, encargosLista, Date.now(), AMARILLO_MS_POR_DEFECTO), panelCerradoAMano)
     if (texto) $.ui.status(texto)
     else $.ui.status(undefined)
   } catch {}
@@ -788,7 +927,7 @@ export async function leerCatalogoPlugin($: EngineInterface): Promise<Catalogo |
   catalogoLeyendo = (async () => {
     try {
       const c = JSON.parse(await $.fs.read(`${await carpetaWeb($)}/catalogo.json`))
-      catalogoMemoria = c?.version === 1 ? c : undefined
+      catalogoMemoria = c?.version === 2 ? c : undefined
     } catch { catalogoMemoria = undefined }
     finally { catalogoLeyendo = undefined }
     return catalogoMemoria
@@ -919,8 +1058,9 @@ async function reenganchar($: EngineInterface, t: Trabajo) {
   cortadores.delete(t.id)
   const agente = t.trabajador.split(':')[0] as Trabajador
   const { s, ok } = interpretarSalida(agente, c)
-  const ms = Date.now() - t.inicio
-  await update($, trabajos, l => (l ?? []).map(x => (x.id === t.id ? { ...x, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : x)))
+  // La duración real es fin del lanzador menos el inicio, no "ahora - inicio": el reencuentro puede ser horas después.
+  const ms = c.fin ? c.fin - t.inicio : Date.now() - t.inicio
+  await update($, trabajos, l => (l ?? []).map(x => (x.id === t.id ? { ...x, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensCache: s.tokensCache, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : x)))
   const hecho = ((await read($, trabajos)) ?? []).find(x => x.id === t.id)
   if (hecho) await guardarEnHistorial($, hecho).catch(() => undefined)
   if (t.subtarea !== undefined) {
@@ -929,7 +1069,7 @@ async function reenganchar($: EngineInterface, t: Trabajo) {
   }
   const resultado = {
     id: t.id, ...(t.subtarea === undefined ? {} : { subtarea: t.subtarea }), trabajador: t.trabajador, exito: ok, segundos: Math.round(ms / 1000),
-    tokens: { entrada: s.tokensIn ?? 0, salida: s.tokensOut ?? 0 }, salida: s.texto.slice(-3000), reenganchado: true,
+    tokens: { entrada: s.tokensIn ?? 0, salida: s.tokensOut ?? 0, ...(s.tokensCache === undefined ? {} : { cache: s.tokensCache }) }, salida: s.texto.slice(-3000), reenganchado: true,
     aviso: `Resultado recuperado tras recargar el plugin: el centro no cerró la copia aislada ni corrió 'verificar'${cwd ? `; el agente trabajó en ${cwd}: revisa sus cambios con git y júntalos tú si están bien` : ''}. No se probó otro modelo; si falló, decide tú si relanzar.`,
     ...(cwd ? { carpeta: cwd } : {}),
   }
@@ -1136,6 +1276,7 @@ async function escribirWeb($: EngineInterface) {
     cancelables: controles.cancelables,
     relanzables: controles.relanzables,
     pendientes: await pendientesDe($, lista),
+    costos: a.costos,
     // Sin catálogo la página muestra "Aún no hay catálogo" en lugar de la sección de modelos.
     catalogo: {
       ...(catalogo?.generado ? { generado: catalogo.generado } : {}),
@@ -1314,7 +1455,7 @@ ${PROTOCOLO_AGENTE}`
   }
   const ms = Date.now() - t0
   await update($, trabajos, l =>
-    (l ?? []).map(t => (t.id === id ? { ...t, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : t)),
+    (l ?? []).map(t => (t.id === id ? { ...t, estado: ok ? 'listo' : 'error', ms, tokensIn: s.tokensIn, tokensCache: s.tokensCache, tokensOut: s.tokensOut, ventana: s.ventana, costo: s.costo, salida: s.texto.slice(-1500) } : t)),
   )
   void actualizarBarra($)
   cortadores.delete(id)
@@ -1694,7 +1835,7 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     trabajador: quienFue,
     exito: r.ok,
     segundos: Math.round(r.ms / 1000),
-    tokens: { entrada: r.s.tokensIn, salida: r.s.tokensOut },
+    tokens: { entrada: r.s.tokensIn, salida: r.s.tokensOut, ...(r.s.tokensCache === undefined ? {} : { cache: r.s.tokensCache }) },
     ...(necesidades.length ? { necesita: necesidades } : {}),
     ...(necesidades.length && input.necesita === undefined ? { detectada: true } : {}),
     ...(avisoCapacidad ? { aviso_capacidad: avisoCapacidad } : {}),
@@ -1827,7 +1968,7 @@ export const register: Register = (on, options) => {
         const listaTrabajos = (await read($, trabajos)) ?? []
         const ahora = Date.now()
         const vivos = filasVivas(listaTrabajos, ahora)
-        if (vivosPrevios === 0 && vivos.length >= 1) {
+        if (vivosPrevios === 0 && vivos.length >= 1 && !panelCerradoAMano) {
           void $.ui.open({ id: PANE, title: TITULO }).catch(() => undefined)
         }
         vivosPrevios = vivos.length
@@ -2028,8 +2169,15 @@ ${protocolo(modelos)}`
     return { ...r, sections: [...r.sections, { id: 'centro-agentes:jefe', text: texto, scope: 'session' as const }] }
   })
 
+  // La persona cerró el panel a mano: se respeta (no se bloquea el cierre) y deja de abrirse solo.
+  on('ui.close', { id: PANE }, async (_$, e, next) => {
+    if (e.origin.kind === 'person') panelCerradoAMano = true
+    return next(e)
+  }).catch(async (_$, e, next) => next(e))
+
   // /mst: lo primero en cualquier chat. Abre el panel y la web; con texto, además empieza el trabajo como jefe.
   on('command.run', { command: 'mst' }, async ($, e) => {
+    panelCerradoAMano = false
     void $.ui.open({ id: PANE, title: TITULO })
     await $.store.set(WEB_KEY, true)
     await escribirWeb($)
@@ -2082,6 +2230,7 @@ ${protocolo(modelos)}`
   })
 
   on('command.run', { command: 'centro-panel' }, async $ => {
+    panelCerradoAMano = false
     await $.ui.open({ id: PANE, title: TITULO })
     return { text: 'Panel abierto.' }
   })
@@ -2379,41 +2528,89 @@ ${protocolo(modelos)}`
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
-    const { Box, Text } = els
-    const { p, pct, resumen, secciones, figuraSvg, tableroSvg, altFigura, altTablero } = await armar($, e.viewport?.rows ?? 30)
+    const { Box, Text, Button } = els
+    const { p, pct, resumenPanel, seccionesPanel, figuraPanelSvg, altFigura } = await armar($, e.viewport?.rows ?? 30)
     const listaTrabajos = (await read($, trabajos)) ?? []
     const ahora = Date.now()
     const vivos = filasVivas(listaTrabajos, ahora)
-    const ancho = Math.max(30, (e.viewport?.columns ?? 80) - 4)
+    // En una frase, lo que ocupa ahora a los agentes.
+    const ahoraTexto = vivos.length
+      ? `Ahora: ${vivos[0].agente}${vivos[0].tarea ? ` → ${tituloCorto(vivos[0].tarea, 10)}` : ''}`
+      : 'Ahora: nada en marcha'
     const barra = (n: number, largo = 20) => '█'.repeat(Math.round((n / 100) * largo)).padEnd(largo, '░')
-    // La terminal no dibuja SVG: allí queda solo el texto de abajo.
+    // La terminal no dibuja SVG: la figura solo aparece donde hay superficie Svg.
     const Svg = 'Svg' in els ? els.Svg : undefined
-    return (
-      <Box flexDirection="column">
-        <Box flexDirection="column">
-          <Text bold color={GRIS.mid}>{'AGENTES TRABAJANDO AHORA'.toUpperCase()}</Text>
-          {vivos.length === 0 && <Text color={GRIS.lo}>  nadie</Text>}
-          {filasPanelVivo(listaTrabajos, ahora).map(v => {
-            const nombreModelo = v.modelo ? `${v.agente}:${v.modelo}` : v.agente
-            return <Text color={v.color}>{[nombreModelo, v.tarea, v.tiempo].filter(Boolean).join('  ')}</Text>
-          })}
+    const enPlegadas = (await read($, plegadas)) ?? {}
+    const alternar = (clave: string) => { void update($, plegadas, x => ({ ...x, [clave]: !x[clave] })) }
+    const version = await versionDelPlugin($)
+    // El título y, al lado, un glifo discreto: nada de botones con marco.
+    const cabecera = (clave: string, titulo: string) => {
+      const cab = cabeceraPlegable(enPlegadas, clave, titulo)
+      return (
+        <Box key={`cab-${clave}`} flexDirection="row" gap={1}>
+          <Text bold color={GRIS.mid}>{cab.titulo}</Text>
+          <Button key={`btn-${clave}`} plain dimColor onPress={() => alternar(clave)}>{cab.glifo}</Button>
         </Box>
-        {Svg && <Svg source={figuraSvg} alt={altFigura} isInteractive />}
-        {Svg && <Svg source={tableroSvg} alt={altTablero} isInteractive />}
-        {!Svg && (
-          <Box flexDirection="column">
-            {p && <Text bold color={GRIS.hi}>{corto(p.objetivo, ancho)}</Text>}
-            {p && <Text><Text color={VINO}>{barra(pct)}</Text></Text>}
-            {resumen.map(f => <Text color={GRIS[f.tono]}>{f.celdas.join('  ·  ')}</Text>)}
-            {secciones.map(s => (
-              <Box flexDirection="column">
-                <Text bold color={GRIS.mid}>{s.titulo.toUpperCase()}</Text>
-                {s.filas.length === 0 && s.vacio && <Text color={GRIS.lo}>  {s.vacio}</Text>}
-                {s.filas.map(f => <Text color={GRIS[f.tono]}>{f.celdas.filter(Boolean).join('  ')}</Text>)}
-              </Box>
-            ))}
+      )
+    }
+    return (
+      // Cada apartado en su tarjeta: borde fino y tenue, y la cabecera (título + glifo) dentro.
+      <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="row" gap={1} marginBottom={1}>
+          <Text bold>{TITULO}</Text>
+          {version !== undefined && <Text dimColor>v{version} · /mst</Text>}
+        </Box>
+        <Box flexDirection="column" borderStyle="round" borderColor={GRIS.lo} paddingX={1} marginBottom={1}>
+          {cabecera('vivos', 'Agentes trabajando ahora')}
+          {!estaPlegada(enPlegadas, 'vivos') && (
+            <Box flexDirection="column">
+              {vivos.length === 0 && <Text color={GRIS.lo}>nadie</Text>}
+              {filasPanelVivo(listaTrabajos, ahora).map((v, i) => {
+                const nombreModelo = v.modelo ? `${v.agente}:${v.modelo}` : v.agente
+                return <Text key={i} color={v.color}>{[nombreModelo, v.tarea, v.tiempo].filter(Boolean).join('  ')}</Text>
+              })}
+            </Box>
+          )}
+        </Box>
+        {/* Sin isInteractive: se dibuja como imagen y se ajusta al ancho del panel. */}
+        {Svg && (
+          <Box flexDirection="column" borderStyle="round" borderColor={GRIS.lo} paddingX={1} marginBottom={1}>
+            {cabecera('figura', 'Figura')}
+            {!estaPlegada(enPlegadas, 'figura') && <Svg source={figuraPanelSvg} alt={altFigura} />}
           </Box>
         )}
+        <Box flexDirection="column" borderStyle="round" borderColor={GRIS.lo} paddingX={1} marginBottom={1}>
+          {cabecera('resumen', 'Resumen')}
+          {!estaPlegada(enPlegadas, 'resumen') && (
+            <Box flexDirection="column">
+              {p && <Text color={GRIS.hi}>{tituloCorto(p.objetivo, 12)}</Text>}
+              <Text color={GRIS.mid}>{ahoraTexto}</Text>
+              <Text><Text color={VINO}>{barra(pct)}</Text></Text>
+              {resumenPanel.map((f, i) => {
+                // Cada fila en su línea: la etiqueta apagada y los datos en el tono de la fila.
+                const [etiqueta, ...resto] = f.celdas
+                return (
+                  <Text key={i} color={GRIS[f.tono]}>
+                    <Text dimColor>{etiqueta}</Text>
+                    {resto.length > 0 ? `  ${resto.join('  ·  ')}` : ''}
+                  </Text>
+                )
+              })}
+            </Box>
+          )}
+        </Box>
+        {seccionesPanel.map(s => (
+          <Box flexDirection="column" borderStyle="round" borderColor={GRIS.lo} paddingX={1} marginBottom={1} key={s.titulo}>
+            {cabecera(s.titulo.toLowerCase(), s.titulo)}
+            {!estaPlegada(enPlegadas, s.titulo.toLowerCase()) && (
+              <Box flexDirection="column">
+                {s.filas.length === 0 && s.vacio && <Text color={GRIS.lo}>{s.vacio}</Text>}
+                {/* Sin cortar: el texto hace wrap y se ve todo. */}
+                {s.filas.map((f, i) => <Text key={i} color={GRIS[f.tono]} wrap="wrap">{f.celdas.filter(Boolean).join(' · ')}</Text>)}
+              </Box>
+            )}
+          </Box>
+        ))}
       </Box>
     )
   })

@@ -44,7 +44,7 @@ function catalogo({ imagenEnVe = true } = {}) {
   const ahora = Date.now()
   const fecha = new Date(ahora).toISOString().slice(0, 10)
   return {
-    version: 1,
+    version: 2,
     generado: new Date(ahora).toISOString(),
     huella: huellaDeModelos(reparto),
     modelos: [
