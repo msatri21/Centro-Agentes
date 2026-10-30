@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualiz
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
 export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -140,17 +140,18 @@ async function versionDelPlugin($: EngineInterface) {
   return versionPanel
 }
 
-// Una línea legible del historial del panel: ✓ opencode · deepseek-v4.1-flash · 1m02s · 8/10
-export const lineaHistorial = (t: Pick<Trabajo, 'trabajador' | 'ms' | 'puntaje' | 'estado'>) => {
+// Una línea legible del historial del panel: ✓ opencode · deepseek-v4.1-flash · 1m02s · 8/10 — pulido del panel
+export const lineaHistorial = (t: Pick<Trabajo, 'trabajador' | 'ms' | 'puntaje' | 'estado'>, tarea?: string) => {
   const [agente, ...resto] = t.trabajador.split(':')
   const modelo = resto.join(':').split('/').pop()
   const ms = t.ms ?? 0
   const duracion = ms >= 60_000
     ? `${Math.floor(ms / 60_000)}m${String(Math.round((ms % 60_000) / 1000)).padStart(2, '0')}s`
     : `${Math.round(ms / 1000)}s`
-  return [`${t.estado === 'error' ? '✗' : '✓'} ${agente}`, modelo, duracion, t.puntaje !== undefined ? `${t.puntaje}/10` : '']
+  const linea = [`${t.estado === 'error' ? '✗' : '✓'} ${agente}`, modelo, duracion, t.puntaje !== undefined ? `${t.puntaje}/10` : '']
     .filter(Boolean)
     .join(' · ')
+  return tarea ? `${linea} — ${tituloCorto(tarea, 5)}` : linea
 }
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
@@ -580,7 +581,7 @@ async function puntuarEnHistorial($: EngineInterface, id: string, puntaje: numbe
 // En la web, las skills de un trabajo van delante de su texto con ✦.
 export const conSkills = (skills: string[] | undefined, texto: string) => (skills?.length ? `✦ ${skills.join(', ')} · ${texto}` : texto)
 
-async function armar($: EngineInterface, _filasVista = 30) {
+async function armar($: EngineInterface, filasVista = 30) {
     const lista = (await read($, trabajos)) ?? []
     const p = await read($, plan)
     const ctx = (await $.session.usage()).context
@@ -606,6 +607,7 @@ async function armar($: EngineInterface, _filasVista = 30) {
     const tonoTrab = (t: Trabajo): Tono =>
       t.estado === 'error' || (t.puntaje ?? 10) < 6 ? 'vino' : t.puntaje !== undefined ? 'hi' : 'mid'
     const corriendo = lista.filter(t => t.estado === 'corriendo')
+    const room = Math.max(3, filasVista - subs.length - corriendo.length - 14)
 
     // Los mismos datos para la tarjeta SVG y para el texto de la terminal.
     const resumen: Fila[] = [
@@ -645,12 +647,41 @@ async function armar($: EngineInterface, _filasVista = 30) {
       },
       {
         titulo: 'Historial',
-        // La web apila estas celdas por columnas; el panel pinta una línea por trabajo y su tarea debajo.
         columnas: [16, 250, 300, 400, 450],
-        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-5).flatMap(t => [
-          { celdas: [lineaHistorial(t)], tono: tonoTrab(t) },
-          ...(t.tarea ? [{ celdas: [corto(t.tarea, 50)], tono: 'lo' as Tono }] : []),
-        ]),
+        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-room).map(t => ({
+          celdas: [
+            // ◦ marca lo que viene de una sesión anterior.
+            corto(`${t.estado === 'error' ? '✗' : deAntes.includes(t) ? '◦' : '✓'} ${t.trabajador}`, 29),
+            seg(t.ms ?? 0),
+            t.tokensIn !== undefined ? `${miles(t.tokensIn)}→${miles(t.tokensOut ?? 0)}` : '',
+            t.puntaje !== undefined ? `${t.puntaje}/10` : '',
+            corto(conSkills(t.skills, t.tarea), 22),
+          ],
+          tono: tonoTrab(t),
+        })),
+        vacio: 'vacío',
+      },
+    ]
+    // El panel pinta una línea por fila (sin columnas): subtareas y las últimas 4 del historial, con el texto entero.
+    const seccionesPanel: Seccion[] = [
+      {
+        titulo: 'Subtareas',
+        columnas: [],
+        filas: subs.map(s => ({
+          celdas: [
+            `${icono[s.estado]} ${s.n}  ${tituloCorto(s.titulo)}`,
+            s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado,
+            s.quien ?? '',
+          ],
+          tono: tonoSub[s.estado],
+        })),
+        vacio: 'sin subtareas',
+      },
+      {
+        titulo: 'Historial',
+        columnas: [],
+        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4)
+          .map(t => ({ celdas: [lineaHistorial(t, t.tarea)], tono: tonoTrab(t) })),
         vacio: 'vacío',
       },
     ]
@@ -675,7 +706,7 @@ async function armar($: EngineInterface, _filasVista = 30) {
       { etiqueta: 'Ahorro', valor: `$${ahorroSesion.toFixed(2)}`, nota: `total $${total.usd.toFixed(2)} vs Claude Sonnet` },
     ]
     return {
-      p, pct, resumen, secciones, lectura, kpis,
+      p, pct, resumen, secciones, seccionesPanel, lectura, kpis,
       figuraSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }),
       figuraPanelSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }, { marco: false }),
       tableroSvg: tablero({
@@ -2415,11 +2446,14 @@ ${protocolo(modelos)}`
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    const { p, pct, resumen, secciones, figuraPanelSvg, altFigura } = await armar($, e.viewport?.rows ?? 30)
+    const { p, pct, resumen, seccionesPanel, figuraPanelSvg, altFigura } = await armar($, e.viewport?.rows ?? 30)
     const listaTrabajos = (await read($, trabajos)) ?? []
     const ahora = Date.now()
     const vivos = filasVivas(listaTrabajos, ahora)
-    const ancho = Math.max(30, (e.viewport?.columns ?? 80) - 4)
+    // En una frase, lo que ocupa ahora a los agentes.
+    const ahoraTexto = vivos.length
+      ? `Ahora: ${vivos[0].agente}${vivos[0].tarea ? ` → ${tituloCorto(vivos[0].tarea, 6)}` : ''}`
+      : 'Ahora: nada en marcha'
     const barra = (n: number, largo = 20) => '█'.repeat(Math.round((n / 100) * largo)).padEnd(largo, '░')
     // La terminal no dibuja SVG: la figura solo aparece donde hay superficie Svg.
     const Svg = 'Svg' in els ? els.Svg : undefined
@@ -2437,12 +2471,13 @@ ${protocolo(modelos)}`
       )
     }
     return (
-      <Box flexDirection="column" paddingX={1} gap={1}>
-        <Box flexDirection="row" gap={1}>
+      // Cada apartado en su tarjeta: borde fino y tenue, y la cabecera (título + glifo) dentro.
+      <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="row" gap={1} marginBottom={1}>
           <Text bold>{TITULO}</Text>
           {version !== undefined && <Text dimColor>v{version} · /mst</Text>}
         </Box>
-        <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column" borderStyle="round" borderColor={GRIS.lo} paddingX={1} marginBottom={1}>
           {cabecera('vivos', 'Agentes trabajando ahora')}
           {!estaPlegada(enPlegadas, 'vivos') && (
             <Box flexDirection="column">
@@ -2456,17 +2491,18 @@ ${protocolo(modelos)}`
         </Box>
         {/* Sin isInteractive: se dibuja como imagen y se ajusta al ancho del panel. */}
         {Svg && (
-          <Box flexDirection="column" gap={1}>
+          <Box flexDirection="column" borderStyle="round" borderColor={GRIS.lo} paddingX={1} marginBottom={1}>
             {cabecera('figura', 'Figura')}
             {!estaPlegada(enPlegadas, 'figura') && <Svg source={figuraPanelSvg} alt={altFigura} />}
           </Box>
         )}
-        <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column" borderStyle="round" borderColor={GRIS.lo} paddingX={1} marginBottom={1}>
           {cabecera('resumen', 'Resumen')}
           {!estaPlegada(enPlegadas, 'resumen') && (
             <Box flexDirection="column">
-              {p && <Text bold color={GRIS.hi}>{corto(p.objetivo, ancho)}</Text>}
-              {p && <Text><Text color={VINO}>{barra(pct)}</Text></Text>}
+              {p && <Text color={GRIS.hi}>{tituloCorto(p.objetivo, 8)}</Text>}
+              <Text color={GRIS.mid}>{ahoraTexto}</Text>
+              <Text><Text color={VINO}>{barra(pct)}</Text></Text>
               {resumen.map((f, i) => {
                 // Cada fila en su línea: la etiqueta apagada y los datos en el tono de la fila.
                 const [etiqueta, ...resto] = f.celdas
@@ -2480,13 +2516,14 @@ ${protocolo(modelos)}`
             </Box>
           )}
         </Box>
-        {secciones.map(s => (
-          <Box flexDirection="column" gap={1} key={s.titulo}>
+        {seccionesPanel.map(s => (
+          <Box flexDirection="column" borderStyle="round" borderColor={GRIS.lo} paddingX={1} marginBottom={1} key={s.titulo}>
             {cabecera(s.titulo.toLowerCase(), s.titulo)}
             {!estaPlegada(enPlegadas, s.titulo.toLowerCase()) && (
               <Box flexDirection="column">
                 {s.filas.length === 0 && s.vacio && <Text color={GRIS.lo}>{s.vacio}</Text>}
-                {s.filas.map((f, i) => <Text key={i} color={GRIS[f.tono]}>{f.celdas.filter(Boolean).join('  ')}</Text>)}
+                {/* Sin cortar: el texto hace wrap y se ve todo. */}
+                {s.filas.map((f, i) => <Text key={i} color={GRIS[f.tono]} wrap="wrap">{f.celdas.filter(Boolean).join(' · ')}</Text>)}
               </Box>
             )}
           </Box>

@@ -283,6 +283,17 @@ export function agenteVivo(pid: { inicio?: number } | undefined, hayFin: boolean
   return ahora - pid.inicio < MARGEN_AGENTE_VIVO_MS
 }
 
+// Un título breve para el panel: fuera la etiqueta inicial ([R6], [F1]) y el detalle tras el primer separador; nunca parte una palabra.
+export function tituloCorto(t: string, maxPalabras = 6): string {
+  const sinEtiqueta = t.replace(/^\s*\[[^\]]+\]\s*/, '')
+  const corte = sinEtiqueta.search(/[:;]|\s—\s|\s–\s|\s\(|\.\s/)
+  const base = (corte >= 0 ? sinEtiqueta.slice(0, corte) : sinEtiqueta).trim()
+  const palabras = base.split(/\s+/).filter(Boolean)
+  const tope = Math.max(1, maxPalabras)
+  if (palabras.length <= tope) return palabras.join(' ')
+  return `${palabras.slice(0, tope).join(' ')}…`
+}
+
 // Una línea compacta para un aviso del plugin: sin el prefijo del centro, hasta el primer punto o salto de línea, con tope de 90.
 export function lineaAviso(texto: string): string {
   const sinPrefijo = texto.replace(/^\s*\[Centro de agentes MST\]\s*/, '')
