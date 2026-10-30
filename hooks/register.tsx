@@ -1276,6 +1276,7 @@ async function escribirWeb($: EngineInterface) {
     cancelables: controles.cancelables,
     relanzables: controles.relanzables,
     pendientes: await pendientesDe($, lista),
+    costos: a.costos,
     // Sin catálogo la página muestra "Aún no hay catálogo" en lugar de la sección de modelos.
     catalogo: {
       ...(catalogo?.generado ? { generado: catalogo.generado } : {}),

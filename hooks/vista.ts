@@ -4,6 +4,7 @@
 import type { Plan, Trabajo } from '../types'
 import { esc, grafica, VINO } from './figura.ts'
 import { graficaAhorro, graficaNotas, graficaTiempo, graficaTokens } from './graficas.ts'
+import { fmtTokens } from './asincrono.ts'
 
 /** Una fila del catálogo de modelos, tal y como la lee la página (sin depender de hooks/catalogo.ts) */
 export type FilaPagina = {
@@ -53,8 +54,31 @@ export type DatosPagina = {
     opciones?: string[]
     en?: number
   }[]
+  /** Costos por agente y modelo, de esta sesión y de todo el histórico; si falta, la página no añade la sección */
+  costos?: DatosCostos
   /** Catálogo de modelos; si falta, la página no añade nada (la salida queda igual que antes) */
   catalogo?: { generado?: string; filas: FilaPagina[]; fallos: string[] }
+}
+
+/** Una fila de la tabla de costos: lo que consumió un agente con un modelo y lo que habría costado (dólares; precio en dólares por millón de tokens) */
+export type FilaCosto = { trabajador: string; agente: string; modelo: string; trabajos: number; entradaNueva: number; cache: number; salida: number; precio?: { entrada: number; salida: number; cache?: number; fuente: string }; costoApi?: number; costoSonnet: number; ahorro: number }
+export type DatosCostos = { sonnetSesion: number; apiSesion: number; sinPrecioSesion: number; apiTotal: number; sonnetTotal: number; gastoClaude: number; porModelo: FilaCosto[] }
+
+const dolares = (n: number) => (n > 0 && n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`)
+
+/** La sección 'Costos' de la web: el detalle completo que el panel del plugin no muestra (por agente y modelo, de la sesión y del histórico) */
+export function seccionCostos(c: DatosCostos): string {
+  const filas = c.porModelo.map(f => {
+    const modelo = f.modelo.split('/').pop() || '—'
+    const precio = f.precio ? `${dolares(f.precio.entrada)} / ${dolares(f.precio.salida)}` : '—'
+    return `<tr><td>${esc(f.agente)}</td><td>${esc(modelo)}</td><td>${f.trabajos}</td><td>${fmtTokens(f.entradaNueva)}</td><td>${fmtTokens(f.cache)}</td><td>${fmtTokens(f.salida)}</td><td title="${esc(f.precio?.fuente ?? 'sin precio')}">${precio}</td><td>${f.costoApi === undefined ? '—' : dolares(f.costoApi)}</td><td>${dolares(f.costoSonnet)}</td><td>${f.costoApi === undefined ? '—' : dolares(f.ahorro)}</td></tr>`
+  }).join('')
+  const tabla = filas ? `<table><tr><td><strong>Agente</strong></td><td><strong>Modelo</strong></td><td><strong>Trabajos</strong></td><td><strong>Entrada nueva</strong></td><td><strong>Caché</strong></td><td><strong>Salida</strong></td><td><strong>Precio $/M (entrada / salida)</strong></td><td><strong>Costo API</strong></td><td><strong>Con Sonnet</strong></td><td><strong>Ahorro</strong></td></tr>${filas}</table>` : '<p class="vacio">Aún no hay trabajos con consumo.</p>'
+  return `<h2 class="seccion">Costos</h2>
+${tabla}
+<p><strong>Esta sesión</strong> · con Sonnet ${dolares(c.sonnetSesion)} · costo API ${dolares(c.apiSesion)}${c.sinPrecioSesion ? ` · ${c.sinPrecioSesion} ${c.sinPrecioSesion === 1 ? 'trabajo' : 'trabajos'} sin precio` : ''}</p>
+<p><strong>Total histórico (todas las sesiones)</strong> · con Sonnet ${dolares(c.sonnetTotal)} · costo API ${dolares(c.apiTotal)} · gastado en Claude ${dolares(c.gastoClaude)}</p>
+<p class="vacio">El costo API es el precio de lista del mismo modelo en su API de pago (models.dev); los modelos sin precio no suman. El histórico anterior a la versión 0.24 se calculó sin separar la caché y puede estar inflado.</p>`
 }
 
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
@@ -329,7 +353,7 @@ ${listo ? `<div class="listo">✓ Todo listo · ${esc(listo)}</div>` : ''}<div c
 ${d.extra ? `<h2 class="seccion">Detalles del chat</h2><div class="detalles" style="--cols:${d.columnasExtra ?? '1fr 1fr'}">${d.extra}</div>` : ''}
 <h2 class="seccion">Gráficas</h2><div class="rejilla">${graficas}</div>
 <h2 class="seccion">Subtareas</h2>${filasPlan ? `<table>${filasPlan}</table>` : '<p class="vacio">El jefe aún no ha hecho el plan.</p>'}
-<h2 class="seccion">Historial</h2>${historial ? `<table>${historial}</table>` : '<p class="vacio">Sin trabajos terminados.</p>'}${catalogo}
+<h2 class="seccion">Historial</h2>${historial ? `<table>${historial}</table>` : '<p class="vacio">Sin trabajos terminados.</p>'}${d.costos ? seccionCostos(d.costos) : ''}${catalogo}
 </div>
 <footer>Centro de agentes MST ${esc(d.version)} · se actualiza cada 2 s sin recargar</footer>
 <script type="module">
