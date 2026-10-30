@@ -758,14 +758,14 @@ async function armar($: EngineInterface, filasVista = 30) {
         titulo: 'Historial',
         columnas: [],
         // Dos filas por entrada: la línea del historial y, debajo en gris, la tarea en pocas palabras.
-        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4).flatMap(t => {
+        filas: [...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4).flatMap(t => {
           const tarea = tareaLimpia(t.tarea)
           return [
             { celdas: [lineaHistorial(t)], tono: tonoTrab(t) },
             ...(tarea ? [{ celdas: [`   ${tarea}`], tono: 'lo' as Tono }] : []),
           ]
         }),
-        vacio: 'vacío',
+        vacio: 'sin trabajos terminados en esta sesión',
       },
     ]
 

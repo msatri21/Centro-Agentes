@@ -22,5 +22,13 @@ export function agruparChats(chats) {
     porClave.set(clave, principal)
     salida.push(principal)
   }
-  return salida
+  // Una sesión sin plan no sabe su proyecto: si hay otro grupo con el mismo nombre y proyecto, se une al más reciente de ellos.
+  const resultado = []
+  for (const e of salida) {
+    const dueno = !e.proyecto && e.nombre ? salida.find(o => o !== e && o.proyecto && o.nombre === e.nombre) : undefined
+    if (!dueno) { resultado.push(e); continue }
+    dueno.anteriores.push({ id: e.id, modificado: e.modificado }, ...e.anteriores)
+    dueno.anteriores.sort((a, b) => b.modificado - a.modificado)
+  }
+  return resultado
 }

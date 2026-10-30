@@ -35,4 +35,15 @@ const entrada = [sesion('s1', 100), sesion('s2', 200)]
 agruparChats(entrada)
 assert.deepEqual(entrada.map(c => c.id), ['s1', 's2'], 'no toca la lista de entrada')
 
+// Una sesión sin plan (sin proyecto) con el mismo nombre se une al grupo que sí tiene proyecto, y la lista de anteriores queda de la más reciente a la más vieja.
+const sinPlan = agruparChats([sesion('c1', 400, 'Charla', 'web'), sesion('c2', 300, 'Charla', ''), sesion('c3', 200, 'Charla', 'web'), sesion('c4', 100, 'Charla', '')])
+assert.equal(sinPlan.length, 1)
+assert.equal(sinPlan[0].id, 'c1')
+assert.deepEqual(sinPlan[0].anteriores.map(a => a.id), ['c2', 'c3', 'c4'])
+
+// Sin proyecto y sin otro grupo con ese nombre, queda como está.
+const soloNombre = agruparChats([sesion('n1', 200, 'Suelto', ''), sesion('n2', 100, 'Suelto', '')])
+assert.equal(soloNombre.length, 1)
+assert.deepEqual(soloNombre[0].anteriores, [{ id: 'n2', modificado: 100 }])
+
 console.log('agrupar-chats: todo bien')
