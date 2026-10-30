@@ -867,7 +867,7 @@ export async function leerCatalogoPlugin($: EngineInterface): Promise<Catalogo |
   catalogoLeyendo = (async () => {
     try {
       const c = JSON.parse(await $.fs.read(`${await carpetaWeb($)}/catalogo.json`))
-      catalogoMemoria = c?.version === 1 ? c : undefined
+      catalogoMemoria = c?.version === 2 ? c : undefined
     } catch { catalogoMemoria = undefined }
     finally { catalogoLeyendo = undefined }
     return catalogoMemoria

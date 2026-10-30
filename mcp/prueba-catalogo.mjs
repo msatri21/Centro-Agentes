@@ -83,7 +83,7 @@ await prueba('caché local sirve si falla red y en modo sin línea', async () =>
 })
 await prueba('corrupto, versión ajena y forzar', async () => {
   const casa = temporal(), archivo = rutaCatalogo(casa); fs.mkdirSync(path.dirname(archivo), { recursive: true })
-  for (const valor of ['basura', JSON.stringify({ version: 2 })]) {
+  for (const valor of ['basura', JSON.stringify({ version: 1 })]) {
     fs.writeFileSync(archivo, valor); assert.equal(leerCatalogo(casa), undefined)
     assert.equal((await actualizar({ casa, modelos: completar({ claude: ['opus'] }), enLinea: false })).motivo, 'nuevo')
   }
