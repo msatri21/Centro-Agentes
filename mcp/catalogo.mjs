@@ -15,7 +15,7 @@ export function rutaCatalogo(casa = os.homedir()) {
 export function leerCatalogo(casa = os.homedir()) {
   try {
     const valor = JSON.parse(fs.readFileSync(rutaCatalogo(casa), 'utf8'))
-    return valor?.version === 1 ? valor : undefined
+    return valor?.version === 2 ? valor : undefined
   } catch { return undefined }
 }
 
@@ -105,7 +105,7 @@ export async function actualizar({ casa = os.homedir(), modelos, enLinea = true,
         try {
           const json = JSON.parse(await descargar(MODELS_DEV, { timeoutMs: 60000, maxBytes: 30_000_000 }))
           if (!json?.opencode?.models || typeof json.opencode.models !== 'object' || Array.isArray(json.opencode.models)) throw new Error('no existe opencode.models')
-          modelsDev = json.opencode.models
+          modelsDev = json
           fuentes.push({ nombre: 'models.dev', ok: true, fecha: fechaDe(ahora) })
         } catch (error) { falloRed = error?.message ?? String(error) }
       }
@@ -113,7 +113,7 @@ export async function actualizar({ casa = os.homedir(), modelos, enLinea = true,
         let cache
         try {
           const json = JSON.parse(fs.readFileSync(path.join(casa, '.cache', 'opencode', 'models.json'), 'utf8'))
-          if (json?.opencode?.models && typeof json.opencode.models === 'object' && !Array.isArray(json.opencode.models)) cache = json.opencode.models
+          if (json?.opencode?.models && typeof json.opencode.models === 'object' && !Array.isArray(json.opencode.models)) cache = json
         } catch {}
         if (cache) {
           // La caché conserva capacidad útil sin red, pero su antigüedad se señala al consumidor.

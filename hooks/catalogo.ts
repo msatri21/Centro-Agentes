@@ -3,9 +3,9 @@ export type Capacidad = 'imagen' | 'herramientas' | 'razonamiento'
 export const CAPACIDADES: readonly Capacidad[] = ['imagen', 'herramientas', 'razonamiento']
 export type Origen = 'ollama' | 'models.dev' | 'plugin'
 export type Capacidades = Partial<Record<Capacidad, boolean>>
-export type EntradaModelo = { agente: Agente; modelo: string; capacidades: Capacidades; contexto?: number; origen?: Origen; verificado?: string }
+export type EntradaModelo = { agente: Agente; modelo: string; capacidades: Capacidades; contexto?: number; origen?: Origen; verificado?: string; precio?: { entrada: number; salida: number; cache?: number; fuente: string } }
 export type Fuente = { nombre: string; ok: boolean; fecha: string; nota?: string }
-export type Catalogo = { version: 1; generado: string; huella: string; modelos: EntradaModelo[]; fuentes: Fuente[] }
+export type Catalogo = { version: 2; generado: string; huella: string; modelos: EntradaModelo[]; fuentes: Fuente[] }
 export type ModelosPorAgente = Record<Agente, string[]>
 export const CADUCA_MS = 24 * 60 * 60 * 1000
 
@@ -50,6 +50,32 @@ export function leerOllamaShow(texto: string): { capacidades: Capacidades; conte
 }
 
 const esObjeto = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v)
+export function precioDe(agente: Agente, modelo: string, modelsDev: Record<string, unknown> = {}): EntradaModelo['precio'] {
+  if (agente === 'claude') return undefined
+  const proveedores = Object.entries(modelsDev).flatMap(([proveedor, valor]) => esObjeto(valor) && esObjeto(valor.models) ? [[proveedor, valor.models] as const] : [])
+  if (agente === 'opencode') {
+    if (!modelo.startsWith('opencode/')) return undefined
+    const id = modelo.slice('opencode/'.length)
+    const modelos = proveedores.find(([p]) => p === 'opencode')?.[1]
+    let idPrecio = id
+    let costo = esObjeto(modelos?.[id]) ? modelos[id].cost : undefined
+    if (!esObjeto(costo) || !(Number(costo.input) > 0)) {
+      if (!id.endsWith('-free')) return undefined
+      idPrecio = id.slice(0, -5)
+      costo = esObjeto(modelos?.[idPrecio]) ? modelos[idPrecio].cost : undefined
+    }
+    if (!esObjeto(costo) || !(Number(costo.input) > 0)) return undefined
+    return { entrada: costo.input, salida: Number(costo.output) || 0, ...(typeof costo.cache_read === 'number' ? { cache: costo.cache_read } : {}), fuente: `models.dev opencode/${idPrecio}` }
+  }
+  const id = modelo.toLowerCase().replace(/:cloud|-cloud/g, '').replace(/:/g, '-')
+  let mejor: { entrada: number; salida: number; cache?: number; fuente: string } | undefined
+  for (const [proveedor, modelos] of proveedores) {
+    const costo = esObjeto(modelos[id]) ? modelos[id].cost : undefined
+    if (!esObjeto(costo) || !(typeof costo.input === 'number' && costo.input > 0)) continue
+    if (!mejor || costo.input < mejor.entrada) mejor = { entrada: costo.input, salida: Number(costo.output) || 0, ...(typeof costo.cache_read === 'number' ? { cache: costo.cache_read } : {}), fuente: `models.dev ${proveedor}/${id}` }
+  }
+  return mejor
+}
 export function desdeModelsDev(entrada: unknown): { capacidades: Capacidades; contexto?: number } {
   if (!esObjeto(entrada)) return { capacidades: {} }
   const capacidades: Capacidades = {}
@@ -67,6 +93,7 @@ export function tablaDelPlugin(agente: Agente, modelo: string): { capacidades: C
 }
 
 export function construir(modelos: ModelosPorAgente, datos: { ollama?: Record<string, { capacidades: Capacidades; contexto?: number }>; modelsDev?: Record<string, unknown> }, ahora: number, fuentes: Fuente[]): Catalogo {
+  const modelosDev = datos.modelsDev ?? {}
   const entradas: EntradaModelo[] = []
   const vistos = new Set<string>()
   const verificado = new Date(ahora).toISOString().slice(0, 10)
@@ -80,15 +107,17 @@ export function construir(modelos: ModelosPorAgente, datos: { ollama?: Record<st
     if (nombreOllama !== undefined && datos.ollama?.[nombreOllama]) { dato = datos.ollama[nombreOllama]; origen = 'ollama' }
     else if (agente === 'opencode' && modelo.startsWith('opencode/')) {
       const idDev = modelo.slice('opencode/'.length)
-      if (datos.modelsDev?.[idDev] !== undefined) {
-        const dev = desdeModelsDev(datos.modelsDev[idDev])
+      const catalogoDev = esObjeto(modelosDev.opencode) && esObjeto(modelosDev.opencode.models) ? modelosDev.opencode.models : modelosDev
+      if (catalogoDev[idDev] !== undefined) {
+        const dev = desdeModelsDev(catalogoDev[idDev])
         if (Object.keys(dev.capacidades).length) { dato = dev; origen = 'models.dev' }
       }
     }
     if (!dato) { dato = tablaDelPlugin(agente, modelo); if (dato) origen = 'plugin' }
-    entradas.push({ agente, modelo, capacidades: dato?.capacidades ?? {}, ...(dato?.contexto === undefined ? {} : { contexto: dato.contexto }), ...(origen ? { origen } : {}), verificado })
+    const precio = precioDe(agente, modelo, modelosDev)
+    entradas.push({ agente, modelo, capacidades: dato?.capacidades ?? {}, ...(dato?.contexto === undefined ? {} : { contexto: dato.contexto }), ...(origen ? { origen } : {}), ...(precio ? { precio } : {}), verificado })
   }
-  return { version: 1, generado: new Date(ahora).toISOString(), huella: huellaDeModelos(modelos), modelos: entradas, fuentes }
+  return { version: 2, generado: new Date(ahora).toISOString(), huella: huellaDeModelos(modelos), modelos: entradas, fuentes }
 }
 
 export function entradaDe(c: Catalogo | undefined, agente: Agente, modelo: string): EntradaModelo | undefined {
