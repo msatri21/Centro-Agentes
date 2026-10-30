@@ -115,10 +115,18 @@ const corto = (t: string, n = 60) => (t.length > n ? t.slice(0, n - 1) + '…' :
 export const filasPanelVivo = (trabajos: TrabajoVivo[], ahora: number) => filasVivas(trabajos, ahora).map(v => ({
   agente: v.agente,
   modelo: v.modelo,
-  tarea: corto(v.tarea ?? '', 40),
+  tarea: tituloCorto(v.tarea ?? '', 6),
   tiempo: duracionCorta(v.trabajandoMs),
   color: v.amarillo ? '#ffb86c' : GRIS.hi,
 }))
+
+// agente · modelo corto, sin el proveedor: 'opencode:opencode/deepseek-v4.1-flash-free' -> 'opencode · deepseek-v4.1-flash-free'.
+export const quienCorto = (q?: string) => {
+  if (!q) return ''
+  const [agente, ...resto] = q.split(':')
+  const modelo = resto.join(':').split('/').pop()
+  return modelo ? `${agente} · ${modelo}` : agente
+}
 
 // Una sección está plegada solo si el atom lo dice: por defecto, todas abiertas.
 export const estaPlegada = (plegadas: Record<string, boolean>, clave: string) => plegadas[clave] === true
@@ -646,6 +654,12 @@ async function armar($: EngineInterface, filasVista = 30) {
         vacio: 'sin subtareas',
       },
       {
+        titulo: 'Trabajando ahora',
+        columnas: [16, 250, 310],
+        filas: corriendo.map(t => ({ celdas: [corto(`● ${t.trabajador}`, 29), seg(ahora - t.inicio), corto(conSkills(t.skills, t.tarea), 40)], tono: 'vino' })),
+        vacio: 'nadie',
+      },
+      {
         titulo: 'Historial',
         columnas: [16, 250, 300, 400, 450],
         filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-room).map(t => ({
@@ -671,7 +685,7 @@ async function armar($: EngineInterface, filasVista = 30) {
           celdas: [
             `${icono[s.estado]} ${s.n}  ${tituloCorto(s.titulo)}`,
             s.puntaje !== undefined ? `${s.puntaje}/10` : s.estado === 'realizado' ? 'en_proceso' : s.estado,
-            s.quien ?? '',
+            quienCorto(s.quien),
           ],
           tono: tonoSub[s.estado],
         })),

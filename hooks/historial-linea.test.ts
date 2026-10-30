@@ -17,3 +17,11 @@ test('sin modelo, nota ni minutos la línea sigue siendo legible, y el error lle
   expect(lineaHistorial({ trabajador: 'aider:ollama_chat/beam', estado: 'error', ms: 3_000, puntaje: 3 }))
     .toBe('✗ aider · beam · 3s · 3/10')
 })
+
+import { quienCorto } from './register'
+
+test('quienCorto deja agente · modelo sin el proveedor', () => {
+  expect(quienCorto('opencode:opencode/deepseek-v4.1-flash-free')).toBe('opencode · deepseek-v4.1-flash-free')
+  expect(quienCorto('codex')).toBe('codex')
+  expect(quienCorto(undefined)).toBe('')
+})
