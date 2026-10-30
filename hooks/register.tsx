@@ -12,12 +12,12 @@ import type { Cerebro } from './cerebro'
 import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 import { agregarRendimiento, bloqueos, estadoSubtareaNuevo, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
-import { Cerrojos, archivosCambiados, clave, costoComoClaude, debeBuscarActualizacion, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
+import { Cerrojos, archivosCambiados, clave, costoApi, costoComoClaude, debeBuscarActualizacion, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
 import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
-export { costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
+export { costoApi, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
 // Los tonos del kit de anatomy para la terminal: grises y negros, y el vinotinto como único acento.
@@ -566,8 +566,19 @@ async function reservarSubtarea($: EngineInterface, n: number) {
 const HIST_KEY = 'historial'
 const AHORRO_KEY = 'ahorro'
 const MAX_HIST = 200
-type Ahorro = { usd: number; gastoClaude: number; trabajos: number }
+type Ahorro = { usd: number; gastoClaude: number; trabajos: number; api?: number; sinPrecio?: number }
 
+// 'ollama:gpt-oss:120b-cloud' -> agente 'ollama', modelo 'gpt-oss:120b-cloud' (el modelo puede llevar sus propios ':').
+export const agenteYModelo = (trabajador: string) => {
+  const i = trabajador.indexOf(':')
+  return i < 0 ? { agente: trabajador, modelo: '' } : { agente: trabajador.slice(0, i), modelo: trabajador.slice(i + 1) }
+}
+
+function precioDeTrabajo(t: Trabajo) {
+  if (t.trabajador.startsWith('claude:')) return undefined
+  const { agente, modelo } = agenteYModelo(t.trabajador)
+  return entradaDe(catalogoMemoria, agente as any, modelo)?.precio
+}
 
 async function guardarEnHistorial($: EngineInterface, t: Trabajo) {
   const h = ((await $.store.get(HIST_KEY)) ?? []) as Trabajo[]
@@ -575,9 +586,11 @@ async function guardarEnHistorial($: EngineInterface, t: Trabajo) {
   const a = ((await $.store.get(AHORRO_KEY)) ?? { usd: 0, gastoClaude: 0, trabajos: 0 }) as Ahorro
   const esClaude = t.trabajador.startsWith('claude:')
   await $.store.set(AHORRO_KEY, {
-    usd: a.usd + (esClaude ? 0 : costoComoClaude(t.tokensIn, t.tokensOut)),
+    usd: a.usd + (esClaude ? 0 : costoComoClaude(t.tokensIn, t.tokensOut, t.tokensCache)),
     gastoClaude: a.gastoClaude + (esClaude ? (t.costo ?? 0) : 0),
     trabajos: a.trabajos + 1,
+    api: (a.api ?? 0) + (esClaude ? (t.costo ?? 0) : costoApi(t, precioDeTrabajo(t)) ?? 0),
+    sinPrecio: (a.sinPrecio ?? 0) + (!esClaude && !precioDeTrabajo(t) ? 1 : 0),
   })
 }
 
@@ -590,6 +603,7 @@ async function puntuarEnHistorial($: EngineInterface, id: string, puntaje: numbe
 export const conSkills = (skills: string[] | undefined, texto: string) => (skills?.length ? `✦ ${skills.join(', ')} · ${texto}` : texto)
 
 async function armar($: EngineInterface, filasVista = 30) {
+    await leerCatalogoPlugin($)
     const lista = (await read($, trabajos)) ?? []
     const p = await read($, plan)
     const ctx = (await $.session.usage()).context
@@ -597,7 +611,36 @@ async function armar($: EngineInterface, filasVista = 30) {
     // El historial suma lo de sesiones anteriores (del almacén) a lo de esta.
     const deAntes = (((await $.store.get(HIST_KEY).catch(() => undefined)) ?? []) as Trabajo[]).filter(h => !lista.some(t => t.id === h.id))
     const total = ((await $.store.get(AHORRO_KEY).catch(() => undefined)) ?? { usd: 0, gastoClaude: 0, trabajos: 0 }) as Ahorro
-    const ahorroSesion = lista.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut), 0)
+    const ahorroSesion = lista.filter(t => !t.trabajador.startsWith('claude:')).reduce((a, t) => a + costoComoClaude(t.tokensIn, t.tokensOut, t.tokensCache), 0)
+    const porModelo = [...deAntes, ...lista].reduce((grupos, t) => {
+      const trabajador = t.trabajador
+      const previo = grupos.get(trabajador) ?? { trabajador, agente: trabajador.split(':')[0], modelo: trabajador.includes(':') ? trabajador.slice(trabajador.indexOf(':') + 1) : '', trabajos: 0, entradaNueva: 0, cache: 0, salida: 0, _api: 0, _tieneApi: false, costoSonnet: 0, ahorro: 0 }
+      const esClaude = trabajador.startsWith('claude:')
+      const precio = precioDeTrabajo(t)
+      const api = esClaude ? (t.costo ?? 0) : costoApi(t, precio)
+      const sonnet = costoComoClaude(t.tokensIn, t.tokensOut, t.tokensCache)
+      previo.trabajos++
+      previo.entradaNueva += Math.max(0, (t.tokensIn ?? 0) - Math.min(t.tokensIn ?? 0, t.tokensCache ?? 0))
+      previo.cache += Math.min(t.tokensIn ?? 0, t.tokensCache ?? 0)
+      previo.salida += t.tokensOut ?? 0
+      previo._api += api ?? 0
+      previo._tieneApi ||= api !== undefined
+      previo.costoSonnet += sonnet
+      previo.ahorro += api === undefined ? 0 : sonnet - api
+      if (precio) previo.precio = precio
+      grupos.set(trabajador, previo)
+      return grupos
+    }, new Map<string, any>())
+    const filasCosto = [...porModelo.values()].map(({ _api, _tieneApi, ...fila }) => ({ ...fila, ...(_tieneApi ? { costoApi: _api } : {}) }))
+    const apiSesion = lista.reduce((s, t) => {
+      const precio = precioDeTrabajo(t)
+      return s + (t.trabajador.startsWith('claude:') ? (t.costo ?? 0) : costoApi(t, precio) ?? 0)
+    }, 0)
+    const sinPrecioSesion = lista.filter(t => {
+      if (t.trabajador.startsWith('claude:')) return false
+      return !precioDeTrabajo(t)
+    }).length
+    const costos = { sonnetSesion: ahorroSesion, apiSesion, sinPrecioSesion, apiTotal: total.api ?? 0, sonnetTotal: total.usd, gastoClaude: total.gastoClaude, porModelo: filasCosto }
 
     const subs = p?.subtareas ?? []
     const hechas = subs.filter(s => s.estado === 'solucionado').length
@@ -728,7 +771,7 @@ async function armar($: EngineInterface, filasVista = 30) {
       { etiqueta: 'Ahorro', valor: `$${ahorroSesion.toFixed(2)}`, nota: `total $${total.usd.toFixed(2)} vs Claude Sonnet` },
     ]
     return {
-      p, pct, resumen, secciones, seccionesPanel, lectura, kpis,
+      p, pct, resumen, secciones, seccionesPanel, lectura, kpis, costos,
       figuraSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }),
       figuraPanelSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }, { marco: false }),
       tableroSvg: tablero({

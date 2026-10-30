@@ -182,9 +182,15 @@ export function vistaDe(trabajador: Trabajador, stdout: string): string {
   return partes.join('\n')
 }
 
-// Lo que habría costado con Claude Sonnet 5.5 ($2 entrada / $10 salida por millón; precios oficiales al 6-oct-2026).
-// shortcut: cuenta toda la entrada a precio normal aunque parte fuera caché (más barata); sobreestima algo el ahorro.
-export const costoComoClaude = (tokIn = 0, tokOut = 0) => (tokIn * 2 + tokOut * 10) / 1_000_000
+// Lo que habría costado con Claude Sonnet 5.5 ($2 entrada / $10 salida por millón).
+export const costoComoClaude = (tokIn = 0, tokOut = 0, tokCache = 0) => ((tokIn - tokCache) * 2 + tokCache * 0.2 + tokOut * 10) / 1_000_000 // 0.2 asume caché leída al 10 % del precio de entrada.
+
+export function costoApi(t: { tokensIn?: number; tokensOut?: number; tokensCache?: number }, precio?: { entrada: number; salida: number; cache?: number }): number | undefined {
+  if (!precio) return undefined
+  const entrada = t.tokensIn ?? 0
+  const cache = Math.min(t.tokensCache ?? 0, entrada)
+  return ((entrada - cache) * precio.entrada + cache * (precio.cache ?? precio.entrada) + (t.tokensOut ?? 0) * precio.salida) / 1_000_000
+}
 
 // --- Autoactualización: cuándo vale la pena buscar una versión nueva ---
 
