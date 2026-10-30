@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoApi, costoComoClaude, debeBusc
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasResumenPanelSesion, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, aplicarAgentesPermitidos, esMasiva, filasResumenPanelSesion, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
 export { costoApi, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -49,6 +49,7 @@ type Opciones = {
   hermesModels?: string
   aiderModels?: string
   codexModels?: string
+  agentesPermitidos?: string
   presupuestoClaudeTokens?: number
   ntfyTema?: string
   opencodeModels?: string
@@ -1928,7 +1929,7 @@ async function lanzarEncargo($: EngineInterface, modelos: Modelos, input: Encarg
 
 export const register: Register = (on, options) => {
   const opt = (options ?? {}) as Opciones
-  const modelos: Modelos = {
+  const modelos: Modelos = aplicarAgentesPermitidos({
     // Los :cloud que entran en el plan Free de Ollama (probados con sesión iniciada); llama3.2:3b es local y queda de respaldo.
     ollama: lista(opt.ollamaModels, ['gpt-oss:120b-cloud', 'beam:cloud', 'gemma4:31b-cloud', 'nemotron-3-super:cloud', 'gpt-oss:20b-cloud', 'llama3.2:3b']),
     // Los modelos gratuitos propios de OpenCode (probados con herramientas MCP): sin Ollama y sin clave.
@@ -1940,7 +1941,7 @@ export const register: Register = (on, options) => {
     codex: lista(opt.codexModels, ['chatgpt', 'ollama/gpt-oss:120b-cloud']),
     aider: lista(opt.aiderModels, ['ollama_chat/gpt-oss:120b-cloud', 'ollama_chat/beam:cloud', 'ollama_chat/gemma4:31b-cloud']),
     claude: lista(opt.claudeModels, ['haiku', 'sonnet', 'opus']),
-  }
+  }, opt.agentesPermitidos) as Modelos
   const timeoutMs = Math.min(10, Math.max(1, Number(opt.timeoutMin ?? 8))) * 60_000
   limiteInactividadMs = Math.min(120, Math.max(10, Number(opt.inactividadMin ?? INACTIVIDAD_MIN_POR_DEFECTO))) * 60_000
   contexto = { modelos, timeoutMs }

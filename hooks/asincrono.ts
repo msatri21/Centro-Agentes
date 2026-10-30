@@ -352,3 +352,11 @@ export function filasResumenPanelSesion(d: {
   if (d.claudeGastado !== undefined) filas.push({ celdas: ['Claude', `$${d.claudeGastado.toFixed(2)} gastado`], tono: 'mid' })
   return filas
 }
+
+// Deja solo los agentes permitidos: 'opencode' o 'opencode,ollama'. Vacío = todos. Un nombre que no existe se ignora; si ninguno existe, no se toca nada.
+// Los demás agentes quedan sin modelos, así el centro no los usa ni como respaldo cuando el pedido falla.
+export function aplicarAgentesPermitidos(modelos: Record<string, string[]>, permitidos: string | undefined): Record<string, string[]> {
+  const nombres = (permitidos ?? '').split(',').map(n => n.trim().toLowerCase()).filter(n => n in modelos)
+  if (!nombres.length) return modelos
+  return Object.fromEntries(Object.entries(modelos).map(([agente, lista]) => [agente, nombres.includes(agente) ? lista : []]))
+}
