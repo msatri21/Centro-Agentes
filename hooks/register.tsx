@@ -1364,6 +1364,24 @@ export function estadoAgentes(modelos: Modelos, ahora: number, usadosClaude: num
 }
 const caidosAhora = () => new Set([...caidos].filter(([, t]) => Date.now() - t < CAIDO_MS).map(([k]) => k))
 
+// Un límite de la cuenta (cupo gratis agotado, uso de Codex agotado) no es de un modelo sino de todo el agente.
+// Se avisa al jefe como mucho una vez cada 30 minutos para no llenar el chat.
+let ultimoAvisoCuota = 0
+const AVISO_CUOTA_MS = 30 * 60_000
+export function limiteDeCuenta(agente: string, texto: string, errorTipo?: string): boolean {
+  if (agente === 'opencode') return errorTipo === 'provider.free-limit' || /free usage limit reached/i.test(texto)
+  if (agente === 'codex') return /usage limit/i.test(texto)
+  return false
+}
+
+// Cola de un encargo: con modelo fijo, solo ese candidato; con trabajador fijo, solo sus modelos (ya vienen en preparados);
+// sin nada fijo, los preparados y después los de los demás agentes.
+export function colaDeCandidatos<T extends { trabajador: string; modelo: string }>(preparados: T[], otros: T[], pedido?: string, modeloPedido?: string): T[] {
+  if (modeloPedido) return preparados.filter(c => c.modelo === modeloPedido).slice(0, 1)
+  if (pedido) return preparados
+  return [...preparados, ...otros]
+}
+
 // Orden por defecto entre trabajadores: primero los gratis en la nube, Claude al final.
 const todosLosCandidatos = (m: Modelos): Candidato[] =>
   (['opencode', 'ollama', 'hermes', 'aider', 'codex', 'claude'] as const).flatMap(t => m[t].map(modelo => ({ trabajador: t, modelo })))
@@ -1756,9 +1774,8 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     const o = preferir(ordenar(tabla, categoria, l, caidosAhora(), catalogo).filter(alcanzable), recuerdo)
     return [...o.filter(libre), ...o.filter(c => !libre(c))]
   }
-  // Primero el agente pedido; si no puede, se pasa a otro que sí funcione.
-  let cola = [...preparar(candidatos), ...(pedido ? preparar(todos.filter(c => c.trabajador !== pedido)) : [])]
-  if (modeloPedido) cola = [...cola.filter(c => c.modelo === modeloPedido), ...cola.filter(c => c.modelo !== modeloPedido)]
+  // Con modelo o agente pedidos no se salta a otros: solo el salto a otros agentes ocurre con trabajador vacío o 'auto'.
+  const cola = colaDeCandidatos(preparar(candidatos), pedido ? preparar(todos.filter(c => c.trabajador !== pedido)) : [], pedido, modeloPedido)
 
   // Copia aislada: varios agentes pueden editar el mismo repo a la vez sin pisarse.
   const copia = input.aislar && input.cwd ? await crearCopia($, input.cwd, `s${input.subtarea ?? 'x'}-${Date.now().toString(36)}`) : undefined
@@ -1823,12 +1840,26 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     if (r.ok) break
     // Cancelado a mano desde la web: no se prueba otro modelo.
     if (r.s.texto.includes(`[cortado: ${CANCELADO}]`)) break
-    // Cupo gratis agotado o modelo caído del proveedor: se aparta SOLO ese modelo el tiempo que toque y se pasa al siguiente sin gastar cambios.
+    // Límite de la cuenta (cupo gratis o uso de Codex agotado): no se encadena con otros agentes, que gastarían cupos de pago.
+    // Se aparta todo el agente, se corta la cola y se avisa al jefe para que avise al usuario.
+    if (limiteDeCuenta(c.trabajador, r.s.texto, r.s.errorTipo)) {
+      const ms = r.s.reintentoMs ?? HORA_MS
+      for (const m of modelos[c.trabajador]) caidos.set(clave(c.trabajador, m), Date.now() + ms - CAIDO_MS)
+      motivoAgente.set(c.trabajador, 'sin cupo')
+      if (Date.now() - ultimoAvisoCuota >= AVISO_CUOTA_MS) {
+        ultimoAvisoCuota = Date.now()
+        const aviso = c.trabajador === 'codex'
+          ? '[Centro de agentes MST] Codex se quedó sin cuota de uso (usage limit). Avisa al usuario para que lo reinicie o espere a que se recupere; cuando lo recupere, ejecuta /mst-reactivar y vuelve a lanzar.'
+          : '[Centro de agentes MST] OpenCode se quedó sin cupo gratuito (Free usage limit reached). Avisa al usuario para que lo reinicie manualmente; cuando lo recupere, ejecuta /mst-reactivar y vuelve a lanzar.'
+        void $.prompt.submit({ text: aviso }).catch(() => undefined)
+      }
+      break
+    }
+    // Modelo caído del proveedor: se aparta SOLO ese modelo y se pasa al siguiente del mismo agente sin gastar cambios.
     const tipo = r.s.errorTipo
-    if (tipo === 'provider.free-limit' || tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))) {
-      const ms = tipo === 'provider.free-limit' ? (r.s.reintentoMs ?? HORA_MS) : 30 * 60_000
-      caidos.set(k, Date.now() + ms - CAIDO_MS)
-      motivoAgente.set(c.trabajador, tipo === 'provider.free-limit' ? 'sin cupo gratis' : 'modelo no disponible')
+    if (tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))) {
+      caidos.set(k, Date.now() + 30 * 60_000 - CAIDO_MS)
+      motivoAgente.set(c.trabajador, 'modelo no disponible')
       continue
     }
     // Sin red, fallarán todos los modelos en la nube de ese agente: se aparta el agente entero un rato.
@@ -2041,6 +2072,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'mst-informe', description: 'Escribe el informe final de este chat (Markdown) y lo abre' })
     await $.command.register({ name: 'mst-modelos', description: 'Lista los modelos que puede usar cada agente y qué sabe hacer cada uno' })
     await $.command.register({ name: 'mst-estado', description: 'Muestra al instante qué agentes están trabajando, desde cuándo y hace cuánto dieron señal; no pasa por el jefe' })
+    await $.command.register({ name: 'mst-reactivar', description: 'Vuelve a usar los agentes marcados como caídos o sin cupo (después de reiniciarlos)' })
     await $.command.register({ name: 'centro-reset', description: 'Borra los puntajes guardados' })
     // Al empezar cualquier sesión: el panel a la vista y la página web al día; el navegador se abre solo una vez al día.
     if (opt.abrirAlIniciar !== false) {
@@ -2294,6 +2326,15 @@ ${protocolo(modelos)}`
   on('command.run', { command: 'mst-estado' }, async $ => {
     const lista = (await read($, trabajos)) ?? []
     return { text: textoEstado(lista, registro.todos(), Date.now(), AMARILLO_MS_POR_DEFECTO, limiteInactividadMs / 60_000) }
+  })
+
+  // Tras reiniciar OpenCode o Codex, el jefe vuelve a contar con esos agentes sin esperar a que caduquen las marcas.
+  on('command.run', { command: 'mst-reactivar' }, async () => {
+    const marcados = [...caidosAhora(), ...[...salud].filter(([, s]) => !s.ok).map(([t]) => `${t} (sin red)`)]
+    caidos.clear()
+    salud.clear()
+    motivoAgente.clear()
+    return { text: marcados.length ? `Reactivado: ${marcados.join(', ')}. El centro vuelve a usar esos agentes.` : 'No había nada marcado como caído.' }
   })
 
   on('command.run', { command: 'centro-reset' }, async $ => {
