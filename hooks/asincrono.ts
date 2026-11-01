@@ -64,6 +64,20 @@ export function contarCambios(nameStatus: string): { archivos: string[]; modific
   return { archivos, modificados, borrados }
 }
 
+// Valida el encargo antes de gastar un agente: devuelve el error claro o undefined si está bien.
+export function validarEncargo(
+  e: { tarea?: string; cwd?: string; aislar?: boolean; subtarea?: number },
+  ctx: { cwdExiste?: boolean; esRepoGit?: boolean; subtareasDelPlan?: number[]; tareaActiva?: string },
+): string | undefined {
+  if (!e.tarea?.trim()) return 'La tarea está vacía: el agente no ve esta conversación, escríbela completa.'
+  if (e.cwd && ctx.cwdExiste === false) return `La carpeta de trabajo no existe: ${e.cwd}`
+  if (e.aislar && !e.cwd) return 'aislar necesita cwd (la carpeta del repo git).'
+  if (e.aislar && ctx.esRepoGit === false) return `aislar necesita que cwd sea un repo git: ${e.cwd}`
+  if (e.subtarea !== undefined && ctx.subtareasDelPlan && !ctx.subtareasDelPlan.includes(e.subtarea))
+    return `La subtarea ${e.subtarea} no existe en el plan activo${ctx.tareaActiva ? ` (${ctx.tareaActiva})` : ''}: carga la tarea correcta con planificar { tarea } antes de lanzar.`
+  return undefined
+}
+
 export function choques(copias: { id: string; archivos: string[] }[]): { a: string; b: string; archivos: string[] }[] {
   const resultado: { a: string; b: string; archivos: string[] }[] = []
   for (let i = 0; i < copias.length; i++) for (let j = i + 1; j < copias.length; j++) {
@@ -359,4 +373,17 @@ export function aplicarAgentesPermitidos(modelos: Record<string, string[]>, perm
   const nombres = (permitidos ?? '').split(',').map(n => n.trim().toLowerCase()).filter(n => n in modelos)
   if (!nombres.length) return modelos
   return Object.fromEntries(Object.entries(modelos).map(([agente, lista]) => [agente, nombres.includes(agente) ? lista : []]))
+}
+
+// Con qué intérprete correr comandos de verificación. `existentes` son las rutas ya comprobadas en disco (el llamador
+// las comprueba); aquí solo manda la prioridad: Git Bash de Program Files (64 bits, luego 32) antes que cualquier otra
+// ruta de bash (p. ej. la de LOCALAPPDATA), y sin ninguno cmd. Fuera de Windows, sh.
+export type Interprete = { tipo: 'bash' | 'cmd' | 'sh'; ruta: string }
+export const BASHES_PRIORIDAD = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files (x86)/Git/bin/bash.exe']
+
+export function elegirInterprete(plataforma: string, existentes: string[]): Interprete {
+  if (plataforma !== 'win32') return { tipo: 'sh', ruta: 'sh' }
+  const orden = [...BASHES_PRIORIDAD, ...existentes.filter(r => !BASHES_PRIORIDAD.includes(r) && r.toLowerCase().endsWith('bash.exe'))]
+  const bash = orden.find(r => existentes.includes(r))
+  return bash ? { tipo: 'bash', ruta: bash } : { tipo: 'cmd', ruta: 'cmd' }
 }

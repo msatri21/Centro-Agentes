@@ -98,7 +98,8 @@ test('una tarea con skills no va a Ollama y el agente recibe la instrucción de 
 test('con la skill ponytail el encargo lleva el mapa del código de la carpeta de trabajo; sin ella, no', async ($, on) => {
   base(on)
   on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
-  on('fs.exists', async (_$: any, e: any) => ({ value: String(e.path).includes('ponytail-map.js') }))
+  // Las carpetas de trabajo falsas existen (el centro valida cwd antes de lanzar).
+  on('fs.exists', async (_$: any, e: any) => ({ value: String(e.path).includes('ponytail-map.js') || /^C:[\\/](proyecto|documentos)$/i.test(String(e.path)) }))
   const vistos: { argv: string[]; input?: string; cwd?: string }[] = []
   // El mapa lo genera un script de ponytail con process.run; el agente se lanza con process.spawn.
   on('process.run', async (_$: any, e: any) => {
@@ -173,7 +174,7 @@ test('clasificarTarea: código, auditoría de un cambio, auditoría de un repo o
 const centroConPonytail = (on: any, { carpetaConCodigo = true } = {}) => {
   base(on)
   on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
-  on('fs.exists', async (_$: any, e: any) => ({ value: /SKILL\.md$|ponytail-map\.js$/.test(String(e.path)) }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: /SKILL\.md$|ponytail-map\.js$|^C:[\\/](proyecto|documentos)$/i.test(String(e.path)) }))
   const mapas: string[] = []
   const lanzados: { argv: string[]; input?: string }[] = []
   on('process.run', async (_$: any, e: any) => {
