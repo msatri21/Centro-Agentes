@@ -299,10 +299,10 @@ async function pendientesDe($: EngineInterface, lista: Trabajo[]) {
 export async function vigilar($: EngineInterface, ahora = Date.now()) {
   const lista = (await read($, trabajos)) ?? []
   const pendientes = await pendientesDe($, lista)
-  const esperando = new Set(pendientes.map(p => p.id))
+  const conConsulta = new Set(pendientes.map(p => p.id))
   for (const t of lista) {
     if (t.estado !== 'corriendo') continue
-    if (inactivo(t, ahora, limiteInactividadMs) && !esperando.has(t.id)) {
+    if (inactivo(t, ahora, limiteInactividadMs) && !conConsulta.has(t.id)) {
       const clave = `${t.id}:inactivo`
       if (!escaladasVigilante.has(clave)) {
         escaladasVigilante.add(clave)
@@ -318,6 +318,9 @@ export async function vigilar($: EngineInterface, ahora = Date.now()) {
     escaladasVigilante.add(clave)
     void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (permiso): ${p.agente} pide permiso (${p.categoria}): "${p.texto}". La decisión es del USUARIO en la web: no la apruebes ni actúes tú; sigue con otra cosa.` }).catch(() => undefined)
   }
+  // Reconciliación periódica: un trabajo bajo el lanzador al que ya nadie espera (se perdió su wait en la sesión)
+  // se reengancha aquí también, no solo al restaurar; reenganchados evita repetir el de un mismo trabajo.
+  if (trabajosHuerfanos(lista, esperando).length) await reengancharPendientes($).catch(() => undefined)
 }
 
 type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean; fin?: number }
@@ -380,6 +383,7 @@ async function esperarArchivos(
     void $.fs.write(ruta('.cancelar'), por).catch(() => undefined)
   }
   alCortar(cortar)
+  esperando.add(id)
   let reloj: { cancel(): void } = { cancel() {} }
   const armarReloj = () => {
     reloj = $.clock.after(init.timeoutMs, async () => {
@@ -438,6 +442,7 @@ async function esperarArchivos(
       await new Promise<void>(resolver => setTimeout(resolver, SONDEO_MS))
     }
   } finally {
+    esperando.delete(id)
     terminado = true
     reloj.cancel()
     callado?.cancel()
@@ -790,6 +795,8 @@ async function armar($: EngineInterface, filasVista = 30) {
     ]
     return {
       p, pct, resumen, resumenPanel, secciones, seccionesPanel, lectura, kpis, costos,
+      // La web lleva el histórico entero (antes y ahora); el panel no cambia.
+      historico: [...deAntes, ...lista].map(t => ({ trabajador: t.trabajador, estado: t.estado, ms: t.ms, puntaje: t.puntaje, tokensIn: t.tokensIn, tokensOut: t.tokensOut, tokensCache: t.tokensCache })),
       figuraSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }),
       figuraPanelSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }, { marco: false }),
       tableroSvg: tablero({
@@ -1037,6 +1044,14 @@ export function estadosInterrumpidos(g: Guardado): { id: string; estado: 'pendie
     .map(n => ({ id: `${g.plan!.tarea}.${n}`, estado: 'pendiente' as const }))
 }
 
+// Ids de trabajo cuya espera de archivos está activa: los que quedan fuera y siguen 'corriendo' son huérfanos a reconciliar.
+const esperando = new Set<string>()
+
+// Trabajos corriendo bajo su lanzador a los que nadie espera: el plugin perdió su wait (p. ej. un reenganche que no arrancó).
+export function trabajosHuerfanos(trabajos: { id: string; estado: string; lanzador?: unknown }[], esperando: Set<string>): string[] {
+  return trabajos.filter(t => t.estado === 'corriendo' && t.lanzador && !esperando.has(t.id)).map(t => t.id)
+}
+
 const reenganchados = new Set<string>()
 
 // Tras recargar el plugin, los agentes que seguían bajo su lanzador se reencuentran por sus archivos en disco.
@@ -1278,6 +1293,7 @@ async function escribirWeb($: EngineInterface) {
     relanzables: controles.relanzables,
     pendientes: await pendientesDe($, lista),
     costos: a.costos,
+    historico: a.historico,
     // Sin catálogo la página muestra "Aún no hay catálogo" en lugar de la sección de modelos.
     catalogo: {
       ...(catalogo?.generado ? { generado: catalogo.generado } : {}),
