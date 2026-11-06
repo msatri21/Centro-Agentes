@@ -1505,7 +1505,7 @@ ${PROTOCOLO_AGENTE}`
 // en la caché de plugins. Así cualquier agente que lea archivos puede seguirla.
 // Las rutas usan "/": Windows las acepta y así no hay barras invertidas que escapar.
 export async function rutaSkill($: EngineInterface, nombre: string): Promise<string | undefined> {
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   if (!casa || !/^[\w.:-]+$/.test(nombre)) return undefined
   const [plugin, skill] = nombre.includes(':') ? nombre.split(':', 2) : [undefined, nombre]
   if (!plugin) {
@@ -1525,6 +1525,11 @@ export async function rutaSkill($: EngineInterface, nombre: string): Promise<str
 }
 
 export type SkillInfo = { nombre: string; descripcion: string; ruta: string }
+
+// Carpeta personal en Windows (USERPROFILE) y en Linux/macOS (HOME): sin ella el centro no ve ninguna skill.
+async function casaSkills($: EngineInterface): Promise<string | undefined> {
+  return (await $.env.get('USERPROFILE').catch(() => undefined)) || (await $.env.get('HOME').catch(() => undefined)) || undefined
+}
 
 // Nombre y descripción del encabezado (frontmatter) de un SKILL.md.
 export function leerFrontmatter(texto: string): { name?: string; description?: string } {
@@ -1556,7 +1561,7 @@ export function buscarSkills(lista: SkillInfo[], consulta: string, max = 20): Sk
 
 // Todas las skills instaladas: las tuyas (~/.claude/skills) y las de los plugins (la versión más reciente de cada uno).
 async function listarSkills($: EngineInterface): Promise<SkillInfo[]> {
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   if (!casa) return []
   const dirs = (p: string) => $.fs.list(p).then(l => l.filter(e => e.kind === 'dir').map(e => e.name)).catch(() => [] as string[])
   const leer = async (nombre: string, ruta: string): Promise<SkillInfo | undefined> => {
@@ -1588,7 +1593,7 @@ async function instruccionSkills($: EngineInterface, skills: string[]): Promise<
 // Con la skill ponytail, el encargo lleva también el mapa del código de su carpeta de trabajo: qué funciones y clases hay ya, para reutilizarlas
 // en vez de escribir otras. Lo genera un script de ponytail (local, sin red ni modelo) que vive en ~/.centro-agentes/ponytail; si no está, el encargo sale sin mapa.
 async function mapaDelCodigo($: EngineInterface, cwd: string): Promise<string> {
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   if (!casa) return ''
   const guion = `${casa}/.centro-agentes/ponytail/ponytail-map.js`
   if (!(await $.fs.exists(guion).catch(() => false))) return ''
@@ -1601,7 +1606,7 @@ async function mapaDelCodigo($: EngineInterface, cwd: string): Promise<string> {
 const AVISO_PONYTAIL_KEY = 'ponytailAvisado'
 async function avisoPonytail($: EngineInterface): Promise<string> {
   if (!skillsAuto || (await $.store.get(AVISO_PONYTAIL_KEY).catch(() => undefined))) return ''
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   if (!casa) return ''
   const faltan: string[] = []
   for (const n of ['ponytail', 'ponytail-review', 'ponytail-audit']) if (!(await rutaSkill($, n))) faltan.push(n)

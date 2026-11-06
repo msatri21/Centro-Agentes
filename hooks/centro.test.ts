@@ -79,6 +79,17 @@ test('skills: lee el encabezado, busca por palabras, se marcan con ✦ y se reco
   expect(esErrorDeCuenta('Todo bien, archivo creado')).toBe(false)
 })
 
+test('en Linux y macOS (solo HOME, sin USERPROFILE) buscar_skills encuentra las skills de ~/.claude/skills', async ($, on) => {
+  base(on)
+  on('env.get', async (_$: any, e: any) => ({ value: e.name === 'HOME' ? '/home/prueba' : undefined }))
+  on('fs.list', async (_$: any, e: any) => ({ value: String(e.path) === '/home/prueba/.claude/skills' ? [{ name: 'ponytail', kind: 'dir' }] : [] }))
+  on('fs.read', async (_$: any, e: any) => ({ value: String(e.path) === '/home/prueba/.claude/skills/ponytail/SKILL.md' ? '---\nname: ponytail\ndescription: Lazy senior dev mode for any coding task\n---\n' : '' }))
+  const r = out(await $.tool.call({ tool: 'mcp__centro-agentes__buscar_skills', input: { consulta: 'ponytail' } }))
+  expect(r.total).toBe(1)
+  expect(r.skills[0].nombre).toBe('ponytail')
+  expect(r.skills[0].ruta).toBe('/home/prueba/.claude/skills/ponytail/SKILL.md')
+})
+
 test('una tarea con skills no va a Ollama y el agente recibe la instrucción de seguirlas', async ($, on) => {
   base(on)
   const vistos: { argv: string[]; input?: string }[] = []
