@@ -118,6 +118,24 @@ export const esErrorDeRed = (texto: string) => ERROR_DE_RED.test(texto)
 export const esErrorDeCuenta = (texto: string) =>
   /api key has expired|invalid api key|api key (is )?(invalid|revoked)|unauthorized|\b401\b|authentication failed|not authenticated|not logged in|please log ?in/i.test(texto)
 
+// Texto que de verdad respondió el agente: sin lo que el centro añade al fallar ([stderr], [cortado]) ni las líneas [error].
+export const textoUtil = (texto: string) =>
+  texto.split(/\n\[(?:stderr|cortado)/)[0].split(/\r?\n/).filter(l => !/^\[error\]/.test(l.trim())).join('\n').trim()
+// Avisos del proveedor que llegan como si fueran la respuesta (p. ej. Ollama sin sesión): no cuentan como éxito.
+const AVISO_PROVEEDOR = /you need to be signed in|sign in to (use|run)|free usage limit reached|model (is )?unavailable|rate limit (exceeded|reached)/i
+export const esAvisoDelProveedor = (texto: string) => {
+  const t = textoUtil(texto)
+  return !t || (t.length < 300 && AVISO_PROVEEDOR.test(t))
+}
+// Un intento que falla DESPUÉS de escribir una respuesta larga (cupo agotado, modelo caído al cerrar) no se tira:
+// esa respuesta es el resultado. Por debajo de este tamaño se considera que no llegó a responder.
+export const MIN_RESPUESTA_RESCATABLE = 200
+export const respuestaRescatable = (texto: string) => {
+  if (/\[cortado:/.test(texto)) return false
+  const t = textoUtil(texto)
+  return t.replace(/\s+/g, ' ').length >= MIN_RESPUESTA_RESCATABLE && !esAvisoDelProveedor(t)
+}
+
 // Lo que se ve en la terminal de cada agente: su texto legible, no el JSON de sus eventos.
 // codex exec --json: un evento por línea. Lo que dice va en item.completed de tipo agent_message,
 // los comandos que ejecuta en command_execution y el uso de tokens en turn.completed.

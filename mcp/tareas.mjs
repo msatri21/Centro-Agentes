@@ -135,6 +135,8 @@ export async function transaccion(raiz, proyecto, op, { hoy, esperaMs = 8000, ca
         escribirTemporal(path.join(raiz, HISTORIAL), md, token)
       } catch (e) { return { ok: false, codigo: 'historial', mensaje: `No se pudo actualizar el historial: ${e.message}`, avisos } }
     }
+    // La copia .bak se avisa la primera vez que aparece, para que no sea un archivo nuevo sin explicación.
+    if (existia && !fs.existsSync(`${ruta}.bak`)) avisos.push(`Se creó ${ARCHIVO}.bak: copia del archivo anterior por si el JSON se corrompe; puedes ignorarla en .gitignore`)
     try { guardarJson(ruta, resultado.archivo, existia, token) } catch (e) { return { ok: false, codigo: 'escritura', mensaje: `No se pudo guardar el archivo de tareas: ${e.message}`, avisos } }
     const salida = { ...resultado, avisos }
     if (!existia) return { ...salida, creado: true, gitignore: asegurarGitignore(raiz) }

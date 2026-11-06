@@ -56,6 +56,8 @@ export type DatosPagina = {
   }[]
   /** Costos por agente y modelo, de esta sesión y de todo el histórico; si falta, la página no añade la sección */
   costos?: DatosCostos
+  /** Histórico completo (sesiones anteriores y esta); si falta, la página no añade la sección */
+  historico?: FilaHistorico[]
   /** Catálogo de modelos; si falta, la página no añade nada (la salida queda igual que antes) */
   catalogo?: { generado?: string; filas: FilaPagina[]; fallos: string[] }
 }
@@ -84,6 +86,53 @@ ${tabla}
 const miles = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
 const corto = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
 const seg = (ms: number) => (ms >= 60_000 ? `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s` : `${Math.round(ms / 1000)} s`)
+
+/** Una fila del histórico completo (sesiones anteriores y esta), con lo que la web necesita para analizarla */
+export type FilaHistorico = { trabajador: string; estado?: string; ms?: number; puntaje?: number; tokensIn?: number; tokensOut?: number; tokensCache?: number }
+
+/** Los números del histórico completo, sin HTML (para probarlos aparte) */
+export function resumenHistorico(filas: FilaHistorico[]) {
+  const total = { trabajos: filas.length, bien: 0, entradaNueva: 0, cache: 0, salida: 0, ms: 0, agentes: [] as { agente: string; trabajos: number; bien: number; error: number; notas: number[]; tiempos: number[]; salida: number }[] }
+  for (const f of filas) {
+    const cache = Math.min(f.tokensIn ?? 0, f.tokensCache ?? 0)
+    total.entradaNueva += (f.tokensIn ?? 0) - cache
+    total.cache += cache
+    total.salida += f.tokensOut ?? 0
+    total.ms += f.ms ?? 0
+    if (f.estado !== 'error') total.bien++
+    // El agente es la parte del trabajador antes de ':' (el modelo cambia y no debe partir la fila).
+    const nombre = f.trabajador.split(':')[0]
+    let a = total.agentes.find(x => x.agente === nombre)
+    if (!a) {
+      a = { agente: nombre, trabajos: 0, bien: 0, error: 0, notas: [], tiempos: [], salida: 0 }
+      total.agentes.push(a)
+    }
+    a.trabajos++
+    if (f.estado === 'error') a.error++
+    else a.bien++
+    if (f.puntaje !== undefined) a.notas.push(f.puntaje)
+    if (f.ms !== undefined) a.tiempos.push(f.ms)
+    a.salida += f.tokensOut ?? 0
+  }
+  return total
+}
+
+const promedio = (ns: number[]) => (ns.length ? ns.reduce((a, n) => a + n, 0) / ns.length : undefined)
+
+/** La sección 'Todo el histórico' de la web: los totales y una fila por agente, sumando todas las sesiones */
+export function seccionHistorico(filas: FilaHistorico[]): string {
+  const r = resumenHistorico(filas)
+  if (!filas.length) return '<h2 class="seccion">Todo el histórico</h2>\n<p class="vacio">Aún sin trabajos en el histórico.</p>'
+  const cuerpo = r.agentes.map(a => {
+    const nota = promedio(a.notas)
+    const tiempo = promedio(a.tiempos)
+    return `<tr><td>${esc(a.agente)}</td><td>${a.trabajos}</td><td>${a.bien}</td><td>${a.error}</td><td>${nota === undefined ? '—' : `${nota.toFixed(1)}/10`}</td><td>${tiempo === undefined ? '—' : seg(tiempo)}</td><td>${fmtTokens(a.salida)}</td></tr>`
+  }).join('')
+  return `<h2 class="seccion">Todo el histórico</h2>
+<p><strong>${r.trabajos}</strong> ${r.trabajos === 1 ? 'trabajo' : 'trabajos'} · ${r.bien} bien · entrada nueva ${fmtTokens(r.entradaNueva)} · caché ${fmtTokens(r.cache)} · salida ${fmtTokens(r.salida)} · ${seg(r.ms)}</p>
+<table><tr><td><strong>Agente</strong></td><td><strong>Trabajos</strong></td><td><strong>Bien</strong></td><td><strong>Error</strong></td><td><strong>Nota media</strong></td><td><strong>Tiempo medio</strong></td><td><strong>Tokens de salida</strong></td></tr>${cuerpo}</table>
+<p class="vacio">Suma las sesiones anteriores y esta. El tiempo medio cuenta solo los trabajos terminados; la nota media, solo los puntuados.</p>`
+}
 
 const ESTILO = `
 :root{--vino:${VINO}}
@@ -353,7 +402,7 @@ ${listo ? `<div class="listo">✓ Todo listo · ${esc(listo)}</div>` : ''}<div c
 ${d.extra ? `<h2 class="seccion">Detalles del chat</h2><div class="detalles" style="--cols:${d.columnasExtra ?? '1fr 1fr'}">${d.extra}</div>` : ''}
 <h2 class="seccion">Gráficas</h2><div class="rejilla">${graficas}</div>
 <h2 class="seccion">Subtareas</h2>${filasPlan ? `<table>${filasPlan}</table>` : '<p class="vacio">El jefe aún no ha hecho el plan.</p>'}
-<h2 class="seccion">Historial</h2>${historial ? `<table>${historial}</table>` : '<p class="vacio">Sin trabajos terminados.</p>'}${d.costos ? seccionCostos(d.costos) : ''}${catalogo}
+<h2 class="seccion">Historial</h2>${historial ? `<table>${historial}</table>` : '<p class="vacio">Sin trabajos terminados.</p>'}${d.historico ? seccionHistorico(d.historico) : ''}${d.costos ? seccionCostos(d.costos) : ''}${catalogo}
 </div>
 <footer>Centro de agentes MST ${esc(d.version)} · se actualiza cada 2 s sin recargar</footer>
 <script type="module">

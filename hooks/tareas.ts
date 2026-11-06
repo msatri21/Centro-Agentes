@@ -2,7 +2,8 @@ export const ESTADOS = ['pendiente', 'en_proceso', 'realizado', 'solucionado', '
 export type Estado = (typeof ESTADOS)[number]
 export type Subtarea = { id: string; titulo: string; estado: Estado; depende_de: string[]; enlaces: string[]; creada: string; cerrada: string | null; manual?: boolean }
 export type Tarea = { id: string; titulo: string; estado: Estado; depende_de: string[]; enlaces: string[]; creada: string; solucionada: string | null; cerrada: string | null; subtareas: Subtarea[] }
-export type Archivo = { proyecto: string; formato: 'mst-tareas v1'; actualizado: string; siguiente_tarea: number; estados: string[]; reglas: string[]; tareas: Tarea[] }
+// Los campos que el centro no entiende (p. ej. notas propias del proyecto) se conservan tal cual al reescribir.
+export type Archivo = { proyecto: string; formato: 'mst-tareas v1'; actualizado: string; siguiente_tarea: number; estados: string[]; reglas: string[]; tareas: Tarea[]; [extra: string]: unknown }
 export const MAX_SOLUCIONADAS = 5
 export const REGLAS = [
   'Las tareas nuevas empiezan en pendiente y reciben un identificador que nunca se reutiliza.',
@@ -42,7 +43,7 @@ export function normalizar(crudo: unknown, hoy: string): { archivo: Archivo; pro
       if (ids.has(id)) problemas.push(`Id duplicado: ${id}`)
       ids.add(id)
       if (!esEstado(s.estado)) problemas.push(`Estado desconocido en ${id}`)
-      return { id, titulo: texto(s.titulo), estado: esEstado(s.estado) ? s.estado : 'pendiente', depende_de: listaTexto(s.depende_de), enlaces: listaTexto(s.enlaces), creada: texto(s.creada, hoy), cerrada: typeof s.cerrada === 'string' ? s.cerrada : null, ...(s.manual === true ? { manual: true } : {}) }
+      return { ...s, id, titulo: texto(s.titulo), estado: esEstado(s.estado) ? s.estado : 'pendiente', depende_de: listaTexto(s.depende_de), enlaces: listaTexto(s.enlaces), creada: texto(s.creada, hoy), cerrada: typeof s.cerrada === 'string' ? s.cerrada : null, ...(s.manual === true ? { manual: true } : {}) }
     }
     const tareas = crudo.tareas.flatMap((t, i): Tarea[] => {
       if (!obj(t)) { problemas.push(`Tarea ${i + 1} no es un objeto`); return [] }
@@ -51,11 +52,13 @@ export function normalizar(crudo: unknown, hoy: string): { archivo: Archivo; pro
       ids.add(id)
       if (!esEstado(t.estado)) problemas.push(`Estado desconocido en ${id}`)
       const subtareas = (Array.isArray(t.subtareas) ? t.subtareas : []).map((s, n) => normSub(s, n + 1, id)).filter((s): s is Subtarea => !!s)
-      return [{ id, titulo: texto(t.titulo), estado: esEstado(t.estado) ? t.estado : 'pendiente', depende_de: listaTexto(t.depende_de), enlaces: listaTexto(t.enlaces), creada: texto(t.creada, hoy), solucionada: typeof t.solucionada === 'string' ? t.solucionada : null, cerrada: typeof t.cerrada === 'string' ? t.cerrada : null, subtareas }]
+      return [{ ...t, id, titulo: texto(t.titulo), estado: esEstado(t.estado) ? t.estado : 'pendiente', depende_de: listaTexto(t.depende_de), enlaces: listaTexto(t.enlaces), creada: texto(t.creada, hoy), solucionada: typeof t.solucionada === 'string' ? t.solucionada : null, cerrada: typeof t.cerrada === 'string' ? t.cerrada : null, subtareas }]
     })
     const max = tareas.reduce((n, t) => Math.max(n, partesDeId(t.id)?.tarea ?? 0), 0)
     const siguiente = Number.isInteger(crudo.siguiente_tarea) && Number(crudo.siguiente_tarea) > max ? Number(crudo.siguiente_tarea) : max + 1
-    return { archivo: { proyecto: texto(crudo.proyecto, 'sin nombre'), formato: 'mst-tareas v1', actualizado: texto(crudo.actualizado, hoy), siguiente_tarea: siguiente, estados: [...ESTADOS], reglas: [...REGLAS], tareas }, problemas }
+    // Las reglas son del proyecto: solo se ponen las del centro si el archivo no trae ninguna lista de reglas.
+    const reglas = Array.isArray(crudo.reglas) ? listaTexto(crudo.reglas) : [...REGLAS]
+    return { archivo: { ...crudo, proyecto: texto(crudo.proyecto, 'sin nombre'), formato: 'mst-tareas v1', actualizado: texto(crudo.actualizado, hoy), siguiente_tarea: siguiente, estados: [...ESTADOS], reglas, tareas }, problemas }
   } catch {
     return { archivo: archivoNuevo('sin nombre', hoy), problemas: ['No se pudo interpretar el archivo'] }
   }

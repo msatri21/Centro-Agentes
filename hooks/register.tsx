@@ -16,7 +16,7 @@ import { Cerrojos, archivosCambiados, clave, costoApi, costoComoClaude, debeBusc
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
-import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, esMasiva, filasResumenPanelSesion, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
+import { AMARILLO_MS_POR_DEFECTO, FALLOS_SEGUIDOS_ESCALA, agenteVivo, descripcionCorta, elegirInterprete, INACTIVIDAD_MIN_POR_DEFECTO, MAX_PARALELO, REINTENTOS_ARRANQUE, Registro, Semaforo, contarCambios, duracionCorta, esErrorDeArranque, aplicarAgentesPermitidos, esMasiva, filasResumenPanelSesion, filasVivas, inactivo, lineaAviso, pistaPanel, resumenEstado, tareaLimpia, textoAvisoGrupo, textoBarra, textoEstado, tituloCorto, validarEncargo, type RegistroGuardado, type TrabajoVivo } from './asincrono.ts'
 export { costoApi, costoComoClaude, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, vistaDe } from './nucleo'
 export type { Candidato } from './nucleo'
 
@@ -49,6 +49,7 @@ type Opciones = {
   hermesModels?: string
   aiderModels?: string
   codexModels?: string
+  agentesPermitidos?: string
   presupuestoClaudeTokens?: number
   ntfyTema?: string
   opencodeModels?: string
@@ -76,7 +77,7 @@ const lista = (s: string | undefined, def: string[]) => {
 
 // Lo primero que hace el jefe en /mst: el enlace, el cerebro y las preguntas. Después, el protocolo de siempre.
 const ANTES = (url?: string) => `Antes de empezar, en este orden:
-A. ${url ? `ENLACE: tu PRIMER mensaje es solo este enlace del centro de agentes de este chat (el usuario lo abre y lo ve todo en vivo): ${url}` : 'ENLACE: tu primer mensaje es el enlace del centro de agentes de este chat (el campo "web" que devuelve mcp__centro-agentes__cerebro).'}
+A. ${url ? `ENLACE: tu PRIMER mensaje es solo este enlace del centro de agentes de este chat (el usuario lo abre y lo ve todo en vivo): ${url}` : 'ENLACE: tu primer mensaje es el enlace del centro de agentes de este chat (el campo "web" que devuelve mcp__centro-agentes__cerebro).'} El panel del plugin lleva pocos datos de la sesión; la web lleva el detalle y el histórico.
 B. CEREBRO: llama a mcp__centro-agentes__cerebro con las palabras clave de la tarea. Te dice qué agente y modelo lo hicieron mejor en casos parecidos de CUALQUIER chat; tenlo en cuenta al preguntar y al repartir (el centro ya prefiere a ese agente si dejas trabajador y modelo vacíos).
 C. PREGUNTAS: pregúntale al usuario hasta que te quede claro qué quiere: objetivo, alcance, estilo o tecnología, restricciones y cómo sabrá que está terminado. Usa la herramienta AskUserQuestion si la tienes (2-4 preguntas por ronda, con tu opción recomendada primero); si no, pregunta en el chat. No preguntes lo que la tarea ya dice. Haz las rondas que hagan falta (normalmente 1 o 2). Cuando te quede claro, resume en 2-3 líneas lo que entendiste y pasa al protocolo.`
 
@@ -90,13 +91,15 @@ Agentes (el centro elige solo el mejor modelo de cada uno según su historial; u
 - codex: Codex (OpenAI), agente de código que edita archivos y ejecuta comandos en su carpeta; usa tu cuenta de ChatGPT (cupo gratis limitado) o, de respaldo, los modelos gratis de Ollama: ${ver(m.codex)}.
 - claude: Claude headless (${ver(m.claude)}). Gasta del plan de Claude: el centro solo lo elige si los gratis rinden claramente peor.
 
+Con trabajador y modelo fijos en delegar, el centro usa SOLO ese agente y modelo, sin respaldo; con trabajador vacío o 'auto' elige y cambia si falla. El ajuste agentesPermitidos del usuario limita qué agentes existen (p. ej. solo opencode).
+
 ${ANTES(url)}
 
 Protocolo:
 El centro tiene un catálogo de modelos con sus capacidades; consúltalo con modelos. Si la tarea necesita ver imágenes, se detecta sola o pasa necesita: ['imagen']. Si no hay modelo capaz, no se lanza: no pruebes otro a ciegas, díselo al usuario. Si el usuario propone un modelo («prueba con tal modelo»), comprueba con modelos que existe, úsalo con modelo en delegar y puntúalo al auditar. Si recibes un mensaje que empieza por «[Centro de agentes MST] El usuario propone probar el modelo», haz lo mismo en la próxima tarea que encaje.
-El plan se guarda en mst-tareas.json de la carpeta del proyecto (git lo ignora) y se crea con el primer planificar: planifica un BORRADOR al tener objetivo y subtareas de primer vistazo y púlelo al repartir con planificar { agregar } y { ajustar }. Usa manuales para lo que no se delegas (instalar, respaldar). tareas_estado muestra el estado; planificar { tarea: 'T2' } retoma una tarea. Los agentes no editan mst-tareas.json: anotan trabajo nuevo al final bajo «Propuestas:» y tú decides si agregarlo como hermana o planificarlo como tarea nueva. Reabrir una tarea solucionada es decisión tuya: si cumplía lo pedido crea una nueva; si no, usa planificar { reabrir: ["T2.3"] } para devolver a pendiente la subtarea que falló.
+El plan se guarda en mst-tareas.json de la carpeta del proyecto (git lo ignora) y se crea con el primer planificar: planifica un BORRADOR al tener objetivo y subtareas de primer vistazo y púlelo al repartir con planificar { agregar } y { ajustar }. Usa manuales para lo que no se delegas (instalar, respaldar). tareas_estado muestra el estado; planificar { tarea: 'T2' } retoma una tarea. Título de cada subtarea: «Título corto: detalle» (el panel muestra el título y debajo el detalle en gris). No cambies el plan activo con planificar { tarea } mientras haya encargos de otro plan corriendo: las subtareas se numeran en el plan activo. Los agentes no editan mst-tareas.json: anotan trabajo nuevo al final bajo «Propuestas:» y tú decides si agregarlo como hermana o planificarlo como tarea nueva. Reabrir una tarea solucionada es decisión tuya: si cumplía lo pedido crea una nueva; si no, usa planificar { reabrir: ["T2.3"] } para devolver a pendiente la subtarea que falló.
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
-2. Lanza las subtareas con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Devuelve ids al instante y el trabajo sigue en segundo plano; el centro avisa UNA vez cuando termina el grupo entero. No esperes resultados ni sondees en bucle: mientras puedes hablar con el usuario o hacer otra cosa; usa estado solo si hace falta. Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test) y el centro te da su resultado. Las que dependan de otras puedes mandarlas en el mismo lote: quedan en espera y arrancan solas cuando terminan bien sus previas.
+2. Lanza las subtareas con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Devuelve ids al instante y el trabajo sigue en segundo plano; el centro avisa UNA vez cuando termina el grupo entero. No esperes resultados ni sondees en bucle: mientras puedes hablar con el usuario o hacer otra cosa; usa estado solo si hace falta. Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test): el centro lo ejecuta con Git Bash si está instalado (funcionan tuberías como | tail), si no con cmd. Si OpenCode o Codex se quedan sin cupo, el centro te avisa: pide al usuario que lo reinicie manualmente y usa luego /mst-reactivar, no reintentes a ciegas. Las que dependan de otras puedes mandarlas en el mismo lote: quedan en espera y arrancan solas cuando terminan bien sus previas.
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
    Skills: si una subtarea es de un tipo para el que puede haber una skill (diseño, una plataforma, un formato de archivo, un framework, pruebas en navegador...), llama a mcp__centro-agentes__buscar_skills con unas palabras de la tarea y pasa los nombres que encajen en "skills" del encargo; el agente leerá su SKILL.md y la seguirá (las tareas con skills no van a Ollama, que no lee archivos). Usa tú también tus skills para verificar cuando ayuden (p. ej. un navegador para comprobar una web).
 4. Cuando llegue el aviso único de que terminó el grupo, verifica cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
@@ -298,10 +301,10 @@ async function pendientesDe($: EngineInterface, lista: Trabajo[]) {
 export async function vigilar($: EngineInterface, ahora = Date.now()) {
   const lista = (await read($, trabajos)) ?? []
   const pendientes = await pendientesDe($, lista)
-  const esperando = new Set(pendientes.map(p => p.id))
+  const conConsulta = new Set(pendientes.map(p => p.id))
   for (const t of lista) {
     if (t.estado !== 'corriendo') continue
-    if (inactivo(t, ahora, limiteInactividadMs) && !esperando.has(t.id)) {
+    if (inactivo(t, ahora, limiteInactividadMs) && !conConsulta.has(t.id)) {
       const clave = `${t.id}:inactivo`
       if (!escaladasVigilante.has(clave)) {
         escaladasVigilante.add(clave)
@@ -317,6 +320,9 @@ export async function vigilar($: EngineInterface, ahora = Date.now()) {
     escaladasVigilante.add(clave)
     void $.prompt.submit({ text: `[Centro de agentes MST] ESCALADA (permiso): ${p.agente} pide permiso (${p.categoria}): "${p.texto}". La decisión es del USUARIO en la web: no la apruebes ni actúes tú; sigue con otra cosa.` }).catch(() => undefined)
   }
+  // Reconciliación periódica: un trabajo bajo el lanzador al que ya nadie espera (se perdió su wait en la sesión)
+  // se reengancha aquí también, no solo al restaurar; reenganchados evita repetir el de un mismo trabajo.
+  if (trabajosHuerfanos(lista, esperando).length) await reengancharPendientes($).catch(() => undefined)
 }
 
 type Corrida = { exitCode: number | null; stdout: string; stderr: string; isStdoutTruncated: boolean; cortado?: boolean; fin?: number }
@@ -379,6 +385,7 @@ async function esperarArchivos(
     void $.fs.write(ruta('.cancelar'), por).catch(() => undefined)
   }
   alCortar(cortar)
+  esperando.add(id)
   let reloj: { cancel(): void } = { cancel() {} }
   const armarReloj = () => {
     reloj = $.clock.after(init.timeoutMs, async () => {
@@ -437,6 +444,7 @@ async function esperarArchivos(
       await new Promise<void>(resolver => setTimeout(resolver, SONDEO_MS))
     }
   } finally {
+    esperando.delete(id)
     terminado = true
     reloj.cancel()
     callado?.cancel()
@@ -757,14 +765,14 @@ async function armar($: EngineInterface, filasVista = 30) {
         titulo: 'Historial',
         columnas: [],
         // Dos filas por entrada: la línea del historial y, debajo en gris, la tarea en pocas palabras.
-        filas: [...deAntes, ...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4).flatMap(t => {
+        filas: [...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4).flatMap(t => {
           const tarea = tareaLimpia(t.tarea)
           return [
             { celdas: [lineaHistorial(t)], tono: tonoTrab(t) },
             ...(tarea ? [{ celdas: [`   ${tarea}`], tono: 'lo' as Tono }] : []),
           ]
         }),
-        vacio: 'vacío',
+        vacio: 'sin trabajos terminados en esta sesión',
       },
     ]
 
@@ -789,6 +797,8 @@ async function armar($: EngineInterface, filasVista = 30) {
     ]
     return {
       p, pct, resumen, resumenPanel, secciones, seccionesPanel, lectura, kpis, costos,
+      // La web lleva el histórico entero (antes y ahora); el panel no cambia.
+      historico: [...deAntes, ...lista].map(t => ({ trabajador: t.trabajador, estado: t.estado, ms: t.ms, puntaje: t.puntaje, tokensIn: t.tokensIn, tokensOut: t.tokensOut, tokensCache: t.tokensCache })),
       figuraSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }),
       figuraPanelSvg: figura({ bahias, subtareas: subs.map(s => s.estado), contexto: ctx.percent, titulo, lectura }, { marco: false }),
       tableroSvg: tablero({
@@ -1036,6 +1046,14 @@ export function estadosInterrumpidos(g: Guardado): { id: string; estado: 'pendie
     .map(n => ({ id: `${g.plan!.tarea}.${n}`, estado: 'pendiente' as const }))
 }
 
+// Ids de trabajo cuya espera de archivos está activa: los que quedan fuera y siguen 'corriendo' son huérfanos a reconciliar.
+const esperando = new Set<string>()
+
+// Trabajos corriendo bajo su lanzador a los que nadie espera: el plugin perdió su wait (p. ej. un reenganche que no arrancó).
+export function trabajosHuerfanos(trabajos: { id: string; estado: string; lanzador?: unknown }[], esperando: Set<string>): string[] {
+  return trabajos.filter(t => t.estado === 'corriendo' && t.lanzador && !esperando.has(t.id)).map(t => t.id)
+}
+
 const reenganchados = new Set<string>()
 
 // Tras recargar el plugin, los agentes que seguían bajo su lanzador se reencuentran por sus archivos en disco.
@@ -1277,6 +1295,7 @@ async function escribirWeb($: EngineInterface) {
     relanzables: controles.relanzables,
     pendientes: await pendientesDe($, lista),
     costos: a.costos,
+    historico: a.historico,
     // Sin catálogo la página muestra "Aún no hay catálogo" en lugar de la sección de modelos.
     catalogo: {
       ...(catalogo?.generado ? { generado: catalogo.generado } : {}),
@@ -1344,6 +1363,24 @@ export function estadoAgentes(modelos: Modelos, ahora: number, usadosClaude: num
   })
 }
 const caidosAhora = () => new Set([...caidos].filter(([, t]) => Date.now() - t < CAIDO_MS).map(([k]) => k))
+
+// Un límite de la cuenta (cupo gratis agotado, uso de Codex agotado) no es de un modelo sino de todo el agente.
+// Se avisa al jefe como mucho una vez cada 30 minutos para no llenar el chat.
+let ultimoAvisoCuota = 0
+const AVISO_CUOTA_MS = 30 * 60_000
+export function limiteDeCuenta(agente: string, texto: string, errorTipo?: string): boolean {
+  if (agente === 'opencode') return errorTipo === 'provider.free-limit' || /free usage limit reached/i.test(texto)
+  if (agente === 'codex') return /usage limit/i.test(texto)
+  return false
+}
+
+// Cola de un encargo: con modelo fijo, solo ese candidato; con trabajador fijo, solo sus modelos (ya vienen en preparados);
+// sin nada fijo, los preparados y después los de los demás agentes.
+export function colaDeCandidatos<T extends { trabajador: string; modelo: string }>(preparados: T[], otros: T[], pedido?: string, modeloPedido?: string): T[] {
+  if (modeloPedido) return preparados.filter(c => c.modelo === modeloPedido).slice(0, 1)
+  if (pedido) return preparados
+  return [...preparados, ...otros]
+}
 
 // Orden por defecto entre trabajadores: primero los gratis en la nube, Claude al final.
 const todosLosCandidatos = (m: Modelos): Candidato[] =>
@@ -1468,7 +1505,7 @@ ${PROTOCOLO_AGENTE}`
 // en la caché de plugins. Así cualquier agente que lea archivos puede seguirla.
 // Las rutas usan "/": Windows las acepta y así no hay barras invertidas que escapar.
 export async function rutaSkill($: EngineInterface, nombre: string): Promise<string | undefined> {
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   if (!casa || !/^[\w.:-]+$/.test(nombre)) return undefined
   const [plugin, skill] = nombre.includes(':') ? nombre.split(':', 2) : [undefined, nombre]
   if (!plugin) {
@@ -1488,6 +1525,11 @@ export async function rutaSkill($: EngineInterface, nombre: string): Promise<str
 }
 
 export type SkillInfo = { nombre: string; descripcion: string; ruta: string }
+
+// Carpeta personal en Windows (USERPROFILE) y en Linux/macOS (HOME): sin ella el centro no ve ninguna skill.
+async function casaSkills($: EngineInterface): Promise<string | undefined> {
+  return (await $.env.get('USERPROFILE').catch(() => undefined)) || (await $.env.get('HOME').catch(() => undefined)) || undefined
+}
 
 // Nombre y descripción del encabezado (frontmatter) de un SKILL.md.
 export function leerFrontmatter(texto: string): { name?: string; description?: string } {
@@ -1519,7 +1561,7 @@ export function buscarSkills(lista: SkillInfo[], consulta: string, max = 20): Sk
 
 // Todas las skills instaladas: las tuyas (~/.claude/skills) y las de los plugins (la versión más reciente de cada uno).
 async function listarSkills($: EngineInterface): Promise<SkillInfo[]> {
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   if (!casa) return []
   const dirs = (p: string) => $.fs.list(p).then(l => l.filter(e => e.kind === 'dir').map(e => e.name)).catch(() => [] as string[])
   const leer = async (nombre: string, ruta: string): Promise<SkillInfo | undefined> => {
@@ -1551,7 +1593,7 @@ async function instruccionSkills($: EngineInterface, skills: string[]): Promise<
 // Con la skill ponytail, el encargo lleva también el mapa del código de su carpeta de trabajo: qué funciones y clases hay ya, para reutilizarlas
 // en vez de escribir otras. Lo genera un script de ponytail (local, sin red ni modelo) que vive en ~/.centro-agentes/ponytail; si no está, el encargo sale sin mapa.
 async function mapaDelCodigo($: EngineInterface, cwd: string): Promise<string> {
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   if (!casa) return ''
   const guion = `${casa}/.centro-agentes/ponytail/ponytail-map.js`
   if (!(await $.fs.exists(guion).catch(() => false))) return ''
@@ -1564,7 +1606,7 @@ async function mapaDelCodigo($: EngineInterface, cwd: string): Promise<string> {
 const AVISO_PONYTAIL_KEY = 'ponytailAvisado'
 async function avisoPonytail($: EngineInterface): Promise<string> {
   if (!skillsAuto || (await $.store.get(AVISO_PONYTAIL_KEY).catch(() => undefined))) return ''
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   if (!casa) return ''
   const faltan: string[] = []
   for (const n of ['ponytail', 'ponytail-review', 'ponytail-audit']) if (!(await rutaSkill($, n))) faltan.push(n)
@@ -1635,14 +1677,46 @@ async function cerrarCopia($: EngineInterface, c: { repo: string; carpeta: strin
   }
 }
 
+// Si el intérprete ni siquiera arrancó, el fallo es del centro y no del trabajo: se marca con error_centro para que
+// no cuente como verificación fallida (no bloquea a las dependientes) y el jefe sepa que debe verificar a mano.
+type Corrida = { exitCode: number | null; stdout: string; stderr: string; noArranco?: boolean }
+const noArranco = (err: unknown): Corrida => ({ exitCode: null, stdout: '', stderr: String(err), noArranco: true })
+function resultadoVerificacion(comando: string, r: Corrida, interprete: string) {
+  const salida = sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500)
+  return r.noArranco
+    ? { comando, ok: false, error_centro: true, codigo: null, salida: `El centro no pudo ejecutar la verificación: ${salida}`, interprete }
+    : { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida, interprete }
+}
+
 // Ejecuta el comando de verificación del jefe (tests, build...) donde trabajó el agente.
 async function verificarEn($: EngineInterface, cwd: string | undefined, comando: string) {
   if (cwd && !(await $.fs.exists(cwd).catch(() => true))) return { comando, ok: false, salida: `La carpeta de trabajo no existe: ${cwd}` }
+  // Con Git Bash la verificación puede usar herramientas Unix (tail, grep...); sin él, el camino de siempre con cmd.
+  const esWindows = ((await $.env.get('OS').catch(() => undefined)) ?? '').toLowerCase().startsWith('windows')
+  const candidatas = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files (x86)/Git/bin/bash.exe']
+  const local = (await $.env.get('LOCALAPPDATA').catch(() => undefined))?.trim()
+  if (local) candidatas.push(`${local.replace(/\\/g, '/')}/Programs/Git/bin/bash.exe`)
+  const existentes: string[] = []
+  for (const c of candidatas) if (await $.fs.exists(c).catch(() => false)) existentes.push(c)
+  const interprete = elegirInterprete(esWindows ? 'win32' : 'otro', existentes)
+  // Linux y macOS: sh -c (antes caía en el camino de cmd y fallaba con "Executable not found: cmd").
+  if (interprete.tipo === 'sh') {
+    const r: Corrida = await $.process.run([interprete.ruta, '-c', comando], { cwd, timeoutMs: 5 * 60_000 }).catch(noArranco)
+    return resultadoVerificacion(comando, r, 'sh')
+  }
+  if (interprete.tipo === 'bash') {
+    // Va en un .sh: como argumento, el comando se ejecuta tal cual. pipefail hace que un fallo antes de la tubería
+    // cuente. El .sh se borra solo (`rm -f "$0"`) y conserva el código de salida.
+    const archivo = `${await carpetaChat($)}/verificar-${Date.now().toString(36)}${(seq++).toString(36)}.sh`
+    await $.fs.write(archivo, `set -o pipefail\n${comando}\ncodigo=$?\nrm -f "$0"\nexit $codigo\n`)
+    const r: Corrida = await $.process.run([interprete.ruta, '--noprofile', '--norc', archivo], { cwd, timeoutMs: 5 * 60_000 }).catch(noArranco)
+    return resultadoVerificacion(comando, r, 'bash')
+  }
   // Va en un .cmd: como argumento, las comillas del comando le llegan rotas a cmd. El .cmd se borra solo y conserva el código de salida.
   const archivo = `${await carpetaChat($)}/verificar-${Date.now().toString(36)}${(seq++).toString(36)}.cmd`
   await $.fs.write(archivo, `@echo off\r\nchcp 65001 >nul\r\n${comando}\r\nset "codigo=%errorlevel%"\r\n(goto) 2>nul & del "%~f0" & exit /b %codigo%\r\n`)
-  const r = await $.process.run(['cmd', '/d', '/c', archivo.replace(/\//g, '\\')], { cwd, timeoutMs: 5 * 60_000 }).catch(err => ({ exitCode: null, stdout: '', stderr: String(err) }))
-  return { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida: sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500) }
+  const r: Corrida = await $.process.run(['cmd', '/d', '/c', archivo.replace(/\//g, '\\')], { cwd, timeoutMs: 5 * 60_000 }).catch(noArranco)
+  return resultadoVerificacion(comando, r, interprete.tipo)
 }
 // Modelos con un trabajo en marcha: un encargo nuevo prefiere otro libre, para repartir el trabajo.
 const ocupados = new Map<string, number>()
@@ -1650,6 +1724,15 @@ const semaforoAgentes = new Semaforo(MAX_PARALELO)
 
 // Elige el mejor modelo para el encargo, lo ejecuta y, si falla, cambia solo al siguiente.
 async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: Encargo, timeoutMs: number, sinBloqueo = false) {
+  // Valida el encargo antes de reservar la subtarea, copiar el repo o elegir modelo: un error aquí no gasta ningún agente.
+  const p = await read($, plan)
+  const errorEncargo = validarEncargo(input, {
+    cwdExiste: input.cwd ? await $.fs.exists(input.cwd).catch(() => true) : undefined,
+    esRepoGit: input.cwd ? await $.fs.exists(`${input.cwd}/.git`).catch(() => true) : undefined,
+    subtareasDelPlan: p ? p.subtareas.map(s => s.n) : undefined,
+    tareaActiva: p?.tarea,
+  })
+  if (errorEncargo) return { subtarea: input.subtarea, error: errorEncargo }
   const categoria = String(input.categoria ?? '').toLowerCase().trim() || 'general'
   const necesidades = input.necesita !== undefined ? input.necesita : detectarNecesidades(input.tarea, categoria)
   if (input.subtarea !== undefined && !sinBloqueo) {
@@ -1712,9 +1795,8 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     const o = preferir(ordenar(tabla, categoria, l, caidosAhora(), catalogo).filter(alcanzable), recuerdo)
     return [...o.filter(libre), ...o.filter(c => !libre(c))]
   }
-  // Primero el agente pedido; si no puede, se pasa a otro que sí funcione.
-  let cola = [...preparar(candidatos), ...(pedido ? preparar(todos.filter(c => c.trabajador !== pedido)) : [])]
-  if (modeloPedido) cola = [...cola.filter(c => c.modelo === modeloPedido), ...cola.filter(c => c.modelo !== modeloPedido)]
+  // Con modelo o agente pedidos no se salta a otros: solo el salto a otros agentes ocurre con trabajador vacío o 'auto'.
+  const cola = colaDeCandidatos(preparar(candidatos), pedido ? preparar(todos.filter(c => c.trabajador !== pedido)) : [], pedido, modeloPedido)
 
   // Copia aislada: varios agentes pueden editar el mismo repo a la vez sin pisarse.
   const copia = input.aislar && input.cwd ? await crearCopia($, input.cwd, `s${input.subtarea ?? 'x'}-${Date.now().toString(36)}`) : undefined
@@ -1779,12 +1861,26 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     if (r.ok) break
     // Cancelado a mano desde la web: no se prueba otro modelo.
     if (r.s.texto.includes(`[cortado: ${CANCELADO}]`)) break
-    // Cupo gratis agotado o modelo caído del proveedor: se aparta SOLO ese modelo el tiempo que toque y se pasa al siguiente sin gastar cambios.
+    // Límite de la cuenta (cupo gratis o uso de Codex agotado): no se encadena con otros agentes, que gastarían cupos de pago.
+    // Se aparta todo el agente, se corta la cola y se avisa al jefe para que avise al usuario.
+    if (limiteDeCuenta(c.trabajador, r.s.texto, r.s.errorTipo)) {
+      const ms = r.s.reintentoMs ?? HORA_MS
+      for (const m of modelos[c.trabajador]) caidos.set(clave(c.trabajador, m), Date.now() + ms - CAIDO_MS)
+      motivoAgente.set(c.trabajador, 'sin cupo')
+      if (Date.now() - ultimoAvisoCuota >= AVISO_CUOTA_MS) {
+        ultimoAvisoCuota = Date.now()
+        const aviso = c.trabajador === 'codex'
+          ? '[Centro de agentes MST] Codex se quedó sin cuota de uso (usage limit). Avisa al usuario para que lo reinicie o espere a que se recupere; cuando lo recupere, ejecuta /mst-reactivar y vuelve a lanzar.'
+          : '[Centro de agentes MST] OpenCode se quedó sin cupo gratuito (Free usage limit reached). Avisa al usuario para que lo reinicie manualmente; cuando lo recupere, ejecuta /mst-reactivar y vuelve a lanzar.'
+        void $.prompt.submit({ text: aviso }).catch(() => undefined)
+      }
+      break
+    }
+    // Modelo caído del proveedor: se aparta SOLO ese modelo y se pasa al siguiente del mismo agente sin gastar cambios.
     const tipo = r.s.errorTipo
-    if (tipo === 'provider.free-limit' || tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))) {
-      const ms = tipo === 'provider.free-limit' ? (r.s.reintentoMs ?? HORA_MS) : 30 * 60_000
-      caidos.set(k, Date.now() + ms - CAIDO_MS)
-      motivoAgente.set(c.trabajador, tipo === 'provider.free-limit' ? 'sin cupo gratis' : 'modelo no disponible')
+    if (tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))) {
+      caidos.set(k, Date.now() + 30 * 60_000 - CAIDO_MS)
+      motivoAgente.set(c.trabajador, 'modelo no disponible')
       continue
     }
     // Sin red, fallarán todos los modelos en la nube de ese agente: se aparta el agente entero un rato.
@@ -1846,7 +1942,9 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     ...(verificacion ? { verificacion } : {}),
     salida: r.s.texto.slice(0, 60_000) || '(sin salida)',
     aviso: verificacion
-      ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
+      ? verificacion.error_centro
+        ? `El centro no pudo ejecutar la verificación "${verificacion.comando}" (fallo del centro, no del trabajo): verifícalo tú y llama a registrar_auditoria con este id.`
+        : `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
       : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
     // Para detectar falsos positivos: la clase que decidió el centro, sus motivos y las skills que añadió solo.
     ...(clasificada ? { clasificacion: { clase: claseTarea, motivos: clasificada.motivos, skills_anadidas: anadidas, ...(input.sin_skills_automaticas ? { apagada_por_encargo: true } : {}) } } : {}),
@@ -1928,7 +2026,7 @@ async function lanzarEncargo($: EngineInterface, modelos: Modelos, input: Encarg
 
 export const register: Register = (on, options) => {
   const opt = (options ?? {}) as Opciones
-  const modelos: Modelos = {
+  const modelos: Modelos = aplicarAgentesPermitidos({
     // Los :cloud que entran en el plan Free de Ollama (probados con sesión iniciada); llama3.2:3b es local y queda de respaldo.
     ollama: lista(opt.ollamaModels, ['gpt-oss:120b-cloud', 'beam:cloud', 'gemma4:31b-cloud', 'nemotron-3-super:cloud', 'gpt-oss:20b-cloud', 'llama3.2:3b']),
     // Los modelos gratuitos propios de OpenCode (probados con herramientas MCP): sin Ollama y sin clave.
@@ -1940,7 +2038,7 @@ export const register: Register = (on, options) => {
     codex: lista(opt.codexModels, ['chatgpt', 'ollama/gpt-oss:120b-cloud']),
     aider: lista(opt.aiderModels, ['ollama_chat/gpt-oss:120b-cloud', 'ollama_chat/beam:cloud', 'ollama_chat/gemma4:31b-cloud']),
     claude: lista(opt.claudeModels, ['haiku', 'sonnet', 'opus']),
-  }
+  }, opt.agentesPermitidos) as Modelos
   const timeoutMs = Math.min(10, Math.max(1, Number(opt.timeoutMin ?? 8))) * 60_000
   limiteInactividadMs = Math.min(120, Math.max(10, Number(opt.inactividadMin ?? INACTIVIDAD_MIN_POR_DEFECTO))) * 60_000
   contexto = { modelos, timeoutMs }
@@ -1997,6 +2095,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'mst-informe', description: 'Escribe el informe final de este chat (Markdown) y lo abre' })
     await $.command.register({ name: 'mst-modelos', description: 'Lista los modelos que puede usar cada agente y qué sabe hacer cada uno' })
     await $.command.register({ name: 'mst-estado', description: 'Muestra al instante qué agentes están trabajando, desde cuándo y hace cuánto dieron señal; no pasa por el jefe' })
+    await $.command.register({ name: 'mst-reactivar', description: 'Vuelve a usar los agentes marcados como caídos o sin cupo (después de reiniciarlos)' })
     await $.command.register({ name: 'centro-reset', description: 'Borra los puntajes guardados' })
     // Al empezar cualquier sesión: el panel a la vista y la página web al día; el navegador se abre solo una vez al día.
     if (opt.abrirAlIniciar !== false) {
@@ -2252,6 +2351,15 @@ ${protocolo(modelos)}`
     return { text: textoEstado(lista, registro.todos(), Date.now(), AMARILLO_MS_POR_DEFECTO, limiteInactividadMs / 60_000) }
   })
 
+  // Tras reiniciar OpenCode o Codex, el jefe vuelve a contar con esos agentes sin esperar a que caduquen las marcas.
+  on('command.run', { command: 'mst-reactivar' }, async () => {
+    const marcados = [...caidosAhora(), ...[...salud].filter(([, s]) => !s.ok).map(([t]) => `${t} (sin red)`)]
+    caidos.clear()
+    salud.clear()
+    motivoAgente.clear()
+    return { text: marcados.length ? `Reactivado: ${marcados.join(', ')}. El centro vuelve a usar esos agentes.` : 'No había nada marcado como caído.' }
+  })
+
   on('command.run', { command: 'centro-reset' }, async $ => {
     await $.store.delete(STORE_KEY)
     return { text: 'Puntajes borrados.' }
@@ -2388,7 +2496,8 @@ ${protocolo(modelos)}`
           const previa = await iniciar(j, new Set([...camino, i]))
           return { resultado: await previa.promesa, subtarea: lista[j].subtarea }
         }))
-        const mal = previas.filter(x => !x.resultado?.exito || x.resultado?.verificacion?.ok === false).map(x => x.subtarea)
+        // Una verificación que el centro no pudo ni ejecutar no es un fallo del trabajo: no bloquea a las dependientes.
+        const mal = previas.filter(x => !x.resultado?.exito || (x.resultado?.verificacion?.ok === false && !x.resultado.verificacion.error_centro)).map(x => x.subtarea)
         if (mal.length) {
           const resultado = { subtarea: n, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${n}.` }
           registro.marcar(encargos[i].id, 'fallido', { resultado }, Date.now())

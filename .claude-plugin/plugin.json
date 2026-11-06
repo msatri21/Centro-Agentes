@@ -34,6 +34,12 @@
       "description": "chatgpt = tu cuenta de ChatGPT (inicia sesión con codex login; cupo gratis limitado). ollama/<modelo> = tu Ollama, gratis. Separados por coma, en orden de preferencia",
       "default": "chatgpt,ollama/gpt-oss:120b-cloud"
     },
+    "agentesPermitidos": {
+      "type": "string",
+      "title": "Agentes permitidos",
+      "description": "Solo estos agentes trabajan, y ninguno más ni como respaldo cuando uno falla. Separados por coma: opencode, ollama, hermes, aider, codex, claude. Vacío = todos",
+      "default": ""
+    },
     "presupuestoClaudeTokens": {
       "type": "number",
       "title": "Presupuesto de Claude headless por chat (tokens)",

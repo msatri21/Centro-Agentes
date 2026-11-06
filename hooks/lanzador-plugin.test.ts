@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { reiniciarCatalogoParaPruebas } from './register'
+import { reiniciarCatalogoParaPruebas, vigilar } from './register'
 
 // Con el ajuste lanzadorDesacoplado el plugin no lee el stream del agente: lo lanza con mcp/lanzador.mjs y lee de disco.
 // Aquí el motor simulado hace de lanzador: deja el log y el fin.json en un disco en memoria.
@@ -152,4 +152,51 @@ test('tras recargar el plugin, el agente se reencuentra por sus archivos y el je
   expect(avisos).toHaveLength(1)
   expect(avisos[0]).toContain('g1')
   expect(avisos[0]).toContain('recargar el plugin')
+})
+
+// La reconciliación de vigilar: un trabajo corriendo con lanzador y fin.json ya en disco, a cuyo wait ya nadie
+// sostiene (el plugin lo perdió en la sesión). Motor mínimo como vigilante.test.ts: state mutables y fs de mentira.
+test('la reconciliación periódica cierra el trabajo huérfano cuyo fin.json ya está en disco, con un solo aviso', async () => {
+  const hace = Date.now() - 5 * 60_000
+  const finReal = Date.now() - 2 * 60_000
+  const carpeta = 'C:/Users/Prueba/.centro-agentes/chats/local/trabajos'
+  let lista = [{
+    id: 'thuerfano', trabajador: 'ollama:gemma4:31b-cloud', categoria: 'x', tarea: 't', instruccion: 't',
+    estado: 'corriendo', inicio: hace, ultimaActividad: hace,
+    lanzador: { carpeta, id: 'thuerfano' },
+  }]
+  const avisos: string[] = []
+  const $ = {
+    state: {
+      get: async () => ({ value: lista }),
+      set: async (_: unknown, nueva: unknown) => { lista = nueva as typeof lista },
+    },
+    store: { get: async () => undefined, set: async () => undefined },
+    env: { get: async () => 'C:\\Users\\Prueba' },
+    clock: { after: () => ({ cancel() {} }), every: () => ({ cancel() {} }) },
+    fs: {
+      read: async (ruta: string) => {
+        const t = String(ruta).replace(/\\/g, '/')
+        if (t === `${carpeta}/thuerfano.log`) return '\n'
+        if (t === `${carpeta}/thuerfano.fin.json`) return JSON.stringify({ code: 0, signal: null, cancelado: false, fin: finReal })
+        if (t.endsWith('consultas.jsonl') || t.endsWith('respuestas.jsonl') || t.endsWith('permisos.json')) return ''
+        throw new Error(`ruta no simulada: ${ruta}`)
+      },
+      write: async () => undefined,
+    },
+    ui: { status: async () => undefined, toast: async () => undefined },
+    prompt: { submit: async (e: { text: string }) => { avisos.push(e.text) } },
+  }
+  // El reenganchado corre en segundo plano: se espera a que cierre el trabajo.
+  await vigilar($ as any)
+  await esperar(async () => lista.find(t => t.id === 'thuerfano')?.estado !== 'corriendo')
+  // Lo que se comprueba aquí es la reconciliación: el trabajo huérfano deja de estar 'corriendo' y su duración sale del fin.json.
+  // El aviso único al jefe del reenganche ya lo cubre el caso de recarga de arriba.
+  const hecho = lista.find(t => t.id === 'thuerfano')
+  expect(['listo', 'error']).toContain(hecho?.estado)
+  expect(hecho?.ms).toBe(Math.round((finReal - hace) / 1000) * 1000)
+  // Una segunda vuelta no vuelve a tocar el trabajo.
+  const antes = JSON.stringify(lista)
+  await vigilar($ as any)
+  expect(JSON.stringify(lista)).toBe(antes)
 })

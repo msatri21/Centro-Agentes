@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from '../hooks/nucleo.ts'
+import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esAvisoDelProveedor, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, respuestaRescatable, sinAnsi, textoUtil, vistaDe } from '../hooks/nucleo.ts'
 import { paginaCentro } from '../hooks/vista.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
 import { consultar as consultarCerebro, preferir, recomendar, registrar } from '../hooks/cerebro.ts'
@@ -324,6 +324,9 @@ async function verificarEn(cwd, comando) {
   if (shell) fs.writeFileSync(archivo, `@echo off\r\nchcp 65001 >nul\r\n${comando}\r\n`)
   const r = await correr(shell ? ['cmd', '/d', '/c', archivo] : ['sh', '-c', comando], { cwd, timeoutMs: 5 * 60_000, silencioMs: 5 * 60_000 })
   if (shell) fs.rmSync(archivo, { force: true })
+  // Si el intérprete no arrancó (spawn ENOENT: sin código o con uno negativo), el fallo es del centro, no del trabajo: no bloquea a las dependientes.
+  if (!r.cortado && (r.exitCode === null || r.exitCode < 0) && /\bspawn\b|ENOENT|EACCES/.test(r.stderr))
+    return { comando, ok: false, error_centro: true, codigo: null, salida: `El centro no pudo ejecutar la verificación: ${sinAnsi(r.stderr).trim().slice(-500)}` }
   return { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida: sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500) }
 }
 
@@ -398,7 +401,8 @@ async function intentar(c, input) {
     : c.trabajador === 'codex' ? leerCodex(r.stdout)
     : leerClaude(r.stdout)
   const sinTexto = ['hermes', 'aider', 'codex'].includes(c.trabajador) && !s.texto
-  const ok = r.exitCode === 0 && !r.cortado && !/^\[error\]/.test(s.texto.trim()) && !sinTexto
+  // Una salida que solo es un aviso del proveedor ("You need to be signed in to Ollama…") no es un éxito.
+  const ok = r.exitCode === 0 && !r.cortado && !/^\[error\]/.test(s.texto.trim()) && !sinTexto && !esAvisoDelProveedor(s.texto)
   const err = ['ollama', 'hermes', 'aider', 'codex'].includes(c.trabajador) ? (ok ? '' : sinAnsi(r.stderr).trim()) : r.stderr.trim()
   if (r.cortado) s.texto += `\n[cortado: ${r.cortado}]`
   if (err) s.texto += `\n[stderr] ${corto(err, 1500)}`
@@ -484,6 +488,7 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
   const cambios = []
   const reintentos = []
   let r
+  let rescate
   let elegido = cola[0]
   for (const c of cola) {
     if (cambios.length > MAX_CAMBIOS) break
@@ -511,12 +516,24 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     // Cupo gratis agotado o modelo caído del proveedor: se aparta SOLO ese modelo el tiempo que toque y se pasa al siguiente sin gastar cambios.
     // Cupo gratis agotado o modelo caído del proveedor: errorTipo solo lo pone leerOpencode, así que solo afecta a opencode.
     const tipo = r.s.errorTipo
-    if (tipo === 'provider.free-limit' || tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))) {
+    const deProveedor = tipo === 'provider.free-limit' || tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))
+    if (deProveedor) {
       const ms = tipo === 'provider.free-limit' ? (r.s.reintentoMs ?? 60 * 60_000) : 30 * 60_000
       caidos.set(k, Date.now() + ms - CAIDO_MS)
       motivo.set(c.trabajador, tipo === 'provider.free-limit' ? 'sin cupo gratis' : 'modelo no disponible')
-      continue
     }
+    // Si falló después de escribir una respuesta completa, esa respuesta es el resultado: no se descarta ni se pasa
+    // al respaldo, y la auditoría queda a nombre de este trabajador (el id devuelto es el de este intento).
+    if (respuestaRescatable(r.s.texto)) {
+      const error = r.s.texto.match(/\[error\] ([^\n]*)/)?.[1] ?? r.s.texto.match(/\[stderr\] ([^\n]*)/)?.[1] ?? 'error al terminar'
+      rescate = `${k} terminó con error (${corto(error, 160)}) después de responder; se conserva su respuesta.`
+      r = { ...r, ok: true, s: { ...r.s, texto: `${textoUtil(r.s.texto)}\n\n[aviso del centro] ${rescate}` } }
+      const t = trabajos.find(x => x.id === r.id)
+      if (t) Object.assign(t, { estado: 'listo', salida: corto(r.s.texto.trim(), 1500) })
+      guardar()
+      break
+    }
+    if (deProveedor) continue
     if (esErrorDeCuenta(r.s.texto)) {
       for (const m of MODELOS[c.trabajador]) caidos.set(clave(c.trabajador, m), Date.now() + 60 * 60_000 - CAIDO_MS)
       motivo.set(c.trabajador, 'clave caducada')
@@ -568,6 +585,7 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     ...(avisoCapacidad ? { aviso_capacidad: avisoCapacidad } : {}),
     ...(cambios.length ? { cambios } : {}),
     ...(reintentos.length ? { reintentos } : {}),
+    ...(rescate ? { rescate } : {}),
     ...(input.tras ? { tras: input.tras } : {}),
     ...(aislado ? { copia: aislado } : {}),
     ...(aislado?.escalar ? { escalar: aislado.escalar, aviso_masiva: aislado.aviso_masiva } : {}),
@@ -575,7 +593,9 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     salida: r.s.texto.slice(0, 30_000) || '(sin salida)',
     ...(aviso_archivo ? { aviso_archivo } : {}),
     aviso: verificacion
-      ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
+      ? verificacion.error_centro
+        ? `El centro no pudo ejecutar la verificación "${verificacion.comando}" (fallo del centro, no del trabajo): verifícalo tú y llama a registrar_auditoria con este id.`
+        : `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
       : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
   }
 }
@@ -657,7 +677,7 @@ function delegarVarios(lista) {
     const p = (async () => {
       if (!deps.length || lote.length < deps.length) return lanzarEncargo(t, grupo, encargos[i])
       const previos = await Promise.all(lote.map(async j => ({ resultado: await (await iniciar(j, new Set([...camino, i]))).promesa, subtarea: lista[j].subtarea })))
-      const mal = previos.filter(x => !x.resultado?.exito || x.resultado?.verificacion?.ok === false).map(x => x.subtarea)
+      const mal = previos.filter(x => !x.resultado?.exito || (x.resultado?.verificacion?.ok === false && !x.resultado.verificacion.error_centro)).map(x => x.subtarea)
       if (mal.length) {
         const resultado = { subtarea: t.subtarea, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${t.subtarea}.` }
         registro.marcar(encargos[i].id, 'fallido', { resultado }, Date.now()); avisarFinGrupo(grupo)

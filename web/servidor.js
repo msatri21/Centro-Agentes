@@ -21,7 +21,8 @@ const claveActual = () => {
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
 // Índice de todos los chats: nombre (el <title> de su página), progreso de su plan y cuándo se actualizó, el más reciente primero.
-function indice(clave) {
+// Las sesiones de un mismo chat (mismo proyecto y nombre; Claude Code cambia el id al compactar) van en una sola entrada (web/agrupar-chats.mjs).
+function indice(clave, agrupar) {
   let ids = []
   try {
     ids = fs.readdirSync(chats).filter(id => /^[\w-]{1,100}$/.test(id))
@@ -29,10 +30,13 @@ function indice(clave) {
   const filas = ids
     .map(id => {
       const dir = path.join(chats, id)
-      let en = 0, titulo = id, objetivo = '', hechas = 0, total = 0, trabajos = 0
+      let en = 0, titulo = id, objetivo = '', hechas = 0, total = 0, trabajos = 0, nombre = '', proyecto = '', modificado = 0
       try {
         en = fs.statSync(path.join(dir, 'centro.html')).mtimeMs
         titulo = (fs.readFileSync(path.join(dir, 'centro.html'), 'utf8').match(/<title>([^<]*)<\/title>/) ?? [])[1] ?? id
+      } catch {}
+      try {
+        modificado = fs.statSync(path.join(dir, 'estado.json')).mtimeMs
       } catch {}
       try {
         const g = JSON.parse(fs.readFileSync(path.join(dir, 'estado.json'), 'utf8'))
@@ -40,16 +44,28 @@ function indice(clave) {
         total = g.plan?.subtareas?.length ?? 0
         hechas = (g.plan?.subtareas ?? []).filter(s => s.estado === 'solucionado' || s.estado === 'hecha').length
         trabajos = (g.trabajos ?? []).length
+        // El nombre del chat y la carpeta de su proyecto (la raíz del plan): lo que junta sus sesiones.
+        nombre = typeof g.nombre === 'string' ? g.nombre : ''
+        proyecto = String(g.plan?.raiz ?? '').split(/[\\/]/).filter(Boolean).pop() ?? ''
       } catch {}
-      return { id, en, titulo, objetivo, hechas, total, trabajos }
+      return { id, en, titulo, objetivo, hechas, total, trabajos, nombre, proyecto, modificado: modificado || en }
     })
     .filter(f => f.en)
-    .sort((a, b) => b.en - a.en)
+  const porId = new Map(filas.map(f => [f.id, f]))
+  const grupos = agrupar(filas.map(({ id, nombre, proyecto, modificado }) => ({ id, nombre, proyecto, modificado })))
   const t = encodeURIComponent(clave)
   const vino = '#9e2a3a'
-  const cuerpo = filas.length
-    ? filas
-        .map(f => `<a class="chat" href="/?t=${t}&s=${encodeURIComponent(f.id)}"><i>${new Date(f.en).toLocaleString('es')}</i><strong>${esc(f.titulo.split(' · ').slice(0, 2).join(' · '))}</strong><span>${esc(f.objetivo || 'sin plan')}</span><small>${f.total ? `${f.hechas}/${f.total} subtareas · ` : ''}${f.trabajos} trabajos</small><b style="width:${f.total ? Math.round((f.hechas / f.total) * 100) : 0}%"></b></a>`)
+  const enlace = id => `/?t=${t}&s=${encodeURIComponent(id)}`
+  const cuerpo = grupos.length
+    ? grupos
+        .map(g => {
+          const f = porId.get(g.id)
+          const sesiones = 1 + g.anteriores.length
+          const anteriores = g.anteriores.length
+            ? `<nav class="anteriores">${g.anteriores.map(a => `<a href="${enlace(a.id)}">sesión anterior (${esc(new Date(a.modificado).toLocaleString('es'))})</a>`).join('')}</nav>`
+            : ''
+          return `<div class="chat"><a class="ir" href="${enlace(f.id)}"><i>${new Date(g.modificado).toLocaleString('es')}${sesiones > 1 ? ` · ${sesiones} sesiones` : ''}</i><strong>${esc(f.titulo.split(' · ').slice(0, 2).join(' · '))}</strong><span>${esc(f.objetivo || 'sin plan')}</span><small>${f.total ? `${f.hechas}/${f.total} subtareas · ` : ''}${f.trabajos} trabajos</small></a>${anteriores}<b style="width:${f.total ? Math.round((f.hechas / f.total) * 100) : 0}%"></b></div>`
+        })
         .join('')
     : '<p>Aún no hay chats con centro.</p>'
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="10"><title>Todos los chats · Centro de agentes MST</title><style>
@@ -60,11 +76,13 @@ h1{font:700 clamp(36px,5vw,68px)/0.95 'Segoe UI',system-ui,sans-serif;letter-spa
 main{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;padding-bottom:40px}
 .chat{position:relative;display:block;border:1px solid #2a2a2a;padding:18px 20px 22px;color:inherit;text-decoration:none;overflow:hidden}
 .chat:hover{border-color:${vino}}
+.ir{display:block;color:inherit;text-decoration:none}
+.anteriores{margin:12px 0 0;padding-top:8px;border-top:1px solid #2a2a2a}.anteriores a{display:block;padding:2px 0;font-size:12px;color:#5c5c5c;text-decoration:none}.anteriores a:hover{color:#a3a3a3}
 .chat i{display:block;font-style:normal;font-size:12px;color:${vino};margin-bottom:10px}
 .chat strong{display:block;font:600 19px 'Segoe UI',system-ui,sans-serif;color:#f5f5f5;margin-bottom:6px}
 .chat span{display:block;color:#a3a3a3;margin-bottom:10px}.chat small{color:#8a8a8a}
 .chat b{position:absolute;left:0;bottom:0;height:3px;background:${vino}}
-</style></head><body><header><p class="rotulo">/mst · orquestador de agentes · ${filas.length} chats · <a href="/grafo-todos?t=${t}" style="color:${vino}">verlos todos en un grafo</a></p><h1>Todos los <b>chats</b></h1></header><main>${cuerpo}</main></body></html>`
+</style></head><body><header><p class="rotulo">/mst · orquestador de agentes · ${grupos.length} chats ·<a href="/grafo-todos?t=${t}" style="color:${vino}">verlos todos en un grafo</a></p><h1>Todos los <b>chats</b></h1></header><main>${cuerpo}</main></body></html>`
 }
 
 // Los chats con actividad en las últimas 24 h, con los datos que su página ya trae para el grafo (el bloque "datos").
@@ -175,7 +193,9 @@ const servidor = http.createServer((req, res) => {
     return
   }
   if (req.method === 'GET' && url.pathname === '/todos') {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(indice(clave))
+    import('./agrupar-chats.mjs')
+      .then(m => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(indice(clave, m.agruparChats)))
+      .catch(e => res.writeHead(500).end(String(e)))
     return
   }
   // El grafo de todos los chats: la página la escribe el plugin junto a la carpeta de chats; los datos se leen de la página de cada chat.
