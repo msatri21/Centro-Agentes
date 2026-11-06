@@ -1677,6 +1677,17 @@ async function cerrarCopia($: EngineInterface, c: { repo: string; carpeta: strin
   }
 }
 
+// Si el intérprete ni siquiera arrancó, el fallo es del centro y no del trabajo: se marca con error_centro para que
+// no cuente como verificación fallida (no bloquea a las dependientes) y el jefe sepa que debe verificar a mano.
+type Corrida = { exitCode: number | null; stdout: string; stderr: string; noArranco?: boolean }
+const noArranco = (err: unknown): Corrida => ({ exitCode: null, stdout: '', stderr: String(err), noArranco: true })
+function resultadoVerificacion(comando: string, r: Corrida, interprete: string) {
+  const salida = sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500)
+  return r.noArranco
+    ? { comando, ok: false, error_centro: true, codigo: null, salida: `El centro no pudo ejecutar la verificación: ${salida}`, interprete }
+    : { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida, interprete }
+}
+
 // Ejecuta el comando de verificación del jefe (tests, build...) donde trabajó el agente.
 async function verificarEn($: EngineInterface, cwd: string | undefined, comando: string) {
   if (cwd && !(await $.fs.exists(cwd).catch(() => true))) return { comando, ok: false, salida: `La carpeta de trabajo no existe: ${cwd}` }
@@ -1688,19 +1699,24 @@ async function verificarEn($: EngineInterface, cwd: string | undefined, comando:
   const existentes: string[] = []
   for (const c of candidatas) if (await $.fs.exists(c).catch(() => false)) existentes.push(c)
   const interprete = elegirInterprete(esWindows ? 'win32' : 'otro', existentes)
+  // Linux y macOS: sh -c (antes caía en el camino de cmd y fallaba con "Executable not found: cmd").
+  if (interprete.tipo === 'sh') {
+    const r: Corrida = await $.process.run([interprete.ruta, '-c', comando], { cwd, timeoutMs: 5 * 60_000 }).catch(noArranco)
+    return resultadoVerificacion(comando, r, 'sh')
+  }
   if (interprete.tipo === 'bash') {
     // Va en un .sh: como argumento, el comando se ejecuta tal cual. pipefail hace que un fallo antes de la tubería
     // cuente. El .sh se borra solo (`rm -f "$0"`) y conserva el código de salida.
     const archivo = `${await carpetaChat($)}/verificar-${Date.now().toString(36)}${(seq++).toString(36)}.sh`
     await $.fs.write(archivo, `set -o pipefail\n${comando}\ncodigo=$?\nrm -f "$0"\nexit $codigo\n`)
-    const r = await $.process.run([interprete.ruta, '--noprofile', '--norc', archivo], { cwd, timeoutMs: 5 * 60_000 }).catch(err => ({ exitCode: null, stdout: '', stderr: String(err) }))
-    return { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida: sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500), interprete: 'bash' }
+    const r: Corrida = await $.process.run([interprete.ruta, '--noprofile', '--norc', archivo], { cwd, timeoutMs: 5 * 60_000 }).catch(noArranco)
+    return resultadoVerificacion(comando, r, 'bash')
   }
   // Va en un .cmd: como argumento, las comillas del comando le llegan rotas a cmd. El .cmd se borra solo y conserva el código de salida.
   const archivo = `${await carpetaChat($)}/verificar-${Date.now().toString(36)}${(seq++).toString(36)}.cmd`
   await $.fs.write(archivo, `@echo off\r\nchcp 65001 >nul\r\n${comando}\r\nset "codigo=%errorlevel%"\r\n(goto) 2>nul & del "%~f0" & exit /b %codigo%\r\n`)
-  const r = await $.process.run(['cmd', '/d', '/c', archivo.replace(/\//g, '\\')], { cwd, timeoutMs: 5 * 60_000 }).catch(err => ({ exitCode: null, stdout: '', stderr: String(err) }))
-  return { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida: sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500), interprete: interprete.tipo }
+  const r: Corrida = await $.process.run(['cmd', '/d', '/c', archivo.replace(/\//g, '\\')], { cwd, timeoutMs: 5 * 60_000 }).catch(noArranco)
+  return resultadoVerificacion(comando, r, interprete.tipo)
 }
 // Modelos con un trabajo en marcha: un encargo nuevo prefiere otro libre, para repartir el trabajo.
 const ocupados = new Map<string, number>()
@@ -1926,7 +1942,9 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     ...(verificacion ? { verificacion } : {}),
     salida: r.s.texto.slice(0, 60_000) || '(sin salida)',
     aviso: verificacion
-      ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
+      ? verificacion.error_centro
+        ? `El centro no pudo ejecutar la verificación "${verificacion.comando}" (fallo del centro, no del trabajo): verifícalo tú y llama a registrar_auditoria con este id.`
+        : `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
       : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
     // Para detectar falsos positivos: la clase que decidió el centro, sus motivos y las skills que añadió solo.
     ...(clasificada ? { clasificacion: { clase: claseTarea, motivos: clasificada.motivos, skills_anadidas: anadidas, ...(input.sin_skills_automaticas ? { apagada_por_encargo: true } : {}) } } : {}),
@@ -2478,7 +2496,8 @@ ${protocolo(modelos)}`
           const previa = await iniciar(j, new Set([...camino, i]))
           return { resultado: await previa.promesa, subtarea: lista[j].subtarea }
         }))
-        const mal = previas.filter(x => !x.resultado?.exito || x.resultado?.verificacion?.ok === false).map(x => x.subtarea)
+        // Una verificación que el centro no pudo ni ejecutar no es un fallo del trabajo: no bloquea a las dependientes.
+        const mal = previas.filter(x => !x.resultado?.exito || (x.resultado?.verificacion?.ok === false && !x.resultado.verificacion.error_centro)).map(x => x.subtarea)
         if (mal.length) {
           const resultado = { subtarea: n, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${n}.` }
           registro.marcar(encargos[i].id, 'fallido', { resultado }, Date.now())

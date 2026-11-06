@@ -699,7 +699,7 @@ test('aislar crea una copia git para el agente, guarda sus cambios en su rama y 
       : a.includes('rev-parse HEAD') ? `${heads++ ? 'nuevo' : 'base'}\n`
       : a.includes('diff --stat') ? ' a.txt | 1 +'
       : a.includes('diff --name-status') ? 'M\ta.txt'
-      : a.includes('verificar-') ? '3 pass'
+      : e.argv[0] === 'sh' ? '3 pass'
       : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false } }
   })
@@ -711,7 +711,9 @@ test('aislar crea una copia git para el agente, guarda sus cambios en su rama y 
   expect(d.copia.juntar).toContain(`merge ${d.copia.rama}`)
   expect(d.verificacion).toMatchObject({ comando: 'npm test', ok: true, salida: '3 pass' })
   expect(d.aviso).toContain('superada')
-  expect(escritos.some(t => t.includes('npm test'))).toBe(true)
+  // Fuera de Windows (aquí no se simula OS=Windows_NT) va por sh -c y no por un .cmd.
+  expect(runs).toContainEqual(['sh', '-c', 'npm test'])
+  expect(escritos.some(t => t.includes('npm test'))).toBe(false)
 })
 
 test('si el agente ya hizo su propio commit, la copia se conserva y los cambios se miden contra la base', { options: { lanzadorDesacoplado: false } }, async ($, on) => {
@@ -771,6 +773,47 @@ test('delegar_varios lanza sola la subtarea que espera a otra del lote cuando es
     { subtarea: 1, categoria: 'y', trabajador: 'claude', tarea: 'rompe' },
     { subtarea: 2, categoria: 'y', trabajador: 'claude', tarea: 'segunda' },
   ])).resultados
+  expect(mal[1].error).toContain('No se lanzó')
+})
+
+test('verificar en Linux usa sh -c; si el centro no puede ejecutarla no bloquea a las dependientes, si no pasa sí', async ($, on) => {
+  base(on)
+  let modo: 'pasa' | 'no-arranca' | 'falla' = 'pasa'
+  const comandos: string[][] = []
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout', text: 'ok' }
+    return { value: { code: 0, signal: null } }
+  })
+  on('process.run', async (_$: any, e: any) => {
+    if (e.argv[0] !== 'sh') return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }
+    comandos.push(e.argv)
+    if (modo === 'no-arranca') throw new Error('ENOENT: Executable not found in $PATH: "sh"')
+    return { value: { exitCode: modo === 'pasa' ? 0 : 1, stdout: modo === 'pasa' ? '3 pass' : '1 fail', stderr: '', isStdoutTruncated: false } }
+  })
+  const lote = (cat: string) => delegarVariosYEsperar($, [
+    { subtarea: 1, categoria: cat, trabajador: 'claude', tarea: 'primera', verificar: 'go vet ./... && go test ./...' },
+    { subtarea: 2, categoria: cat, trabajador: 'claude', tarea: 'segunda' },
+  ]).then(r => r.resultados)
+  await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'o', subtareas: ['a', 'b'], dependencias: { 2: [1] } } })
+
+  const bien = await lote('x')
+  expect(comandos[0]).toEqual(['sh', '-c', 'go vet ./... && go test ./...'])
+  expect(bien[0].verificacion).toMatchObject({ ok: true, interprete: 'sh' })
+  expect(bien[1].exito).toBe(true)
+
+  modo = 'no-arranca'
+  await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'o2', subtareas: ['a', 'b'], dependencias: { 2: [1] } } })
+  const centro = await lote('y')
+  expect(centro[0].verificacion).toMatchObject({ ok: false, error_centro: true })
+  expect(centro[0].aviso).toContain('fallo del centro')
+  expect(centro[1].error).toBeUndefined()
+  expect(centro[1].exito).toBe(true)
+
+  modo = 'falla'
+  await $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'o3', subtareas: ['a', 'b'], dependencias: { 2: [1] } } })
+  const mal = await lote('z')
+  expect(mal[0].verificacion).toMatchObject({ ok: false, codigo: 1 })
+  expect(mal[0].verificacion.error_centro).toBeUndefined()
   expect(mal[1].error).toContain('No se lanzó')
 })
 

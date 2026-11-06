@@ -324,6 +324,9 @@ async function verificarEn(cwd, comando) {
   if (shell) fs.writeFileSync(archivo, `@echo off\r\nchcp 65001 >nul\r\n${comando}\r\n`)
   const r = await correr(shell ? ['cmd', '/d', '/c', archivo] : ['sh', '-c', comando], { cwd, timeoutMs: 5 * 60_000, silencioMs: 5 * 60_000 })
   if (shell) fs.rmSync(archivo, { force: true })
+  // Si el intérprete no arrancó (spawn ENOENT: sin código o con uno negativo), el fallo es del centro, no del trabajo: no bloquea a las dependientes.
+  if (!r.cortado && (r.exitCode === null || r.exitCode < 0) && /\bspawn\b|ENOENT|EACCES/.test(r.stderr))
+    return { comando, ok: false, error_centro: true, codigo: null, salida: `El centro no pudo ejecutar la verificación: ${sinAnsi(r.stderr).trim().slice(-500)}` }
   return { comando, ok: r.exitCode === 0, codigo: r.exitCode, salida: sinAnsi(`${r.stdout}\n${r.stderr}`).trim().slice(-2500) }
 }
 
@@ -590,7 +593,9 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     salida: r.s.texto.slice(0, 30_000) || '(sin salida)',
     ...(aviso_archivo ? { aviso_archivo } : {}),
     aviso: verificacion
-      ? `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
+      ? verificacion.error_centro
+        ? `El centro no pudo ejecutar la verificación "${verificacion.comando}" (fallo del centro, no del trabajo): verifícalo tú y llama a registrar_auditoria con este id.`
+        : `Verificación ${verificacion.ok ? 'superada' : 'FALLIDA'} con "${verificacion.comando}". Revisa y llama a registrar_auditoria con este id.`
       : 'Resultado sin verificar. Audítalo y llama a registrar_auditoria con este id.',
   }
 }
@@ -672,7 +677,7 @@ function delegarVarios(lista) {
     const p = (async () => {
       if (!deps.length || lote.length < deps.length) return lanzarEncargo(t, grupo, encargos[i])
       const previos = await Promise.all(lote.map(async j => ({ resultado: await (await iniciar(j, new Set([...camino, i]))).promesa, subtarea: lista[j].subtarea })))
-      const mal = previos.filter(x => !x.resultado?.exito || x.resultado?.verificacion?.ok === false).map(x => x.subtarea)
+      const mal = previos.filter(x => !x.resultado?.exito || (x.resultado?.verificacion?.ok === false && !x.resultado.verificacion.error_centro)).map(x => x.subtarea)
       if (mal.length) {
         const resultado = { subtarea: t.subtarea, error: `No se lanzó: la subtarea ${mal.join(', ')} de la que depende falló. Rehazla y vuelve a lanzar la ${t.subtarea}.` }
         registro.marcar(encargos[i].id, 'fallido', { resultado }, Date.now()); avisarFinGrupo(grupo)
