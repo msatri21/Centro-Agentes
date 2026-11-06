@@ -25,6 +25,31 @@ await prueba('crea archivo inicial y marca creado', async () => {
   assert.equal(fs.existsSync(path.join(r, `${ARCHIVO}.lock`)), false)
   fs.rmSync(r, { recursive: true, force: true })
 })
+await prueba('conserva las reglas del proyecto y los campos que el centro no entiende', async () => {
+  const r = temporal(), reglas = ['Solo tareas de construcción. Claude planea; los agentes de MST ejecutan.', 'Otra regla del ADR 007.']
+  fs.writeFileSync(path.join(r, ARCHIVO), JSON.stringify({ proyecto: 'Igris', formato: 'mst-tareas v1', siguiente_tarea: 2, reglas, notas: { adr: 7 },
+    tareas: [{ id: 'T1', titulo: 'previa', estado: 'pendiente', prioridad: 'alta', subtareas: [{ id: 'T1.1', titulo: 's', estado: 'pendiente', responsable: 'yo' }] }] }))
+  const x = await transaccion(r, 'p', crear('nueva'), { hoy: '2026-01-02' })
+  assert.equal(x.ok, true)
+  const y = await transaccion(r, 'p', { tipo: 'estado', id: 'T1.1', estado: 'en_proceso' }, { hoy: '2026-01-02' })
+  assert.equal(y.ok, true, JSON.stringify(y))
+  const a = JSON.parse(fs.readFileSync(path.join(r, ARCHIVO)))
+  assert.deepEqual(a.reglas, reglas)
+  assert.deepEqual(a.notas, { adr: 7 })
+  assert.equal(a.tareas[0].prioridad, 'alta'); assert.equal(a.tareas[0].subtareas[0].responsable, 'yo')
+  assert.equal(a.tareas[0].subtareas[0].estado, 'en_proceso'); assert.equal(a.tareas[1].titulo, 'nueva')
+  // La copia .bak se avisa la primera vez que aparece y no después.
+  assert.ok(x.avisos.some(m => m.includes('.bak')), JSON.stringify(x.avisos)); assert.ok(!y.avisos.some(m => m.includes('.bak')))
+  fs.rmSync(r, { recursive: true, force: true })
+})
+await prueba('un archivo nuevo lleva las reglas por defecto y una lista vacía se respeta', async () => {
+  const r = temporal(); await transaccion(r, 'p', crear('uno'), { hoy: '2026-01-02' })
+  assert.ok(JSON.parse(fs.readFileSync(path.join(r, ARCHIVO))).reglas.length > 0)
+  fs.writeFileSync(path.join(r, ARCHIVO), JSON.stringify({ proyecto: 'p', siguiente_tarea: 1, reglas: [], tareas: [] }))
+  await transaccion(r, 'p', crear('dos'), { hoy: '2026-01-02' })
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(r, ARCHIVO))).reglas, [])
+  fs.rmSync(r, { recursive: true, force: true })
+})
 await prueba('operación fallida no crea archivo', async () => {
   const r = temporal(), x = await transaccion(r, 'p', { tipo: 'estado', id: 'T9', estado: 'realizado' })
   assert.equal(x.ok, false); assert.equal(fs.existsSync(path.join(r, ARCHIVO)), false); fs.rmSync(r, { recursive: true, force: true })
