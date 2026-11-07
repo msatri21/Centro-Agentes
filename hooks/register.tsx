@@ -115,10 +115,11 @@ Luego audita los tres resultados con el mismo criterio (corrección, completitud
 const ver = (l: string[]) => l.map(x => x || 'por defecto').join(', ')
 
 const corto = (t: string, n = 60) => (t.length > n ? t.slice(0, n - 1) + '…' : t)
-export const filasPanelVivo = (trabajos: TrabajoVivo[], ahora: number) => filasVivas(trabajos, ahora).map(v => ({
+export const filasPanelVivo = (trabajos: (TrabajoVivo & { skills?: string[] })[], ahora: number) => filasVivas(trabajos, ahora).map(v => ({
   agente: v.agente,
   modelo: v.modelo,
-  tarea: tituloCorto(v.tarea ?? '', 8),
+  // Las skills que sigue el agente (las pedidas y las que añade el centro, como ponytail) van delante con ✦.
+  tarea: conSkills(trabajos.find(t => t.id === v.id)?.skills, tituloCorto(v.tarea ?? '', 8)),
   tiempo: duracionCorta(v.trabajandoMs),
   color: v.amarillo ? '#ffb86c' : GRIS.hi,
 }))
@@ -608,7 +609,7 @@ async function puntuarEnHistorial($: EngineInterface, id: string, puntaje: numbe
 }
 
 // En la web, las skills de un trabajo van delante de su texto con ✦.
-export const conSkills = (skills: string[] | undefined, texto: string) => (skills?.length ? `✦ ${skills.join(', ')} · ${texto}` : texto)
+export const conSkills = (skills: string[] | undefined, texto: string) => (skills?.length ? (texto ? `✦ ${skills.join(', ')} · ${texto}` : `✦ ${skills.join(', ')}`) : texto)
 
 async function armar($: EngineInterface, filasVista = 30) {
     await leerCatalogoPlugin($)
@@ -753,7 +754,9 @@ async function armar($: EngineInterface, filasVista = 30) {
         filas: subs.flatMap(s => {
           const estado = s.estado === 'realizado' ? 'en_proceso' : s.estado
           const linea = `${icono[s.estado]} ${s.n}  ${tituloCorto(s.titulo)} · ${estado}${s.puntaje !== undefined ? ` · ${s.puntaje}/10` : ''}`
-          const detalle = descripcionCorta(s.titulo)
+          // Las skills del último trabajo de la subtarea (incluidas las automáticas) o, si aún no hay, las pedidas en el encargo.
+          const skills = lista.filter(t => t.subtarea === s.n).at(-1)?.skills ?? encargos.get(s.n)?.skills
+          const detalle = conSkills(skills, descripcionCorta(s.titulo))
           return [
             { celdas: [linea], tono: tonoSub[s.estado] },
             ...(detalle ? [{ celdas: [`   ${detalle}`], tono: 'lo' as Tono }] : []),
@@ -766,7 +769,7 @@ async function armar($: EngineInterface, filasVista = 30) {
         columnas: [],
         // Dos filas por entrada: la línea del historial y, debajo en gris, la tarea en pocas palabras.
         filas: [...terminados].sort((a, b) => a.inicio - b.inicio).slice(-4).flatMap(t => {
-          const tarea = tareaLimpia(t.tarea)
+          const tarea = conSkills(t.skills, tareaLimpia(t.tarea))
           return [
             { celdas: [lineaHistorial(t)], tono: tonoTrab(t) },
             ...(tarea ? [{ celdas: [`   ${tarea}`], tono: 'lo' as Tono }] : []),
