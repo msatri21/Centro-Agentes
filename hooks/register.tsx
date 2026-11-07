@@ -876,7 +876,8 @@ async function autoactualizar($: EngineInterface) {
   const ok = (r: { exitCode: number | null }) => r.exitCode === 0
   // Sin internet o sin acceso al repositorio: se sigue con lo que hay, sin avisar.
   if (!(await $.process.run(['claude', 'plugin', 'marketplace', 'update', MARKETPLACE], { timeoutMs: 120_000 }).then(ok).catch(() => false))) return
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  // USERPROFILE en Windows, HOME en Linux y macOS (antes en Linux la autoactualización nunca llegaba a comparar versiones).
+  const casa = await casaSkills($)
   if (!casa) return
   // La versión publicada es la que trae la copia del marketplace que se acaba de refrescar.
   const fuente = await $.fs.read(`${casa}/.claude/plugins/marketplaces/${MARKETPLACE}/.claude-plugin/plugin.json`).then(version).catch(() => undefined)
@@ -918,9 +919,39 @@ let contexto: { modelos: Modelos; timeoutMs: number } | undefined
 let leidoHasta = -1
 let servidorLanzado = false
 
+// Los datos del centro (chats, cerebro, copias) viven en ~/.centro-agentes, igual que los del servidor MCP: fuera de la carpeta
+// del plugin, que cambia con cada versión. Antes en Linux y macOS (sin USERPROFILE) iban en <plugin>/web y una actualización los dejaba atrás.
 async function carpetaWeb($: EngineInterface) {
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   return casa ? `${casa}/.centro-agentes` : `${$.plugin.root}/web`
+}
+
+// Versiones de mayor a menor: '0.24.10' va antes que '0.24.9'.
+export const ordenarVersiones = (vs: string[]) =>
+  [...vs].sort((a, b) => {
+    const x = a.split('.').map(Number), y = b.split('.').map(Number)
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((y[i] || 0) !== (x[i] || 0)) return (y[i] || 0) - (x[i] || 0)
+    return 0
+  })
+
+// El estado que un chat dejó en la carpeta web de versiones anteriores del plugin (donde se guardaba en Linux y macOS):
+// el de la versión más nueva y, si su registro de encargos quedó vacío (pasó al actualizar a 0.24.2), el de la más nueva que lo tenga.
+export function estadoHeredado(guardados: Guardado[]): Guardado | undefined {
+  if (!guardados.length) return undefined
+  const registro = guardados.find(g => g.registro && Array.isArray((g.registro as { encargos?: unknown[] }).encargos) && (g.registro as { encargos: unknown[] }).encargos.length)?.registro
+  return { ...guardados[0], ...(registro ? { registro } : {}) }
+}
+
+async function leerEstadoHeredado($: EngineInterface): Promise<string> {
+  const versiones = `${$.plugin.root}/..`
+  const nombres = await $.fs.list(versiones).then(l => l.filter(e => e.kind === 'dir').map(e => e.name)).catch(() => [] as string[])
+  const guardados: Guardado[] = []
+  for (const v of ordenarVersiones(nombres)) {
+    const texto = await $.fs.read(`${versiones}/${v}/web/chats/${SID}/estado.json`).catch(() => '')
+    try { if (texto) guardados.push(JSON.parse(texto)) } catch {}
+  }
+  const g = estadoHeredado(guardados)
+  return g ? JSON.stringify(g) : ''
 }
 
 let catalogoMemoria: Catalogo | undefined
@@ -967,8 +998,34 @@ async function leerCerebro($: EngineInterface): Promise<Cerebro> {
     const g = JSON.parse(await $.fs.read(`${await carpetaWeb($)}/cerebro.json`))
     return Array.isArray(g?.experiencias) ? g : { experiencias: [] }
   } catch {
-    return { experiencias: [] }
+    return cerebroHeredado($)
   }
+}
+
+// Une las experiencias sin repetir las que estaban en varias copias (misma fecha, agente y tarea).
+export function unirCerebros(cs: Cerebro[]): Cerebro {
+  const vistas = new Set<string>()
+  const experiencias = cs.flatMap(c => c.experiencias).filter(e => {
+    const k = `${e.en}|${e.agente}|${e.modelo}|${e.tarea}`
+    if (vistas.has(k)) return false
+    vistas.add(k)
+    return true
+  }).sort((a, b) => a.en - b.en)
+  return { experiencias }
+}
+
+// Sin cerebro en ~/.centro-agentes: el que aprendieron las versiones anteriores del plugin en su carpeta web (Linux y macOS), unido.
+async function cerebroHeredado($: EngineInterface): Promise<Cerebro> {
+  const versiones = `${$.plugin.root}/..`
+  const nombres = await $.fs.list(versiones).then(l => l.filter(e => e.kind === 'dir').map(e => e.name)).catch(() => [] as string[])
+  const cs: Cerebro[] = []
+  for (const v of nombres) {
+    try {
+      const g = JSON.parse(await $.fs.read(`${versiones}/${v}/web/cerebro.json`))
+      if (Array.isArray(g?.experiencias)) cs.push(g)
+    } catch {}
+  }
+  return unirCerebros(cs)
 }
 // Cada vez que el jefe puntúa un trabajo, el cerebro apunta qué se hizo, quién lo hizo y qué nota sacó.
 async function anotarCerebro($: EngineInterface, t: Trabajo, nota: number, leccion?: string) {
@@ -1106,7 +1163,9 @@ async function reenganchar($: EngineInterface, t: Trabajo) {
 }
 
 async function restaurarEstado($: EngineInterface) {
-  const texto = await $.fs.read(`${await carpetaChat($)}/estado.json`).catch(() => '')
+  // Sin estado en ~/.centro-agentes, se trae el que quedó en la carpeta del plugin de una versión anterior (Linux y macOS).
+  // Los trabajos guardan la ruta absoluta de sus archivos (lanzador.carpeta), así que el reenganche los sigue encontrando allí.
+  const texto = (await $.fs.read(`${await carpetaChat($)}/estado.json`).catch(() => '')) || (await leerEstadoHeredado($))
   if (!texto) return
   let g: Guardado
   try {
