@@ -127,6 +127,10 @@ export const esAvisoDelProveedor = (texto: string) => {
   const t = textoUtil(texto)
   return !t || (t.length < 300 && AVISO_PROVEEDOR.test(t))
 }
+// «Free usage limit reached» de OpenCode trae un retryAfterMs de varias horas, pero en la práctica el límite se pasa en
+// minutos (los registros muestran trabajos que terminan bien 20 minutos después). Se aparta poco tiempo y se vuelve a probar solo.
+export const PAUSA_CUPO_OPENCODE_MS = 15 * 60_000
+export const pausaPorCupoOpencode = (reintentoMs?: number) => Math.min(reintentoMs ?? PAUSA_CUPO_OPENCODE_MS, PAUSA_CUPO_OPENCODE_MS)
 // Un intento que falla DESPUÉS de escribir una respuesta larga (cupo agotado, modelo caído al cerrar) no se tira:
 // esa respuesta es el resultado. Por debajo de este tamaño se considera que no llegó a responder.
 export const MIN_RESPUESTA_RESCATABLE = 200

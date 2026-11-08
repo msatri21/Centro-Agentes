@@ -6,6 +6,7 @@ import type { Cerebro } from './cerebro'
 import { colaDeLineas, figura, pagina, tablero } from './figura'
 import { bloqueos, estadoSubtareaNuevo, leerDependencias, listas } from './extras'
 import { buscarSkills, conSkills, costoComoClaude, esErrorDeCuenta, esMasNueva, etiquetaChat, leerFrontmatter, nombreDesdeMensaje, recuperar } from './register'
+import { rutaDePrueba } from './rutas-prueba'
 
 test('al recuperar un chat, lo que estaba en marcha queda interrumpido y su subtarea vuelve a pendiente', async () => {
   const g = {
@@ -110,12 +111,12 @@ test('con la skill ponytail el encargo lleva el mapa del código de la carpeta d
   base(on)
   on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
   // Las carpetas de trabajo falsas existen (el centro valida cwd antes de lanzar).
-  on('fs.exists', async (_$: any, e: any) => ({ value: String(e.path).includes('ponytail-map.js') || /^C:[\\/](proyecto|documentos)$/i.test(String(e.path)) }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: rutaDePrueba(e?.path).includes('ponytail-map.js') || /^C:[\\/](proyecto|documentos)$/i.test(rutaDePrueba(e?.path)) }))
   const vistos: { argv: string[]; input?: string; cwd?: string }[] = []
   // El mapa lo genera un script de ponytail con process.run; el agente se lanza con process.spawn.
   on('process.run', async (_$: any, e: any) => {
     if (e.argv.some((a: string) => a.includes('ponytail-map.js'))) {
-      vistos.push({ argv: e.argv, cwd: e.init?.cwd })
+      vistos.push({ argv: e.argv, cwd: rutaDePrueba(e.init?.cwd) })
       return { value: { exitCode: 0, stdout: 'Codebase map (what already exists)\nweb/: crearGrafo, enviarRespuesta\n', stderr: '', isStdoutTruncated: false } }
     }
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }
@@ -185,12 +186,12 @@ test('clasificarTarea: código, auditoría de un cambio, auditoría de un repo o
 const centroConPonytail = (on: any, { carpetaConCodigo = true } = {}) => {
   base(on)
   on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
-  on('fs.exists', async (_$: any, e: any) => ({ value: /SKILL\.md$|ponytail-map\.js$|^C:[\\/](proyecto|documentos)$/i.test(String(e.path)) }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: /SKILL\.md$|ponytail-map\.js$|^C:[\\/](proyecto|documentos)$/i.test(rutaDePrueba(e?.path)) }))
   const mapas: string[] = []
   const lanzados: { argv: string[]; input?: string }[] = []
   on('process.run', async (_$: any, e: any) => {
     if (e.argv.some((a: string) => a.includes('ponytail-map.js'))) {
-      mapas.push(e.init?.cwd)
+      mapas.push(rutaDePrueba(e.init?.cwd))
       // Una carpeta sin código deja el mapa vacío.
       return { value: { exitCode: 0, stdout: carpetaConCodigo ? 'Codebase map (what already exists)\nweb/: crearGrafo\n' : '', stderr: '', isStdoutTruncated: false } }
     }
@@ -417,7 +418,7 @@ test('si el agente pedido no tiene red, corta enseguida y pasa a otro agente', a
       ? { exitCode: 1, stderr: 'Error: connect ECONNREFUSED 10.0.0.1:443' }
       : { stdout: 'ok' }
   })
-  const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'codigo', tarea: 'x' }))
+  const d = out(await delegarYEsperar($, { categoria: 'codigo', tarea: 'x' }))
   expect(d.exito).toBe(true)
   expect(d.trabajador.startsWith('opencode')).toBe(false)
   // Un solo intento con opencode: tras el error de red se aparta el agente entero.

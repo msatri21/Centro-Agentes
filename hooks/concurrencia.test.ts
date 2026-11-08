@@ -95,7 +95,7 @@ test('no reintenta otros errores y pasa al siguiente modelo', async ($, on) => {
     yield { stream: 'stdout', text: modelos.length === 1 ? 'fallo cualquiera' : textoBueno(e.argv) }
     return { value: { code: modelos.length === 1 ? 1 : 0, signal: null } }
   })
-  const d = out(await delegarYEsperar($, { trabajador: 'opencode', modelo: MODELOS.opencode[0], categoria: 'texto', tarea: 'prueba' }))
+  const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'texto', tarea: 'prueba' }))
   expect(d.exito).toBe(true)
   expect(modelos).toEqual(MODELOS.opencode)
   expect(d.cambios.some((c: string) => c.includes('reintento'))).toBe(false)
@@ -113,7 +113,7 @@ test('tras tres fallos de arranque pasa al siguiente modelo', async ($, on) => {
     yield { stream: 'stdout', text: arranca ? textoBueno(e.argv) : 'Standalone server exited before reporting readiness' }
     return { value: { code: arranca ? 0 : 1, signal: null } }
   })
-  const d = out(await delegarYEsperar($, { trabajador: 'opencode', modelo: MODELOS.opencode[0], categoria: 'texto', tarea: 'prueba' }))
+  const d = out(await delegarYEsperar($, { trabajador: 'opencode', categoria: 'texto', tarea: 'prueba' }))
   expect(modelos).toEqual([MODELOS.opencode[0], MODELOS.opencode[0], MODELOS.opencode[0], MODELOS.opencode[1]])
   expect(d.exito).toBe(true)
   expect(d.cambios.filter((c: string) => c.includes('reintento'))).toHaveLength(2)

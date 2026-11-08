@@ -16,7 +16,7 @@ const base = (on: any) => {
   on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
 }
 const planificar = ($: any, subtareas: any[], manuales?: number[]) => $.tool.call({ tool: 'mcp__centro-agentes__planificar', input: { objetivo: 'demo', subtareas, manuales, cwd: 'C:/proyecto' } })
-const delegar = ($: any, subtarea: number) => delegarYEsperar($, { trabajador: 'claude', categoria: 'x', tarea: 'hazlo', subtarea })
+const delegar = ($: any, subtarea: number, extra = {}) => delegarYEsperar($, { trabajador: 'claude', categoria: 'x', tarea: 'hazlo', subtarea, ...extra })
 
 test('reserva antes de iniciar, termina en realizado y evita duplicar o delegar manuales', async ($, on) => {
   base(on)
@@ -42,7 +42,7 @@ test('si el agente falla vuelve a pendiente; ocupado solo avisa y deja seguir', 
   const opciones: any = { agente: () => ({ codigo: 1 }) }
   const falso = scriptFalso(on, opciones)
   await planificar($, ['una'])
-  const fallo = out(await delegar($, 1))
+  const fallo = out(await delegar($, 1, { modelo: 'haiku' }))
   expect(fallo.exito).toBe(false)
   expect(falso.archivo.tareas[0].subtareas[0].estado).toBe('pendiente')
   opciones.falla = { ok: false, codigo: 'ocupado', mensaje: 'archivo ocupado' }

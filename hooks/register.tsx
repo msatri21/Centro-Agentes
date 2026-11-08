@@ -12,7 +12,7 @@ import type { Cerebro } from './cerebro'
 import { CON_MAPA, clasificarTarea, conCarpeta, skillsAutomaticas } from './skillsAuto'
 import { agregarRendimiento, bloqueos, estadoSubtareaNuevo, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from './extras'
 import type { Fila, Seccion, Tono } from './figura'
-import { Cerrojos, archivosCambiados, clave, costoApi, costoComoClaude, debeBuscarActualizacion, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, sinAnsi, vistaDe } from './nucleo'
+import { Cerrojos, archivosCambiados, clave, costoApi, costoComoClaude, debeBuscarActualizacion, fueraDeAlcance, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, pausaPorCupoOpencode, sinAnsi, vistaDe } from './nucleo'
 import type { Candidato, Puntajes, Salida } from './nucleo'
 import { filasModelos, detectarNecesidades, entradaDe, filtrarPorCapacidad, textoCatalogo } from './catalogo.ts'
 import type { Capacidad, Catalogo } from './catalogo'
@@ -99,7 +99,7 @@ Protocolo:
 El centro tiene un catálogo de modelos con sus capacidades; consúltalo con modelos. Si la tarea necesita ver imágenes, se detecta sola o pasa necesita: ['imagen']. Si no hay modelo capaz, no se lanza: no pruebes otro a ciegas, díselo al usuario. Si el usuario propone un modelo («prueba con tal modelo»), comprueba con modelos que existe, úsalo con modelo en delegar y puntúalo al auditar. Si recibes un mensaje que empieza por «[Centro de agentes MST] El usuario propone probar el modelo», haz lo mismo en la próxima tarea que encaje.
 El plan se guarda en mst-tareas.json de la carpeta del proyecto (git lo ignora) y se crea con el primer planificar: planifica un BORRADOR al tener objetivo y subtareas de primer vistazo y púlelo al repartir con planificar { agregar } y { ajustar }. Usa manuales para lo que no se delegas (instalar, respaldar). tareas_estado muestra el estado; planificar { tarea: 'T2' } retoma una tarea. Título de cada subtarea: «Título corto: detalle» (el panel muestra el título y debajo el detalle en gris). No cambies el plan activo con planificar { tarea } mientras haya encargos de otro plan corriendo: las subtareas se numeran en el plan activo. Los agentes no editan mst-tareas.json: anotan trabajo nuevo al final bajo «Propuestas:» y tú decides si agregarlo como hermana o planificarlo como tarea nueva. Reabrir una tarea solucionada es decisión tuya: si cumplía lo pedido crea una nueva; si no, usa planificar { reabrir: ["T2.3"] } para devolver a pendiente la subtarea que falló.
 1. Haz un plan: divide la tarea en subtareas lo más independientes posible y regístralas con mcp__centro-agentes__planificar. Es lo que el usuario ve como progreso. Si una necesita el resultado de otras, ponlo en "dependencias" (p. ej. {"3": [1, 2]}); planificar y registrar_auditoria te dicen en "lanzar_ya" cuáles puedes lanzar.
-2. Lanza las subtareas con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Devuelve ids al instante y el trabajo sigue en segundo plano; el centro avisa UNA vez cuando termina el grupo entero. No esperes resultados ni sondees en bucle: mientras puedes hablar con el usuario o hacer otra cosa; usa estado solo si hace falta. Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test): el centro lo ejecuta con Git Bash si está instalado (funcionan tuberías como | tail), si no con cmd. Si OpenCode o Codex se quedan sin cupo, el centro te avisa: pide al usuario que lo reinicie manualmente y usa luego /mst-reactivar, no reintentes a ciegas. Las que dependan de otras puedes mandarlas en el mismo lote: quedan en espera y arrancan solas cuando terminan bien sus previas.
+2. Lanza las subtareas con mcp__centro-agentes__delegar_varios (una entrada por subtarea, con su número en "subtarea" y una categoría corta: codigo, tests, docs, texto, analisis...). Devuelve ids al instante y el trabajo sigue en segundo plano; el centro avisa UNA vez cuando termina el grupo entero. No esperes resultados ni sondees en bucle: mientras puedes hablar con el usuario o hacer otra cosa; usa estado solo si hace falta. Deja trabajador y modelo vacíos salvo que la tarea lo exija (opencode para editar archivos). Si varias editan archivos, dales directorios distintos y que existan; si editan el mismo repo git, pasa aislar: true y cada agente trabaja en su copia (luego juntas con "copia.juntar"). Si prefieres que varios trabajen en la misma carpeta y rama, no pases aislar: di en "archivos" qué puede tocar cada uno; los que tocan cosas distintas trabajan a la vez y los que chocan se turnan (sin "archivos" se turnan todos). El resultado avisa en "fuera_de_alcance" si alguno tocó algo que no era suyo. Si el proyecto tiene tests, pasa en "verificar" el comando (p. ej. npm test): el centro lo ejecuta con Git Bash si está instalado (funcionan tuberías como | tail), si no con cmd. Si Codex se queda sin cupo, el centro te avisa: pide al usuario que lo reinicie manualmente y usa luego /mst-reactivar, no reintentes a ciegas. Si OpenCode dice «Free usage limit reached», el centro lo aparta unos minutos y vuelve a usarlo solo. Las que dependan de otras puedes mandarlas en el mismo lote: quedan en espera y arrancan solas cuando terminan bien sus previas.
 3. Cada instrucción debe ser completa y autocontenida: el agente no ve esta conversación.
    Skills: si una subtarea es de un tipo para el que puede haber una skill (diseño, una plataforma, un formato de archivo, un framework, pruebas en navegador...), llama a mcp__centro-agentes__buscar_skills con unas palabras de la tarea y pasa los nombres que encajen en "skills" del encargo; el agente leerá su SKILL.md y la seguirá (las tareas con skills no van a Ollama, que no lee archivos). Usa tú también tus skills para verificar cuando ayuden (p. ej. un navegador para comprobar una web).
 4. Cuando llegue el aviso único de que terminó el grupo, verifica cada resultado de verdad y barato: lee los archivos que cambió, ejecuta los tests o el código, busca errores y alucinaciones. No confíes en lo que el agente dice que hizo.
@@ -876,7 +876,8 @@ async function autoactualizar($: EngineInterface) {
   const ok = (r: { exitCode: number | null }) => r.exitCode === 0
   // Sin internet o sin acceso al repositorio: se sigue con lo que hay, sin avisar.
   if (!(await $.process.run(['claude', 'plugin', 'marketplace', 'update', MARKETPLACE], { timeoutMs: 120_000 }).then(ok).catch(() => false))) return
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  // USERPROFILE en Windows, HOME en Linux y macOS (antes en Linux la autoactualización nunca llegaba a comparar versiones).
+  const casa = await casaSkills($)
   if (!casa) return
   // La versión publicada es la que trae la copia del marketplace que se acaba de refrescar.
   const fuente = await $.fs.read(`${casa}/.claude/plugins/marketplaces/${MARKETPLACE}/.claude-plugin/plugin.json`).then(version).catch(() => undefined)
@@ -918,9 +919,39 @@ let contexto: { modelos: Modelos; timeoutMs: number } | undefined
 let leidoHasta = -1
 let servidorLanzado = false
 
+// Los datos del centro (chats, cerebro, copias) viven en ~/.centro-agentes, igual que los del servidor MCP: fuera de la carpeta
+// del plugin, que cambia con cada versión. Antes en Linux y macOS (sin USERPROFILE) iban en <plugin>/web y una actualización los dejaba atrás.
 async function carpetaWeb($: EngineInterface) {
-  const casa = await $.env.get('USERPROFILE').catch(() => undefined)
+  const casa = await casaSkills($)
   return casa ? `${casa}/.centro-agentes` : `${$.plugin.root}/web`
+}
+
+// Versiones de mayor a menor: '0.24.10' va antes que '0.24.9'.
+export const ordenarVersiones = (vs: string[]) =>
+  [...vs].sort((a, b) => {
+    const x = a.split('.').map(Number), y = b.split('.').map(Number)
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((y[i] || 0) !== (x[i] || 0)) return (y[i] || 0) - (x[i] || 0)
+    return 0
+  })
+
+// El estado que un chat dejó en la carpeta web de versiones anteriores del plugin (donde se guardaba en Linux y macOS):
+// el de la versión más nueva y, si su registro de encargos quedó vacío (pasó al actualizar a 0.24.2), el de la más nueva que lo tenga.
+export function estadoHeredado(guardados: Guardado[]): Guardado | undefined {
+  if (!guardados.length) return undefined
+  const registro = guardados.find(g => g.registro && Array.isArray((g.registro as { encargos?: unknown[] }).encargos) && (g.registro as { encargos: unknown[] }).encargos.length)?.registro
+  return { ...guardados[0], ...(registro ? { registro } : {}) }
+}
+
+async function leerEstadoHeredado($: EngineInterface): Promise<string> {
+  const versiones = `${$.plugin.root}/..`
+  const nombres = await $.fs.list(versiones).then(l => l.filter(e => e.kind === 'dir').map(e => e.name)).catch(() => [] as string[])
+  const guardados: Guardado[] = []
+  for (const v of ordenarVersiones(nombres)) {
+    const texto = await $.fs.read(`${versiones}/${v}/web/chats/${SID}/estado.json`).catch(() => '')
+    try { if (texto) guardados.push(JSON.parse(texto)) } catch {}
+  }
+  const g = estadoHeredado(guardados)
+  return g ? JSON.stringify(g) : ''
 }
 
 let catalogoMemoria: Catalogo | undefined
@@ -967,8 +998,34 @@ async function leerCerebro($: EngineInterface): Promise<Cerebro> {
     const g = JSON.parse(await $.fs.read(`${await carpetaWeb($)}/cerebro.json`))
     return Array.isArray(g?.experiencias) ? g : { experiencias: [] }
   } catch {
-    return { experiencias: [] }
+    return cerebroHeredado($)
   }
+}
+
+// Une las experiencias sin repetir las que estaban en varias copias (misma fecha, agente y tarea).
+export function unirCerebros(cs: Cerebro[]): Cerebro {
+  const vistas = new Set<string>()
+  const experiencias = cs.flatMap(c => c.experiencias).filter(e => {
+    const k = `${e.en}|${e.agente}|${e.modelo}|${e.tarea}`
+    if (vistas.has(k)) return false
+    vistas.add(k)
+    return true
+  }).sort((a, b) => a.en - b.en)
+  return { experiencias }
+}
+
+// Sin cerebro en ~/.centro-agentes: el que aprendieron las versiones anteriores del plugin en su carpeta web (Linux y macOS), unido.
+async function cerebroHeredado($: EngineInterface): Promise<Cerebro> {
+  const versiones = `${$.plugin.root}/..`
+  const nombres = await $.fs.list(versiones).then(l => l.filter(e => e.kind === 'dir').map(e => e.name)).catch(() => [] as string[])
+  const cs: Cerebro[] = []
+  for (const v of nombres) {
+    try {
+      const g = JSON.parse(await $.fs.read(`${versiones}/${v}/web/cerebro.json`))
+      if (Array.isArray(g?.experiencias)) cs.push(g)
+    } catch {}
+  }
+  return unirCerebros(cs)
 }
 // Cada vez que el jefe puntúa un trabajo, el cerebro apunta qué se hizo, quién lo hizo y qué nota sacó.
 async function anotarCerebro($: EngineInterface, t: Trabajo, nota: number, leccion?: string) {
@@ -1106,7 +1163,9 @@ async function reenganchar($: EngineInterface, t: Trabajo) {
 }
 
 async function restaurarEstado($: EngineInterface) {
-  const texto = await $.fs.read(`${await carpetaChat($)}/estado.json`).catch(() => '')
+  // Sin estado en ~/.centro-agentes, se trae el que quedó en la carpeta del plugin de una versión anterior (Linux y macOS).
+  // Los trabajos guardan la ruta absoluta de sus archivos (lanzador.carpeta), así que el reenganche los sigue encontrando allí.
+  const texto = (await $.fs.read(`${await carpetaChat($)}/estado.json`).catch(() => '')) || (await leerEstadoHeredado($))
   if (!texto) return
   let g: Guardado
   try {
@@ -1867,14 +1926,14 @@ async function delegarSinCerrojo($: EngineInterface, modelos: Modelos, input: En
     // Límite de la cuenta (cupo gratis o uso de Codex agotado): no se encadena con otros agentes, que gastarían cupos de pago.
     // Se aparta todo el agente, se corta la cola y se avisa al jefe para que avise al usuario.
     if (limiteDeCuenta(c.trabajador, r.s.texto, r.s.errorTipo)) {
-      const ms = r.s.reintentoMs ?? HORA_MS
+      const ms = c.trabajador === 'opencode' ? pausaPorCupoOpencode(r.s.reintentoMs) : (r.s.reintentoMs ?? HORA_MS)
       for (const m of modelos[c.trabajador]) caidos.set(clave(c.trabajador, m), Date.now() + ms - CAIDO_MS)
       motivoAgente.set(c.trabajador, 'sin cupo')
       if (Date.now() - ultimoAvisoCuota >= AVISO_CUOTA_MS) {
         ultimoAvisoCuota = Date.now()
         const aviso = c.trabajador === 'codex'
           ? '[Centro de agentes MST] Codex se quedó sin cuota de uso (usage limit). Avisa al usuario para que lo reinicie o espere a que se recupere; cuando lo recupere, ejecuta /mst-reactivar y vuelve a lanzar.'
-          : '[Centro de agentes MST] OpenCode se quedó sin cupo gratuito (Free usage limit reached). Avisa al usuario para que lo reinicie manualmente; cuando lo recupere, ejecuta /mst-reactivar y vuelve a lanzar.'
+          : `[Centro de agentes MST] OpenCode respondió «Free usage limit reached». Suele ser un límite de unos minutos: el centro lo aparta hasta las ${hora(Date.now() + ms)} y vuelve a usarlo solo. Mientras, usa otros agentes o espera; no hace falta reiniciarlo. Si sigue fallando después, avisa al usuario.`
         void $.prompt.submit({ text: aviso }).catch(() => undefined)
       }
       break
