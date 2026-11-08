@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { leerOpencode } from './nucleo'
+import { PAUSA_CUPO_OPENCODE_MS, leerOpencode, pausaPorCupoOpencode } from './nucleo'
 
 // Las tres líneas JSON reales que emite `opencode run --format json` al fallar el proveedor.
 test('las tres líneas reales de error del opencode se ven como [error] <mensaje>, no desconocido', () => {
@@ -24,4 +24,12 @@ test('las tres líneas reales de error del opencode se ven como [error] <mensaje
   const viejo = leerOpencode('{"type":"error","error":{"name":"APIError","data":{"message":"sin cuota"}}}')
   expect(viejo.texto).toBe('[error] sin cuota')
   expect(viejo.errorTipo).toBeUndefined()
+})
+
+test('«Free usage limit reached» aparta a OpenCode unos minutos, no las horas que dice retryAfterMs', () => {
+  // Registro real: retryAfterMs de 6,7 h, y 20 minutos después el mismo modelo terminaba bien.
+  expect(pausaPorCupoOpencode(24_069_000)).toBe(PAUSA_CUPO_OPENCODE_MS)
+  expect(pausaPorCupoOpencode(undefined)).toBe(PAUSA_CUPO_OPENCODE_MS)
+  expect(pausaPorCupoOpencode(60_000)).toBe(60_000)
+  expect(PAUSA_CUPO_OPENCODE_MS).toBeLessThanOrEqual(15 * 60_000)
 })

@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esAvisoDelProveedor, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, respuestaRescatable, sinAnsi, textoUtil, vistaDe } from '../hooks/nucleo.ts'
+import { Cerrojos, archivosCambiados, clave, costoComoClaude, fueraDeAlcance, esAvisoDelProveedor, esErrorDeCuenta, esErrorDeRed, leerClaude, leerCodex, leerHermes, leerOllama, leerOpencode, ordenar, pausaPorCupoOpencode, respuestaRescatable, sinAnsi, textoUtil, vistaDe } from '../hooks/nucleo.ts'
 import { paginaCentro } from '../hooks/vista.ts'
 import { agregarRendimiento, bloqueos, informeMarkdown, leerAider, leerDependencias, listas, temaNtfyValido } from '../hooks/extras.ts'
 import { consultar as consultarCerebro, preferir, recomendar, registrar } from '../hooks/cerebro.ts'
@@ -518,7 +518,7 @@ async function delegarSinCerrojo(input, sinBloqueo = false) {
     const tipo = r.s.errorTipo
     const deProveedor = tipo === 'provider.free-limit' || tipo === 'provider.no-route' || (tipo === 'provider.invalid-request' && /unavailable/i.test(r.s.texto))
     if (deProveedor) {
-      const ms = tipo === 'provider.free-limit' ? (r.s.reintentoMs ?? 60 * 60_000) : 30 * 60_000
+      const ms = tipo === 'provider.free-limit' ? pausaPorCupoOpencode(r.s.reintentoMs) : 30 * 60_000
       caidos.set(k, Date.now() + ms - CAIDO_MS)
       motivo.set(c.trabajador, tipo === 'provider.free-limit' ? 'sin cupo gratis' : 'modelo no disponible')
     }
