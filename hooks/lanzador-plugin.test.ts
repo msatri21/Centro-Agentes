@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { reiniciarCatalogoParaPruebas, vigilar } from './register'
+import { rutaDePrueba } from './rutas-prueba'
 
 // Con el ajuste lanzadorDesacoplado el plugin no lee el stream del agente: lo lanza con mcp/lanzador.mjs y lee de disco.
 // Aquí el motor simulado hace de lanzador: deja el log y el fin.json en un disco en memoria.
@@ -18,9 +19,9 @@ const montar = (on: any, alLanzar: (disco: Map<string, string>, carpeta: string,
   on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
   on('fs.exists', async () => ({ value: false }))
   on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
-  on('fs.write', async (_$: any, e: any) => { disco.set(String(e?.path).replace(/\\/g, '/'), String(e?.content ?? e?.text ?? e?.data ?? '')); return { value: undefined } })
+  on('fs.write', async (_$: any, e: any) => { disco.set(rutaDePrueba(e?.path), String(e?.content ?? e?.text ?? e?.data ?? '')); return { value: undefined } })
   on('fs.read', async (_$: any, e: any) => {
-    const ruta = String(e?.path ?? e).replace(/\\/g, '/')
+    const ruta = rutaDePrueba(e?.path ?? e)
     if (disco.has(ruta)) return { value: disco.get(ruta) }
     if (ruta.toLowerCase().endsWith('cerebro.json')) return { value: '{}' }
     throw new Error(`ruta no simulada: ${ruta}`)
@@ -32,7 +33,7 @@ const montar = (on: any, alLanzar: (disco: Map<string, string>, carpeta: string,
       lanzados.push(argv)
       const [carpeta, id] = [argv[2], argv[3]]
       // El lanzador real sale al instante y sigue por su cuenta: aquí el agente "escribe" un poco después.
-      setTimeout(() => alLanzar(disco, carpeta.replace(/\\/g, '/'), id), 30)
+      setTimeout(() => alLanzar(disco, rutaDePrueba(carpeta), id), 30)
       return { value: { code: 0, signal: null } }
     }
     throw new Error(`con el lanzador activo no debe haber otro spawn: ${argv.join(' ')}`)
@@ -59,8 +60,8 @@ test('el agente corre bajo el lanzador y su resultado se lee del log en disco', 
   expect(m.lanzados).toHaveLength(1)
   expect(m.lanzados[0].slice(-3)[2]).toBe('--desacoplado')
   const id = m.lanzados[0][3]
-  expect(JSON.parse(m.disco.get(`${m.lanzados[0][2].replace(/\\/g, '/')}/${id}.argv.json`)!)[0]).toBe('ollama')
-  expect(m.disco.get(`${m.lanzados[0][2].replace(/\\/g, '/')}/${id}.in`)).toContain('di hola')
+  expect(JSON.parse(m.disco.get(`${rutaDePrueba(m.lanzados[0][2])}/${id}.argv.json`)!)[0]).toBe('ollama')
+  expect(m.disco.get(`${rutaDePrueba(m.lanzados[0][2])}/${id}.in`)).toContain('di hola')
 })
 
 test('si el agente sale con error, el encargo falla y se ve el motivo', { options: { lanzadorDesacoplado: true } }, async ($, on) => {

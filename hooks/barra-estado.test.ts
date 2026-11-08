@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { reiniciarCatalogoParaPruebas } from './register'
+import { rutaDePrueba } from './rutas-prueba'
 
 const out = (r: any) => JSON.parse(r.result)
 const esperar = async (f: () => boolean | Promise<boolean>) => { let ok = await f(); for (let i = 0; i < 400 && !ok; i++) { await new Promise(r => setTimeout(r, 10)); ok = await f() }; expect(ok).toBe(true) }
@@ -20,9 +21,9 @@ const montar = (on: any, alLanzar: (disco: Map<string, string>, carpeta: string,
   on('env.get', async () => ({ value: 'C:\\Users\\Prueba' }))
   on('fs.exists', async () => ({ value: false }))
   on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false } }))
-  on('fs.write', async (_$: any, e: any) => { disco.set(String(e?.path).replace(/\\/g, '/'), String(e?.content ?? e?.text ?? e?.data ?? '')); return { value: undefined } })
+  on('fs.write', async (_$: any, e: any) => { disco.set(rutaDePrueba(e?.path), String(e?.content ?? e?.text ?? e?.data ?? '')); return { value: undefined } })
   on('fs.read', async (_$: any, e: any) => {
-    const ruta = String(e?.path ?? e).replace(/\\/g, '/')
+    const ruta = rutaDePrueba(e?.path ?? e)
     if (disco.has(ruta)) return { value: disco.get(ruta) }
     if (ruta.endsWith('/catalogo.json')) return { value: '{}' }
     if (ruta.includes('/trabajos/') && ruta.endsWith('.log')) return { value: '' }
@@ -36,7 +37,7 @@ const montar = (on: any, alLanzar: (disco: Map<string, string>, carpeta: string,
     if (argv.some(a => String(a).includes('lanzador.mjs'))) {
       lanzados.push(argv)
       const [carpeta, id] = [argv[2], argv[3]]
-      setTimeout(() => alLanzar(disco, carpeta.replace(/\\/g, '/'), id), 30)
+      setTimeout(() => alLanzar(disco, rutaDePrueba(carpeta), id), 30)
       return { value: { code: 0, signal: null } }
     }
     throw new Error(`con el lanzador activo no debe haber otro spawn: ${argv.join(' ')}`)
